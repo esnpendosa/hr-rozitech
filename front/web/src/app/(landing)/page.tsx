@@ -16,16 +16,15 @@ import { RmihFeatureDetails } from '@/modules/vitrine/components/RmihFeatureDeta
 import { RmihGuaranteeBanner } from '@/modules/vitrine/components/RmihGuaranteeBanner';
 import { RmihImplementationFlow } from '@/modules/vitrine/components/RmihImplementationFlow';
 import { RmihCalloutBanner } from '@/modules/vitrine/components/RmihCalloutBanner';
+import { RmihFAQ } from '@/modules/vitrine/components/RmihFAQ';
 import { RmihFooter } from '@/modules/vitrine/components/RmihFooter';
 import { useVitrineLocale } from '@/modules/vitrine/lib/vitrine-locale';
-import { getFaqItems } from '@/modules/vitrine/data/faq';
 import { StickyMobileCTA } from '@/components/StickyMobileCTA';
 
 export default function LandingPage() {
   const { isDark, toggleDarkMode } = useDarkMode();
   useScrollReveal();
   const { locale, direction } = useVitrineLocale();
-  const faqItems = getFaqItems(locale);
 
   return (
     <div
@@ -73,17 +72,8 @@ export default function LandingPage() {
         {/* 8. Banner Siap Meningkatkan Efisiensi Bisnis Anda (Callout Box dengan 4 Checklist Kanan) */}
         <RmihCalloutBanner />
 
-        {/* 9. FAQ Section (Pertanyaan yang Sering Diajukan) */}
-        <FAQSection
-          badge={{ text: 'FAQ' }}
-          title="Pertanyaan yang Sering Diajukan"
-          subtitle="Temukan jawaban untuk pertanyaan yang paling umum."
-          items={faqItems.map((item, i) => ({
-            id: `faq-${i}`,
-            question: item.question,
-            answer: item.answer,
-          }))}
-        />
+        {/* 9. FAQ Section (Pertanyaan yang Sering Diajukan - Simple & Rapi persis gambar 1) */}
+        <RmihFAQ />
       </main>
 
       {/* Modern Minimalist RMIH Footer */}
