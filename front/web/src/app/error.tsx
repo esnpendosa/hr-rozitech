@@ -25,18 +25,17 @@ export default function GlobalError({
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-6 py-16 dark:bg-slate-950">
       <div className="w-full max-w-lg text-center">
         <p className="text-sm font-semibold uppercase tracking-[0.2em] text-red-600 dark:text-red-400">
-          Erreur inattendue
+          Terjadi Kesalahan
         </p>
         <h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl dark:text-white">
-          Quelque chose s&apos;est mal passé
+          Ada Masalah yang Tidak Terduga
         </h1>
         <p className="mt-4 text-base leading-relaxed text-slate-600 dark:text-slate-400">
-          L&apos;action n&apos;a pas pu aboutir. Vous pouvez réessayer ; si le problème
-          persiste, contactez le support.
+          Tindakan tidak dapat diselesaikan. Anda dapat mencoba lagi; jika masalah masih berlanjut, hubungi tim dukungan.
         </p>
         {error.digest ? (
           <p className="mt-3 text-xs text-slate-400">
-            Référence technique : <code className="font-mono">{error.digest}</code>
+            Referensi teknis: <code className="font-mono">{error.digest}</code>
           </p>
         ) : null}
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -45,13 +44,13 @@ export default function GlobalError({
             onClick={reset}
             className="inline-flex items-center rounded-xl bg-brand-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
           >
-            Réessayer
+            Coba Lagi
           </button>
           <Link
             href="/"
             className="inline-flex items-center rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
           >
-            Retour à l&apos;accueil
+            Kembali ke Beranda
           </Link>
         </div>
       </div>

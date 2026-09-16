@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import Image from 'next/image';
 import { Layers, LayoutGrid, Blocks } from 'lucide-react';
 import type { AppLocale } from '@/lib/i18n';
 import {
