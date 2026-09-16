@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { ShieldCheck, Server, Settings, Award, Headphones, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
@@ -39,10 +40,18 @@ export function RmihGuaranteeBanner() {
               </div>
             </div>
 
-            <div className="lg:col-span-4 flex justify-start lg:justify-end">
+            <div className="lg:col-span-4 flex flex-col items-center lg:items-end gap-4">
+              <div className="relative w-full max-w-sm aspect-[16/10] rounded-2xl overflow-hidden border border-slate-700 shadow-2xl bg-slate-900">
+                <Image
+                  src="/screenshots/rmih-hardware-bundle.jpg"
+                  alt="RMIH Mini PC Server & Router Hardware Bundle"
+                  fill
+                  className="object-cover"
+                />
+              </div>
               <Link
                 href="/contact"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white px-7 py-4 text-sm sm:text-base font-bold shadow-xl shadow-blue-600/30 transition-all hover:scale-105"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white px-7 py-3 text-sm font-bold shadow-xl shadow-blue-600/30 transition-all hover:scale-105"
               >
                 <span>Hubungi Tim RMIH</span>
                 <ArrowRight className="w-4 h-4" />

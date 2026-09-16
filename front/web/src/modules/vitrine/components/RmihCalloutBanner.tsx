@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { Sparkles, Check, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
@@ -40,8 +41,17 @@ export function RmihCalloutBanner() {
               </div>
             </div>
 
-            <div className="lg:col-span-4">
-              <div className="rounded-xl bg-blue-50/60 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/40 p-5 space-y-2.5">
+            <div className="lg:col-span-4 flex flex-col gap-3">
+              <div className="relative w-full aspect-[16/9] rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-md">
+                <Image
+                  src="/screenshots/rmih-telecom-rack.jpg"
+                  alt="Infrastruktur Jaringan & Server RMIH"
+                  fill
+                  className="object-cover"
+                />
+              </div>
+
+              <div className="rounded-xl bg-blue-50/60 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/40 p-4 space-y-2">
                 <div className="flex items-center gap-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
                   <div className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
                     <Check className="w-2.5 h-2.5" />

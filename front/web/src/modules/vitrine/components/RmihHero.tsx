@@ -124,7 +124,7 @@ export function RmihHero({
               {/* Dashboard Image */}
               <div className="relative aspect-[16/10] bg-slate-100 dark:bg-slate-950 overflow-hidden">
                 <Image
-                  src="/screenshots/web-dashboard.png"
+                  src="/screenshots/rmih-dashboard.jpg"
                   alt="RMIH Web Dashboard"
                   fill
                   priority
@@ -138,7 +138,7 @@ export function RmihHero({
             <div className="absolute -bottom-6 -left-3 sm:-left-6 z-10 w-36 sm:w-44 rounded-[1.8rem] p-1 bg-slate-900 border-2 border-slate-700 shadow-2xl shadow-blue-900/30 overflow-hidden">
               <div className="relative aspect-[9/19] rounded-[1.5rem] overflow-hidden bg-slate-950">
                 <Image
-                  src="/screenshots/mobile-attendance.png"
+                  src="/screenshots/rmih-mobile.jpg"
                   alt="RMIH Mobile App"
                   fill
                   sizes="(max-width: 640px) 140px, 176px"
