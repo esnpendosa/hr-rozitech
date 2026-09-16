@@ -88,33 +88,19 @@ function filterNavEntries(entries: NavEntry[]): NavEntry[] {
 
 const navByLocale: Record<string, NavEntry[]> = {
   id: [
-    {
-      label: 'Produk & Layanan',
-      items: [
-        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Presensi GPS & Mobile App', description: 'Pointage mobile, self-service karyawan & cuti' },
-        { href: '/pricing', icon: <FileText className="w-4 h-4" />, label: 'Penggajian & Payroll', description: 'Kalkulasi PPh 21 TER, BPJS, & slip gaji digital' },
-        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Kiosk & Mesin ZKTeco', description: 'Integrasi mesin absensi biometrik & offline bridge' },
-        { href: '/download', icon: <Download className="w-4 h-4" />, label: 'Pusat Unduhan Aplikasi', description: 'Unduh versi Android, iOS, Windows & macOS' },
-      ],
-    },
+    { href: '/', label: 'Beranda' },
+    { href: '/#detail-fitur', label: 'Fitur' },
     {
       label: 'Solusi',
       items: [
         { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'UMKM & Startup', description: 'Solusi HR praktis dan cepat diterapkan' },
-        { href: '/#solutions', icon: <Building2 className="w-4 h-4" />, label: 'Multi-Cabang & Ritel', description: 'Monitoring jadwal shift dan kehadiran real-time' },
+        { href: '/#detail-fitur', icon: <Building2 className="w-4 h-4" />, label: 'Multi-Cabang & Ritel', description: 'Monitoring jadwal shift dan kehadiran real-time' },
         { href: '/contact?topic=enterprise', icon: <Users className="w-4 h-4" />, label: 'Enterprise & Korporasi', description: 'Integrasi kustom, multi-tenant & SLA terjamin' },
       ],
     },
-    {
-      label: 'Resources',
-      items: [
-        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'Panduan HR', description: 'Praktik terbaik & tutorial implementasi' },
-        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'Dokumentasi API', description: 'Panduan teknis dan integrasi sistem' },
-        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'Catatan Rilis', description: 'Pembaruan fitur dan sistem terbaru' },
-        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'FAQ', description: 'Pertanyaan yang sering diajukan' },
-      ],
-    },
     { href: '/pricing', label: 'Harga' },
+    { href: '/about', label: 'Tentang Kami' },
+    { href: '/contact', label: 'Kontak' },
   ],
 
   fr: [

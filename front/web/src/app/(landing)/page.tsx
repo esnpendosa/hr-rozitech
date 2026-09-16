@@ -5,44 +5,27 @@ import { useDarkMode } from '@/modules/vitrine/hooks/useDarkMode';
 import { useState } from 'react';
 import {
   Navbar,
-  Footer,
   useScrollReveal,
-  SocialProofMetrics,
-  ProductScreenshots,
-  MarketingReadinessSection,
-  TrustedBrands,
-  ProductDemoVideo,
-  // Phase-3 sections — no more Legacy prefixes
-  HeroSection,
-  SolutionStack,
   FAQSection,
-  CTASection,
-  ProblemSection,
-  SolutionSection,
-  TestimonialsSection,
 } from '@/modules/vitrine';
-import { FeaturesSection as ModernFeaturesSection } from '@/modules/vitrine/components/sections/FeaturesSection';
-// PricingSection: keep the self-contained locale-aware version (not the generic sections/ one)
-import { PricingSection as LocalePricingSection } from '@/modules/vitrine/components/PricingSection';
+import { RmihHero } from '@/modules/vitrine/components/RmihHero';
+import { RmihWhyChoose } from '@/modules/vitrine/components/RmihWhyChoose';
+import { RmihFeaturedModules } from '@/modules/vitrine/components/RmihFeaturedModules';
+import { RmihStatsBanner } from '@/modules/vitrine/components/RmihStatsBanner';
+import { RmihFeatureDetails } from '@/modules/vitrine/components/RmihFeatureDetails';
+import { RmihGuaranteeBanner } from '@/modules/vitrine/components/RmihGuaranteeBanner';
+import { RmihImplementationFlow } from '@/modules/vitrine/components/RmihImplementationFlow';
+import { RmihCalloutBanner } from '@/modules/vitrine/components/RmihCalloutBanner';
+import { RmihFooter } from '@/modules/vitrine/components/RmihFooter';
 import { useVitrineLocale } from '@/modules/vitrine/lib/vitrine-locale';
-import { getFeatures } from '@/modules/vitrine/data/features';
 import { getFaqItems } from '@/modules/vitrine/data/faq';
-import { getTestimonials } from '@/modules/vitrine/data/testimonials';
 import { StickyMobileCTA } from '@/components/StickyMobileCTA';
-import { QuickTrialEmailForm } from '@/modules/vitrine/components/HeroSection';
-
-const STAT_ICONS = [TrendingUp, Users, Zap, Star] as const;
 
 export default function LandingPage() {
-  // Dark mode state — synced with DarkModeProvider via CSS class on root
   const { isDark, toggleDarkMode } = useDarkMode();
-  
   useScrollReveal();
-  const { locale, copy, direction } = useVitrineLocale();
-
-  const features = getFeatures(locale);
+  const { locale, direction } = useVitrineLocale();
   const faqItems = getFaqItems(locale);
-  const testimonials = getTestimonials(locale);
 
   return (
     <div
@@ -54,132 +37,59 @@ export default function LandingPage() {
       <Navbar isDark={isDark} onToggleDark={toggleDarkMode} />
 
       <main>
-        {/* ─── HERO ─── Corporate Centered (Mekari Reference Redesign) */}
-        <HeroSection
-          badge={{
-            icon: <Sparkles className="w-3.5 h-3.5" />,
-            text: copy.hero.badge,
-            label: copy.hero.badgeNew,
-          }}
-          headline={`${copy.hero.titleTop} ${copy.hero.titleBottom}`}
-          subheadline={copy.hero.subtitle}
-          ctaPrimary={{ text: copy.hero.primaryCta, href: '/signup' }}
-          ctaSecondary={{
-            text: copy.hero.secondaryCta,
-            href: '#solutions',
-          }}
-          stats={copy.hero.stats.map((s, i) => {
-            const Icon = STAT_ICONS[i % STAT_ICONS.length];
-            return {
-              ...s,
-              icon: <Icon className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
-            };
-          })}
-          animated
-          layout="centered"
+        {/* 1. Hero Section (2 Kolom: Kiri Copywriting & Pill Checklist, Kanan Real Mockup Web & Mobile) */}
+        <RmihHero
+          badge="Platform Management HR & Operasional Terlengkap"
+          headlinePrefix="Ekosistem"
+          headlineHighlight="software"
+          headlineSuffix="terpadu untuk mendukung pertumbuhan bisnis profesional"
+          subheadline="RMIH (Resources Management Integrated Human) adalah solusi lengkap untuk mengelola karyawan, absensi, operasional, dan HR bisnis Anda dalam satu platform yang mudah digunakan."
+          benefits={['Lebih Efisien', 'Lebih Terorganisir', 'Siap untuk Masa Depan']}
+          primaryCtaText="Mulai Sekarang"
+          primaryCtaHref="/signup"
+          secondaryCtaText="Lihat Demo"
+          secondaryCtaHref="#detail-fitur"
+          floatingBadgeText="Kelola bisnis Anda, lebih mudah!"
         />
 
-        {/* ─── ARSITEKTUR SOLUSI & MODUL (Dedicated Section with Breathing Space) ─── */}
-        <section id="solutions" className="py-20 bg-slate-50/70 dark:bg-slate-900/50 border-y border-slate-200/70 dark:border-slate-800/70">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <SolutionStack locale={locale} />
-          </div>
-        </section>
+        {/* 2. Mengapa Memilih RMIH? (4 Kolom Card Ikon Biru) */}
+        <RmihWhyChoose />
 
-        {/* ─── PROBLEM / SOLUTION ─── */}
-        <ProblemSection
-          badge={{ text: copy.problem.badge }}
-          title={copy.problem.title}
-          subtitle={copy.problem.subtitle}
-          items={copy.problem.items}
-        />
+        {/* 3. Fitur Unggulan (6 Card Putih Minimalis dengan Chevron) */}
+        <RmihFeaturedModules />
 
-        <SolutionSection
-          badge={{ text: copy.solution.badge }}
-          title={copy.solution.title}
-          subtitle={copy.solution.subtitle}
-          description={copy.solution.description}
-          features={copy.solution.features}
-        />
+        {/* 4. Stat Counter Ribbon (Banner Biru 4 Angka Kunci) */}
+        <RmihStatsBanner />
 
-        {/* ─── SOCIAL PROOF ─── */}
-        <TrustedBrands locale={locale} />
-        <SocialProofMetrics locale={locale} />
+        {/* 5. Detail Fitur RMIH (6 Card Berwarna dengan Checklist Rinci) */}
+        <RmihFeatureDetails />
 
-        {/* ─── PRODUCT DEMO VIDEO ─── PA2-MKT-014 */}
-        <ProductDemoVideo locale={locale} />
+        {/* 6. Paket Lengkap Garansi 1 Tahun & Support (Banner Gelap Corporate) */}
+        <RmihGuaranteeBanner />
 
-        {/* ─── FEATURES ─── Phase-3 */}
-        {/* id="fonctionnalites": PA2-MKT-013 — Footer links here via /#fonctionnalites */}
-        <ModernFeaturesSection
-          id="fonctionnalites"
-          badge={{ text: copy.features.badge }}
-          title={copy.features.title}
-          subtitle={copy.features.titleHighlight}
-          features={features.map((f) => ({
-            title: f.title,
-            description: f.description,
-            icon: <f.icon className="w-6 h-6" />,
-            gradient: f.gradient,
-            // Map flat string stats → object expected by FeatureCard
-            stats: { value: f.stats, label: f.statsLabel },
-            details: f.details,
-          }))}
-          columns={3}
-        />
+        {/* 7. Alur Implementasi (5 Langkah Berurutan 1 sampai 5) */}
+        <RmihImplementationFlow />
 
-        {/* ─── PRODUCT VISUAL ─── */}
-        <ProductScreenshots locale={locale} />
-        <MarketingReadinessSection locale={locale} />
+        {/* 8. Banner Siap Meningkatkan Efisiensi Bisnis Anda (Callout Box dengan 4 Checklist Kanan) */}
+        <RmihCalloutBanner />
 
-        {/* ─── DEMO ─── */}
-
-        {/* ─── TESTIMONIALS ─── Phase-3 */}
-        <TestimonialsSection
-          badge={{ text: copy.testimonials.badge }}
-          title={copy.testimonials.title}
-          subtitle={copy.testimonials.titleHighlight}
-          testimonials={testimonials.map((t) => ({
-            // TestimonialCardProps: quote + author (not content + name)
-            quote: t.content,
-            author: t.name,
-            role: t.role,
-            company: t.company,
-            avatar: t.avatar,
-            rating: t.rating,
-          }))}
-          columns={3}
-        />
-
-        {/* ─── PRICING ─── locale-aware self-contained component */}
-        <LocalePricingSection />
-
-        {/* ─── FAQ ─── Phase-3 */}
+        {/* 9. FAQ Section (Pertanyaan yang Sering Diajukan) */}
         <FAQSection
-          badge={{ text: copy.faq.badge }}
-          title={copy.faq.title}
-          subtitle={copy.faq.titleHighlight}
+          badge={{ text: 'FAQ' }}
+          title="Pertanyaan yang Sering Diajukan"
+          subtitle="Temukan jawaban untuk pertanyaan yang paling umum."
           items={faqItems.map((item, i) => ({
             id: `faq-${i}`,
             question: item.question,
             answer: item.answer,
           }))}
         />
-
-        {/* ─── CTA FINAL ─── Phase-3 */}
-        <CTASection
-          badge={{ text: copy.cta.badge }}
-          headline={copy.cta.title}
-          subheadline={copy.cta.subtitle}
-          ctaPrimary={{ text: copy.cta.primary, href: '/signup' }}
-          ctaSecondary={{ text: copy.cta.secondary, href: '/demo' }}
-          background="gradient"
-        />
       </main>
 
-      <Footer />
+      {/* Modern Minimalist RMIH Footer */}
+      <RmihFooter />
 
-      {/* ─── STICKY MOBILE CTA ─── visible on mobile after 400px scroll */}
+      {/* Sticky Mobile CTA */}
       <StickyMobileCTA locale={locale} />
     </div>
   );
