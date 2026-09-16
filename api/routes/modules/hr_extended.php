@@ -1,0 +1,215 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Routes RH etendues — Modules congés avancés, contrats, recrutement,
+ * formation, prêts, frais, organigramme, rapports, webhooks, audit.
+ *
+ * Namespaces migrés vers App\Modules\* (nouvelle architecture modulaire).
+ * RBAC:
+ *   - /me/* routes: all authenticated employees
+ *   - Admin routes (policies, contracts CRUD, recruitment, webhooks, audit): managers
+ *   - Reports, audit and predictions: all managers; controller policies still apply where relevant
+ *   - Org chart: all authenticated (read-only)
+ *   - Approval actions: context-dependent (manager for workflows, all for own approvals)
+ */
+
+// ── Modules migrés ─────────────────────────────────────────────────────────────
+use App\Modules\Attendance\Interfaces\Api\V1\Controllers\ApprovalController;
+use App\Modules\Billing\Interfaces\Api\V1\Controllers\WebhookController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\AdvancedReportController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\AuditLogController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\ContractController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\EmployeeDocumentController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\HrReportController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\OrgChartController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\PredictionController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\SelfServiceController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\TrainingController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\EmployeeLoanController;
+use App\Modules\Planning\Interfaces\Api\V1\Controllers\LeavePolicyController;
+use App\Modules\Recruitment\Interfaces\Api\V1\Controllers\JobPostingActionController;
+use App\Modules\Recruitment\Interfaces\Api\V1\Controllers\RecruitmentController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['throttle:api', 'auth:sanctum', 'token.refresh', 'tenant', 'throttle:api-plan'])->group(function (): void {
+
+    // ── Self-Service (all employees) ─────────────────────────────────────
+    Route::get('/me/leave-balances', [LeavePolicyController::class, 'myBalances']);
+    Route::get('/me/contracts', [ContractController::class, 'myContracts']);
+    Route::get('/me/contract', [ContractController::class, 'myActiveContract']);
+    Route::get('/me/career', [SelfServiceController::class, 'myCareer']);
+    Route::get('/me/documents', [EmployeeDocumentController::class, 'myDocuments']);
+    Route::get('/me/trainings', [SelfServiceController::class, 'myTrainings']);
+    // Alias compatible client mobile employee (TrainingEnrollment shape enrichie).
+    Route::get('/me/training-enrollments', [SelfServiceController::class, 'myTrainings']);
+    Route::post('/me/trainings/{sessionId}/enroll', [SelfServiceController::class, 'selfEnroll'])->whereNumber('sessionId');
+    Route::get('/me/loans', [SelfServiceController::class, 'myLoans']);
+    Route::get('/me/loans/{loanId}/repayments', [SelfServiceController::class, 'myLoanRepayments'])->whereNumber('loanId');
+
+    // ── Org Chart (all employees, read-only) ─────────────────────────────
+    Route::get('/org-chart', [OrgChartController::class, 'index']);
+    Route::get('/org-chart/{employee}/subordinates', [OrgChartController::class, 'subordinates'])->whereNumber('employee');
+    Route::get('/org-chart/{employee}/manager-chain', [OrgChartController::class, 'managerChain'])->whereNumber('employee');
+
+    // ── Approval actions ─────────────────────────────────────────────────
+    Route::get('/approvals/pending', [ApprovalController::class, 'pending']);
+    Route::post('/approvals/{approvalRequest}/approve', [ApprovalController::class, 'approve']);
+    Route::post('/approvals/{approvalRequest}/reject', [ApprovalController::class, 'reject']);
+    Route::get('/approvals/history', [ApprovalController::class, 'history']);
+
+    // ── Training read (all employees can see courses) ────────────────────
+    Route::get('/training/courses', [TrainingController::class, 'indexCourses']);
+    Route::get('/training/courses/{trainingCourse}', [TrainingController::class, 'showCourse']);
+    Route::get('/training/courses/{trainingCourse}/sessions', [TrainingController::class, 'indexSessions']);
+    Route::post('/training/sessions/{trainingSession}/enroll', [TrainingController::class, 'enroll']);
+
+    // ── Loan read (employees can see their loans) ────────────────────────
+    Route::get('/loans', [EmployeeLoanController::class, 'index']);
+    Route::post('/loans', [EmployeeLoanController::class, 'store']);
+    Route::get('/loans/{employeeLoan}', [EmployeeLoanController::class, 'show']);
+
+    // ══════════════════════════════════════════════════════════════════════
+    //   MANAGER-ONLY ROUTES (api.manager middleware)
+    // ══════════════════════════════════════════════════════════════════════
+    Route::middleware('api.manager')->group(function (): void {
+
+        // ── Leave Policies (principal, rh) ───────────────────────────────
+        Route::get('/leave-policies', [LeavePolicyController::class, 'index']);
+        Route::post('/leave-policies', [LeavePolicyController::class, 'store']);
+        Route::get('/leave-policies/{leavePolicy}', [LeavePolicyController::class, 'show']);
+        Route::put('/leave-policies/{leavePolicy}', [LeavePolicyController::class, 'update']);
+        Route::delete('/leave-policies/{leavePolicy}', [LeavePolicyController::class, 'destroy']);
+        Route::get('/leave-balances', [LeavePolicyController::class, 'balances']);
+        Route::get('/leave-accruals', [LeavePolicyController::class, 'accruals']);
+        Route::post('/leave-accruals', [LeavePolicyController::class, 'storeAccrual']);
+
+        // ── Contracts (CRUD, activate/suspend/terminate) ─────────────────
+        Route::get('/contracts', [ContractController::class, 'index']);
+        Route::post('/contracts', [ContractController::class, 'store']);
+        Route::get('/contracts/expiring', [ContractController::class, 'expiring']);
+        // Issue #5260 — modèles légaux par pays + signature explicite.
+        Route::get('/contracts/templates', [ContractController::class, 'templates']);
+        Route::post('/contracts/{contract}/sign', [ContractController::class, 'sign'])->whereNumber('contract');
+        Route::get('/contracts/{contract}', [ContractController::class, 'show']);
+        Route::put('/contracts/{contract}', [ContractController::class, 'update']);
+        Route::post('/contracts/{contract}/activate', [ContractController::class, 'activate']);
+        Route::post('/contracts/{contract}/suspend', [ContractController::class, 'suspend']);
+        Route::post('/contracts/{contract}/terminate', [ContractController::class, 'terminate']);
+        Route::post('/contracts/{contract}/renew', [ContractController::class, 'renew']);
+        Route::get('/contracts/{contract}/amendments', [ContractController::class, 'amendments']);
+        Route::post('/contracts/{contract}/amendments', [ContractController::class, 'storeAmendment']);
+
+        // ── Employee documents — checklist dossier employé (#5326, G3) ─────
+        Route::get('/employee-documents', [EmployeeDocumentController::class, 'index']);
+        Route::post('/employee-documents', [EmployeeDocumentController::class, 'store']);
+        Route::get('/employee-documents/{employeeDocument}', [EmployeeDocumentController::class, 'show'])->whereNumber('employeeDocument');
+        Route::put('/employee-documents/{employeeDocument}', [EmployeeDocumentController::class, 'update'])->whereNumber('employeeDocument');
+        Route::patch('/employee-documents/{employeeDocument}', [EmployeeDocumentController::class, 'update'])->whereNumber('employeeDocument');
+        Route::delete('/employee-documents/{employeeDocument}', [EmployeeDocumentController::class, 'destroy'])->whereNumber('employeeDocument');
+        // ── Recruitment / ATS ────────────────────────────────────────────
+        Route::get('/recruitment/jobs', [RecruitmentController::class, 'indexJobs']);
+        Route::post('/recruitment/jobs', [RecruitmentController::class, 'storeJob']);
+        Route::get('/recruitment/jobs/{jobPosting}', [RecruitmentController::class, 'showJob']);
+        Route::put('/recruitment/jobs/{jobPosting}', [RecruitmentController::class, 'updateJob']);
+        Route::get('/recruitment/jobs/{jobPosting}/applicants', [RecruitmentController::class, 'indexApplicants']);
+        Route::post('/recruitment/jobs/{jobPosting}/applicants', [RecruitmentController::class, 'storeApplicant']);
+        Route::put('/recruitment/applicants/{applicant}', [RecruitmentController::class, 'updateApplicant']);
+        Route::post('/recruitment/applicants/{applicant}/interviews', [RecruitmentController::class, 'storeInterview']);
+        Route::put('/recruitment/interviews/{interview}', [RecruitmentController::class, 'updateInterview']);
+
+        // Issue #5583 : noms de paramètres alignés sur le reste du module
+        // ({jobPosting}/{applicant}/{interview}) — le SDK généré doit
+        // expédier les mêmes noms que le routeur.
+        Route::post('/recruitment/jobs/{jobPosting}/publish', [JobPostingActionController::class, 'publish'])->whereNumber('jobPosting');
+        Route::post('/recruitment/jobs/{jobPosting}/close', [JobPostingActionController::class, 'close'])->whereNumber('jobPosting');
+        Route::delete('/recruitment/jobs/{jobPosting}', [JobPostingActionController::class, 'destroy'])->whereNumber('jobPosting');
+        Route::get('/recruitment/applicants/{applicant}', [JobPostingActionController::class, 'showApplicant'])->whereNumber('applicant');
+        Route::patch('/recruitment/applicants/{applicant}/status', [JobPostingActionController::class, 'updateApplicantStatus'])->whereNumber('applicant');
+        Route::delete('/recruitment/applicants/{applicant}', [JobPostingActionController::class, 'destroyApplicant'])->whereNumber('applicant');
+        Route::patch('/recruitment/interviews/{interview}/feedback', [JobPostingActionController::class, 'interviewFeedback'])->whereNumber('interview');
+        Route::delete('/recruitment/interviews/{interview}', [JobPostingActionController::class, 'destroyInterview'])->whereNumber('interview');
+
+        // ── Training management ──────────────────────────────────────────
+        // Issue #2225 : vues dashboard admin (listes globales sessions/inscriptions).
+        Route::get('/training/sessions', [TrainingController::class, 'indexAllSessions']);
+        Route::get('/training/enrollments', [TrainingController::class, 'indexEnrollments']);
+        Route::post('/training/courses', [TrainingController::class, 'storeCourse']);
+        Route::put('/training/courses/{trainingCourse}', [TrainingController::class, 'updateCourse']);
+        Route::post('/training/courses/{trainingCourse}/sessions', [TrainingController::class, 'storeSession']);
+        Route::put('/training/sessions/{trainingSession}', [TrainingController::class, 'updateSession']);
+        Route::put('/training/enrollments/{trainingEnrollment}', [TrainingController::class, 'updateEnrollment']);
+        // #4933 : suppressions formation (cours/session/inscription).
+        Route::delete('/training/courses/{trainingCourse}', [TrainingController::class, 'destroyCourse']);
+        Route::delete('/training/sessions/{trainingSession}', [TrainingController::class, 'destroySession']);
+        Route::delete('/training/enrollments/{trainingEnrollment}', [TrainingController::class, 'destroyEnrollment']);
+
+        // ── Loan management ──────────────────────────────────────────────
+        Route::post('/loans/{employeeLoan}/approve', [EmployeeLoanController::class, 'approve']);
+        Route::put('/loans/{employeeLoan}/approve', [EmployeeLoanController::class, 'approve']); // déprécié #4930
+        Route::post('/loans/{employeeLoan}/disburse', [EmployeeLoanController::class, 'disburse']);
+        Route::put('/loans/{employeeLoan}/disburse', [EmployeeLoanController::class, 'disburse']); // déprécié #4930
+
+        // ── Approval Workflows (principal, rh) ───────────────────────────
+        Route::get('/approval-workflows', [ApprovalController::class, 'indexWorkflows']);
+        Route::post('/approval-workflows', [ApprovalController::class, 'storeWorkflow']);
+        Route::put('/approval-workflows/{approvalWorkflow}', [ApprovalController::class, 'updateWorkflow']);
+        Route::delete('/approval-workflows/{approvalWorkflow}', [ApprovalController::class, 'destroyWorkflow']);
+    });
+
+    // Contract PDF downloads are self-service: the controller enforces
+    // same-tenant access and permits the contract owner or a manager.
+    Route::get('/contracts/{contract}/generate-pdf', [ContractController::class, 'generatePdf']);
+    // Alias exposed to web/mobile clients (issue #2226) — the Web App
+    // historically called GET /contracts/{id}/pdf before /generate-pdf
+    // existed; keep both working for backward compatibility.
+    Route::get('/contracts/{contract}/pdf', [ContractController::class, 'generatePdf']);
+
+    // ══════════════════════════════════════════════════════════════════════
+    //   ADMIN ROUTES (all managers; controller policies still apply)
+    // ══════════════════════════════════════════════════════════════════════
+    Route::middleware('api.manager')->group(function (): void {
+
+        // ── HR Reports ───────────────────────────────────────────────────
+        Route::prefix('reports')->group(function (): void {
+            Route::get('/headcount', [HrReportController::class, 'headcount']);
+            Route::get('/turnover', [HrReportController::class, 'turnover']);
+            Route::get('/absenteeism', [HrReportController::class, 'absenteeism']);
+            Route::get('/payroll-summary', [HrReportController::class, 'payrollSummary']);
+            Route::get('/overtime', [HrReportController::class, 'overtime']);
+
+            // Advanced Reports
+            Route::get('/recruitment-pipeline', [AdvancedReportController::class, 'recruitmentPipeline']);
+            Route::get('/training-completion', [AdvancedReportController::class, 'trainingCompletion']);
+            Route::get('/loan-summary', [AdvancedReportController::class, 'loanSummary']);
+            Route::get('/demographics', [AdvancedReportController::class, 'demographicBreakdown']);
+            Route::get('/cost-analysis', [AdvancedReportController::class, 'costAnalysis']);
+        });
+
+        // ── Webhooks (module Billing gère les endpoints) ─────────────────
+        Route::get('/webhooks/events', [WebhookController::class, 'events']);
+        // Définition canonique unique de POST /webhooks/{endpoint}/test
+        // (QA 2026-08-15, #2654 : un doublon était déclaré plus bas).
+        Route::post('/webhooks/{webhookEndpoint}/test', [WebhookController::class, 'test']);
+        Route::get('/webhooks', [WebhookController::class, 'index']);
+        Route::post('/webhooks', [WebhookController::class, 'store']);
+        Route::get('/webhooks/{webhookEndpoint}', [WebhookController::class, 'show']);
+        Route::put('/webhooks/{webhookEndpoint}', [WebhookController::class, 'update']);
+        Route::delete('/webhooks/{webhookEndpoint}', [WebhookController::class, 'destroy']);
+        Route::get('/webhooks/{webhookEndpoint}/dead-letters', [WebhookController::class, 'deadLetters']);
+        Route::post('/webhooks/{webhookEndpoint}/dead-letters/{delivery}/replay', [WebhookController::class, 'replayDeadLetter']);
+
+        // ── Audit Trail
+        Route::get('/audit-logs', [AuditLogController::class, 'index']);
+        Route::get('/audit-logs/export-csv', [AuditLogController::class, 'exportCsv']);
+        Route::get('/audit-logs/{auditLog}', [AuditLogController::class, 'show']);
+
+        // ── IA Predictions
+        Route::prefix('predictions')->group(function (): void {
+            Route::get('/turnover', [PredictionController::class, 'turnover']);
+            Route::get('/absenteeism', [PredictionController::class, 'absenteeism']);
+            Route::get('/notifications', [PredictionController::class, 'proactiveNotifications']);
+        });
+    });
+});

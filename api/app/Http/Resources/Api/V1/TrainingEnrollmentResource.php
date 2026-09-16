@@ -1,0 +1,35 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Resources\Api\V1;
+
+use App\Modules\HR\Domain\Models\TrainingEnrollment;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+/**
+ * @mixin TrainingEnrollment
+ */
+class TrainingEnrollmentResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'training_session_id' => $this->training_session_id,
+            'employee_id' => $this->employee_id,
+            'status' => $this->status,
+            'score' => $this->score,
+            'feedback' => $this->feedback,
+            'completed_at' => $this->completed_at?->toIso8601String(),
+            // Champs additifs compatibles client mobile (TrainingEnrollment.fromJson)
+            // — session.course chargée par SelfServiceController@myTrainings / TrainingController@allEnrollments.
+            'course_title' => $this->whenLoaded('session', fn (): ?string => $this->session?->course?->title),
+            'session_date' => $this->whenLoaded('session', fn (): ?string => $this->session?->start_date?->toDateString()),
+            'progress' => $this->whenLoaded('session', fn (): int => (int) round((float) ($this->score ?? 0))),
+            'employee' => $this->whenLoaded('employee'),
+            'created_at' => $this->created_at?->toIso8601String(),
+        ];
+    }
+}

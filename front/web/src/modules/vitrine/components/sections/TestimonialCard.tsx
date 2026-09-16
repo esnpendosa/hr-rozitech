@@ -1,0 +1,133 @@
+'use client';
+
+import { motion } from 'framer-motion';
+import { Star } from 'lucide-react';
+import Image from 'next/image';
+import { TESTIMONIALS_ARE_DEMO } from '@/modules/vitrine/data/testimonials';
+import {
+  useVitrineLocale,
+  getIllustrativeExampleLabel,
+  getIllustrativeExampleSuffix,
+} from '@/modules/vitrine/lib/vitrine-locale';
+
+export interface TestimonialCardProps {
+  quote: string;
+  author: string;
+  role: string;
+  company: string;
+  /**
+   * Optional real photo path. PA2-MKT-010: the previous default values
+   * (`/avatars/avatar-1.webp` … `avatar-4.webp`) never existed on disk,
+   * so every testimonial card rendered a broken image icon in production.
+   * When no real photo is supplied (the common case today), the card
+   * falls back to an initials avatar instead of attempting to load a
+   * file that may not exist — see `getInitials()` below.
+   */
+  avatar?: string;
+  rating: number;
+  index?: number;
+  /**
+   * #3246 — preuve sociale honnête : quand la vitrine ne contient que des
+   * témoignages de démo (TESTIMONIALS_ARE_DEMO), la carte affiche un badge
+   * « Exemple illustratif » et l'attribution est suffixée « (exemple) ».
+   * Par défaut, suit le flag global — aucun client payant à ce jour
+   * (PILOTAGE.md), donc tout témoignage non marqué serait trompeur.
+   */
+  demo?: boolean;
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+}
+
+export function TestimonialCard({
+  quote,
+  author,
+  role,
+  company,
+  avatar,
+  rating,
+  index = 0,
+  demo = TESTIMONIALS_ARE_DEMO,
+}: TestimonialCardProps) {
+  const { locale } = useVitrineLocale();
+  const exampleLabel = getIllustrativeExampleLabel(locale);
+  const exampleSuffix = getIllustrativeExampleSuffix(locale);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 40 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '-80px' }}
+      transition={{ duration: 0.6, delay: index * 0.1, ease: [0.22, 1, 0.36, 1] }}
+      whileHover={{ y: -8, transition: { duration: 0.25 } }}
+      className="group relative"
+    >
+      {/* Glow effect */}
+      <div className="absolute -inset-px rounded-3xl bg-gradient-to-r from-blue-600 to-indigo-600 opacity-0 group-hover:opacity-10 blur-xl transition-opacity duration-500" />
+
+      <div className="relative bg-white dark:bg-slate-900/80 backdrop-blur-sm rounded-3xl border border-slate-200/80 dark:border-slate-800/80 p-8 transition-all duration-300 group-hover:border-blue-200/50 dark:group-hover:border-blue-800/50 group-hover:shadow-xl">
+        {demo && (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-100/70 dark:bg-amber-500/10 border border-amber-300/50 dark:border-amber-500/30 text-amber-700 dark:text-amber-400 text-[11px] font-semibold tracking-wide uppercase mb-5">
+            {exampleLabel}
+          </span>
+        )}
+
+        {/* Rating */}
+        <div className="flex gap-1 mb-6">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Star
+              key={i}
+              className={`w-5 h-5 ${i < rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300 dark:text-slate-400'}`}
+            />
+          ))}
+        </div>
+
+        {/* Quote */}
+        <p className="text-slate-700 dark:text-slate-300 text-lg leading-relaxed mb-8 font-light italic">
+          &quot;{quote}&quot;
+        </p>
+
+        {/* Author */}
+        <div className="flex items-center gap-4">
+          {avatar ? (
+            <div className="relative w-12 h-12 rounded-full overflow-hidden flex-shrink-0">
+              <Image
+                src={avatar}
+                alt={author}
+                fill
+                sizes="48px"
+                className="object-cover"
+              />
+            </div>
+          ) : (
+            <div
+              className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-black flex-shrink-0"
+              aria-hidden="true"
+            >
+              {getInitials(author)}
+            </div>
+          )}
+          <div>
+            <div className="font-bold text-slate-900 dark:text-white">
+              {author}
+              {demo && (
+                <span className="ml-1.5 font-normal text-slate-500 dark:text-slate-400">
+                  {exampleSuffix}
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-slate-500 dark:text-slate-400">
+              {role} at {company}
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}

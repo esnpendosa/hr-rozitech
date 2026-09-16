@@ -1,0 +1,92 @@
+# CODEOWNERS — Leopardo HR
+# Each line defines the owner(s) for a path pattern.
+# Owners are automatically requested as reviewers on PRs.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global fallback
+*                           @kitokoh
+
+# Backend (Laravel API)
+/api/                       @kitokoh
+
+# Bounded contexts — lignes documentaires alignées sur le registre
+# dev-hub/governance/bounded-context-registry.json (MAT-001 / issue #5859),
+# gardées cohérentes par dev-hub/tools/check-bounded-context-registry.sh.
+/api/app/Modules/Platform/  @kitokoh
+/api/app/Modules/Onboarding/ @kitokoh
+/api/app/Core/Feature/      @kitokoh
+/api/app/Core/Tenant/       @kitokoh
+/api/app/Core/Auth/         @kitokoh
+/api/app/Modules/HR/        @kitokoh
+/api/app/Modules/Attendance/ @kitokoh
+/api/app/Modules/Planning/  @kitokoh
+/api/app/Modules/Absence/   @kitokoh
+/api/app/Modules/Payroll/   @kitokoh
+/api/app/Modules/Accounting/ @kitokoh
+/api/app/Modules/Expense/   @kitokoh
+/api/app/Modules/Recruitment/ @kitokoh
+/api/app/Modules/EduManager/ @kitokoh
+/api/app/Modules/CRM/       @kitokoh
+/api/app/Modules/TravelAgency/ @kitokoh
+/api/app/Modules/Marketing/ @kitokoh
+/api/app/Modules/Growth/    @kitokoh
+/api/app/Modules/Notification/ @kitokoh
+/api/app/Modules/RestaurantManager/ @kitokoh
+/api/app/Modules/Delivery/    @kitokoh
+/api/app/Contracts/Communication/ @kitokoh
+/api/app/Jobs/              @kitokoh
+/api/app/Contracts/Queue/   @kitokoh
+/api/app/Modules/EdgeSync/  @kitokoh
+/api/app/Modules/Cameras/   @kitokoh
+/api/app/Modules/Catalog/   @kitokoh
+/api/app/Modules/Cabinet/   @kitokoh
+/api/app/Modules/Billing/   @kitokoh
+/api/app/Modules/Fleet/     @kitokoh
+/api/app/Modules/Delivery/  @kitokoh
+/api/app/AI/                @kitokoh
+/api/app/Core/AI/           @kitokoh
+
+# Frontend web (Next.js)
+/front/web/                 @kitokoh
+
+# Admin dashboard (Vue.js)
+/front/admin-dashboard/     @kitokoh
+
+# Mobile apps (Flutter)
+/front/mobile_apps/         @kitokoh
+
+# Shared i18n
+/shared/i18n/               @kitokoh
+
+# CI/CD workflows — require explicit approval
+/.github/workflows/         @kitokoh
+
+# OpenAPI spec (root spec + generated mirror)
+/api/openapi.yaml            @kitokoh
+/dev-hub/openapi/            @kitokoh
+
+# Security-sensitive paths
+/api/app/Http/Middleware/   @kitokoh
+/api/app/Policies/          @kitokoh
+/api/config/                @kitokoh
+
+# CRM client module (bounded context tenant, issue #5745 / ADR-CRM-001)
+
+# Audit #1712 + issue #1730 : @kitokoh est seul propriétaire humain aujourd'hui.
+# ÉTAT RÉEL de la protection (vérifié via API GitHub le 2026-09-05) :
+# **0 approval requis** (`required_pull_request_reviews` absent), mais
+# `enforce_admins: true` et 5 checks requis (Backend Coverage, PHPStan Strict,
+# Module Structure Validator, Frontend ESLint+TS, actionlint) — les entrées
+# CODEOWNERS sont **documentaires** (`require_code_owner_reviews: false`).
+# La procédure de revue croisée (issue #1730) reste la règle volontaire :
+#   1. L'auteur auto-revues sa PR avec la checklist .github/PULL_REQUEST_TEMPLATE.md ;
+#   2. Pour les chemins sensibles (workflows, middleware, configs, seeders,
+#      openapi.yaml), la revue requiert l'approbation d'un reviewer alternatif
+#      qualifié (contributeur/mainteneur avec historique sur le chemin, ou audit
+#      croisé tracé dans la PR) — cf. CONTRIBUTING.md « Revue croisée » ;
+#   3. Dès qu'un second mainteneur humain rejoint, l'ajouter ici par chemin
+#      (ex. @second-maintainer) ET activer `require_code_owner_reviews` pour
+#      répartir les révisions obligatoires.
+/api/app/Modules/FuelStation/ @kitokoh
+/api/app/Modules/Restaurant/ @kitokoh
+/api/app/Modules/Showcase/  @kitokoh

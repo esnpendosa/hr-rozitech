@@ -1,0 +1,635 @@
+<?php
+
+namespace Tests\Feature\Absences;
+
+use App\Modules\Planning\Domain\Models\Absence;
+use App\Modules\Planning\Domain\Models\AbsenceType;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Modules\Planning\Domain\Models\Schedule;
+use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\Sanctum;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class AbsenceIndexTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    public function test_employee_sees_only_own_absences(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $employeeA = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employeeA@a.test',
+        ]);
+        $employeeA->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employeeA->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $employeeB = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employeeB@a.test',
+        ]);
+        $employeeB->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employeeB->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create absence for employee A
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employeeA->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-10',
+            'end_date' => '2026-04-12',
+            'days_count' => 3,
+            'status' => 'pending',
+            'reason' => 'Vacances',
+        ]);
+
+        // Create absence for employee B
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employeeB->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-15',
+            'end_date' => '2026-04-17',
+            'days_count' => 3,
+            'status' => 'pending',
+            'reason' => 'Congé maladie',
+        ]);
+
+        Sanctum::actingAs($employeeA);
+
+        $response = $this->getJson('/api/v1/absences');
+
+        $response->assertStatus(200);
+        $response->assertJsonCount(1, 'data');
+        $response->assertJsonPath('data.0.employee_id', $employeeA->id);
+        $response->assertJsonPath('data.0.reason', 'Vacances');
+    }
+
+    public function test_manager_sees_all_company_absences(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $manager = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'manager@a.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'manager_role' => 'principal',
+            'status' => 'active',
+        ])->save();
+
+        $employee1 = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee1@a.test',
+        ]);
+        $employee1->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee1->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $employee2 = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee2@a.test',
+        ]);
+        $employee2->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee2->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create absences for both employees
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee1->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-10',
+            'end_date' => '2026-04-12',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee2->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-15',
+            'end_date' => '2026-04-17',
+            'days_count' => 3,
+            'status' => 'approved',
+            'approved_by' => $manager->id,
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/absences');
+
+        $response->assertStatus(200);
+        $response->assertJsonCount(2, 'data');
+    }
+
+    public function test_manager_can_filter_by_employee_id(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $manager = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'manager@a.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'manager_role' => 'principal',
+            'status' => 'active',
+        ])->save();
+
+        $employee1 = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee1@a.test',
+        ]);
+        $employee1->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee1->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $employee2 = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee2@a.test',
+        ]);
+        $employee2->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee2->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create absences for both employees
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee1->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-10',
+            'end_date' => '2026-04-12',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee2->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-15',
+            'end_date' => '2026-04-17',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/absences?employee_id='.$employee1->id);
+
+        $response->assertStatus(200);
+        $response->assertJsonCount(1, 'data');
+        $response->assertJsonPath('data.0.employee_id', $employee1->id);
+    }
+
+    public function test_manager_cannot_filter_by_another_tenant_employee_id(): void
+    {
+        $companyA = Company::factory()->create();
+        $companyB = Company::factory()->create();
+        $managerA = Employee::factory()->create(['company_id' => $companyA->id, 'role' => 'manager', 'manager_role' => 'principal']);
+        $employeeB = Employee::factory()->create(['company_id' => $companyB->id]);
+
+        Sanctum::actingAs($managerA);
+
+        $response = $this->getJson("/api/v1/absences?employee_id={$employeeB->id}");
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['employee_id']);
+    }
+
+    public function test_filter_by_status(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $manager = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'manager@a.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'manager_role' => 'principal',
+            'status' => 'active',
+        ])->save();
+
+        $employee = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee@a.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create absences with different statuses
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-10',
+            'end_date' => '2026-04-12',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-15',
+            'end_date' => '2026-04-17',
+            'days_count' => 3,
+            'status' => 'approved',
+            'approved_by' => $manager->id,
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/absences?status=pending');
+
+        $response->assertStatus(200);
+        $response->assertJsonCount(1, 'data');
+        $response->assertJsonPath('data.0.status', 'pending');
+    }
+
+    public function test_filter_by_month_year(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $manager = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'manager@a.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'manager_role' => 'principal',
+            'status' => 'active',
+        ])->save();
+
+        $employee = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee@a.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create absence in April 2026
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-04-10',
+            'end_date' => '2026-04-12',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        // Create absence in May 2026
+        Absence::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'absence_type_id' => $absenceType->id,
+            'start_date' => '2026-05-15',
+            'end_date' => '2026-05-17',
+            'days_count' => 3,
+            'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/absences?month=4&year=2026');
+
+        $response->assertStatus(200);
+        $response->assertJsonCount(1, 'data');
+        $response->assertJsonPath('data.0.start_date', '2026-04-10');
+    }
+
+    public function test_pagination_meta_present(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $absenceType = AbsenceType::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Congé payé',
+            'code' => 'CP',
+            'is_paid' => true,
+            'deducts_leave' => true,
+            'requires_proof' => false,
+        ]);
+
+        $employee = new Employee([
+            'schedule_id' => $schedule->id,
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee@a.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        // Create multiple absences
+        for ($i = 1; $i <= 5; $i++) {
+            Absence::query()->create([
+                'company_id' => $company->id,
+                'employee_id' => $employee->id,
+                'absence_type_id' => $absenceType->id,
+                'start_date' => '2026-04-'.str_pad((string) ($i * 2), 2, '0', STR_PAD_LEFT),
+                'end_date' => '2026-04-'.str_pad((string) ($i * 2 + 1), 2, '0', STR_PAD_LEFT),
+                'days_count' => 2,
+                'status' => 'pending',
+            ]);
+        }
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/absences?per_page=3');
+
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'data',
+            'meta' => [
+                'current_page',
+                'per_page',
+                'total',
+            ],
+        ]);
+        $response->assertJsonPath('meta.per_page', 3);
+        $response->assertJsonPath('meta.total', 5);
+        $response->assertJsonCount(3, 'data');
+    }
+
+    public function test_unauthenticated_returns_401(): void
+    {
+        $response = $this->getJson('/api/v1/absences');
+
+        $response->assertStatus(401);
+    }
+}
+

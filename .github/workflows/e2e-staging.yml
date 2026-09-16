@@ -1,0 +1,400 @@
+name: E2E - Playwright Prod Smoke
+
+# ⚠️ #3906 : « staging » visait en réalité la PRODUCTION (URLs par défaut =
+# Render prod, admin pages.dev prod, vitrine vercel prod). Aucun environnement
+# de staging réel n'existe (#1485) — ce workflow est un **prod smoke test**.
+# Renommé en « E2E - Playwright Prod Smoke » pour être honnête ; provisionner
+# un vrai staging (vars.STAGING_API_URL) permettra de repasser en staging.
+on:
+  workflow_dispatch:
+    inputs:
+      staging_url:
+        description: "API/admin base URL to test (défaut = PRODUCTION)"
+        required: false
+        default: ""
+      web_staging_url:
+        description: "Web vitrine base URL to test (défaut = PRODUCTION)"
+        required: false
+        default: ""
+      demo_auth_smoke:
+        description: "Run real demo auth smoke with production/demo credentials"
+        required: false
+        default: "false"
+  workflow_run:
+    workflows: ["Deploy - Leopardo RH"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEFAULT_STAGING_URL: ${{ vars.DEV_API_BASE_URL }}
+  DEFAULT_ADMIN_STAGING_URL: ${{ vars.DEV_ADMIN_URL }}
+  DEFAULT_WEB_STAGING_URL: ${{ vars.DEV_WEB_URL }}
+
+concurrency:
+  # Issue #2131 : groupe par SHA du déploiement déclencheur (et non par ref) —
+  # avec `ref` (refs/heads/main), chaque nouveau merge annulait le run e2e du
+  # merge précédent (cascade de cancels à chaque push). Par SHA : un seul run
+  # par déploiement ; les runs de commits différents ne se marchent pas dessus.
+  # cancel-in-progress:true conserve la dédup d'un même déploiement (rerun).
+  # Le workflow est déclenché par workflow_run/dispatch, pas par pull_request :
+  # tester github.event_name == pull_request laissait donc les doublons s'empiler.
+  group: e2e-staging-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  should-run:
+    # #5032 : un parent CANCELLED/skipped (déploiement supersédé par un push
+    # plus récent) ne doit pas consommer de runner juste pour laisser le
+    # deploy-gate le dire. On ne filtre QUE ces conclusions : un parent failed
+    # reste traité (le gate vérifie deploy-api précisément — un échec mobile
+    # ne doit pas bloquer le smoke API).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' }}
+    timeout-minutes: 45
+    name: Check deployment status
+    runs-on: ubuntu-latest
+    outputs:
+      run_e2e: ${{ steps.gate.outputs.result }}
+    steps:
+      # Issue #4720 : plus de fallback silencieux vers un hôte legacy — les URLs
+      # doivent être positionnées en variables du repo, sinon E2E échoue
+      # explicitement au lieu de tester un hôte mort.
+      - name: Guard production URLs (fail-closed, #4720)
+        if: ${{ !vars.DEV_API_BASE_URL || !vars.DEV_ADMIN_URL || !vars.DEV_WEB_URL }}
+        run: |
+          echo "::error::DEV_API_BASE_URL / DEV_ADMIN_URL / DEV_WEB_URL must be set (silent fallbacks removed, issue #4720)."
+          exit 1
+      # Audit §4.2 / Plan P3: previously gated on the parent "Deploy - Leopardo RH"
+      # workflow_run's overall conclusion, which also depends on the
+      # distribute-mobile job (Flutter/Firebase). A broken mobile build could
+      # mark the whole workflow failed and skip these API/admin/web E2E smoke
+      # tests even when the API deploy itself succeeded. This now checks the
+      # specific `deploy-api` job's conclusion via the Checks API, matching
+      # the level of specificity deploy-main.yml already uses for its own
+      # gating, and the same approach applied to owasp-zap.yml.
+      # Local actions are unavailable until the repository is checked out.
+      - name: Checkout repository for local deploy gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          lfs: false
+
+      - name: Determine if E2E should run
+        id: gate
+        uses: ./.github/actions/deploy-gate
+        with:
+          output_name: run_e2e
+
+      - name: API endpoint smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}"
+          BASE="${BASE%/}"
+          [[ "${BASE}" == */api/v1 ]] || BASE="${BASE}/api/v1"
+          FAILED=0
+
+          test_endpoint() {
+            local name="$1"
+            local url="$2"
+            local expected_status="${3:-200}"
+            local max_attempts="${SMOKE_MAX_ATTEMPTS:-4}"
+            local delay=2
+            local attempt=1
+            local status="000"
+            echo -n "Testing ${name}... "
+
+            while true; do
+              status=$(curl -s -H 'Accept: application/json' -o /dev/null -w '%{http_code}' --max-time 20 "${url}" || echo "000")
+              if [[ "${status}" == "${expected_status}" ]]; then
+                break
+              fi
+              # #7317 : on rejoue UNIQUEMENT une reponse transitoire — le
+              # throttling de l'API renvoie 429 quand plusieurs runners
+              # interrogent la prod en meme temps (famine de runners), et un
+              # 502/503/504/000 est une indisponibilite passagere. Une reponse
+              # franche (ex. 500 attendu 200) echoue immediatement : on ne
+              # masque JAMAIS une vraie panne derriere un retry.
+              case "${status}" in
+                429|502|503|504|000) ;;
+                *) break ;;
+              esac
+              if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+                break
+              fi
+              printf 'transient %s, retry %s/%s in %ss... ' "${status}" "${attempt}" "${max_attempts}" "${delay}"
+              sleep "${delay}"
+              delay=$(( delay * 2 ))
+              attempt=$(( attempt + 1 ))
+            done
+
+            if [[ "${status}" == "${expected_status}" ]]; then
+              if [[ "${attempt}" -gt 1 ]]; then
+                echo "OK (${status}, after ${attempt} attempts)"
+              else
+                echo "OK (${status})"
+              fi
+            else
+              echo "FAIL (got ${status}, expected ${expected_status}, after ${attempt} attempt(s))"
+              FAILED=$((FAILED + 1))
+            fi
+          }
+
+          test_endpoint "Health" "${BASE}/health"
+          test_endpoint "Health Live" "${BASE}/health/live"
+          test_endpoint "Health Ready" "${BASE}/health/ready"
+          test_endpoint "Auth (no token)" "${BASE}/auth/me" "401"
+
+          if [[ "${FAILED}" -gt 0 ]]; then
+            echo "${FAILED} endpoint(s) failed."
+            exit 1
+          fi
+          echo "All API smoke tests passed."
+
+      - name: Optional demo auth smoke
+        shell: bash
+        env:
+          BASE_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}
+          STAGING_DEMO_AUTH_SMOKE: ${{ github.event.inputs.demo_auth_smoke || secrets.STAGING_DEMO_AUTH_SMOKE || 'false' }}
+          STAGING_MANAGER_EMAIL: ${{ secrets.STAGING_MANAGER_EMAIL }}
+          STAGING_MANAGER_PASSWORD: ${{ secrets.STAGING_MANAGER_PASSWORD }}
+          STAGING_EMPLOYEE_EMAIL: ${{ secrets.STAGING_EMPLOYEE_EMAIL }}
+          STAGING_EMPLOYEE_PASSWORD: ${{ secrets.STAGING_EMPLOYEE_PASSWORD }}
+          STAGING_PLATFORM_EMAIL: ${{ secrets.STAGING_PLATFORM_EMAIL }}
+          STAGING_PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_PASSWORD }}
+        run: bash dev-hub/tools/staging-demo-auth-smoke.sh "${BASE_URL}"
+
+  e2e-admin-dashboard:
+    timeout-minutes: 45
+    name: Admin Dashboard E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: should-run
+    if: needs.should-run.outputs.run_e2e == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/admin-dashboard/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/admin-dashboard
+        run: npm ci
+
+      - name: Install Playwright
+        working-directory: front/admin-dashboard
+        run: |
+                    npx playwright install --with-deps chromium
+
+      # #1725 introduisait ici un warm-up "cold-start free tier" — retiré
+      # (2026-08-29) : l'admin-dashboard est servi par Cloudflare Pages
+      # (CDN statique, voir deploy-admin-dashboard.yml), pas par une
+      # instance qui dort après inactivité. Aucun warm-up n'est nécessaire
+      # avant la suite Playwright.
+      - name: Run Playwright E2E tests
+        working-directory: front/admin-dashboard
+        env:
+          CI: true
+          BASE_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_ADMIN_STAGING_URL }}
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-admin-playwright-report
+          path: |
+            front/admin-dashboard/playwright-report/
+            front/admin-dashboard/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Suite E2E dédiée au portail web Laravel (blade) réellement servi par le
+  # backend staging (connexion manager /login, super admin /platform/login,
+  # documentation API /docs /api-explorer /tester-guide). Le job
+  # e2e-admin-dashboard teste l'app Vue admin (leo-admin.pages.dev, #1760) ;
+  # cette suite-ci valide le portail blade + le fix a11y S-6 (labels for/id,
+  # aria-invalid/aria-describedby/role=alert) — voir issue #1763.
+  e2e-blade-portal:
+    timeout-minutes: 45
+    name: Portail Blade E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: should-run
+    if: needs.should-run.outputs.run_e2e == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/admin-dashboard/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/admin-dashboard
+        run: npm ci
+
+      - name: Install Playwright
+        working-directory: front/admin-dashboard
+        run: |
+                    npx playwright install --with-deps chromium
+
+      # #1725 : l'API (gestionemployerbackend) est en plan Render `starter`
+      # (render.yaml), qui ne dort pas après inactivité comme le free tier —
+      # ce warm-up reste néanmoins utile juste après un déploiement frais
+      # (premières requêtes plus lentes : cache/connexions DB pas encore
+      # établies), d'où la boucle de retry ci-dessous.
+      - name: Warm up API after fresh deploy (issue #1725)
+        working-directory: front/admin-dashboard
+        env:
+          BASE_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}
+        run: |
+          set -euo pipefail
+          URL="${BASE_URL}/login"
+          echo "Warming up ${URL}..."
+          for attempt in {1..30}; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${URL}" || echo 000)
+            if [[ "${code}" != "000" ]]; then
+              echo "Warm-up OK (HTTP ${code}) apres ${attempt} tentative(s) — attente de stabilisation 20s"
+              sleep 20
+              exit 0
+            fi
+            echo "Tentative ${attempt}/30 : HTTP ${code} — nouvel essai dans 5s"
+            sleep 5
+          done
+          echo "Warm-up KO apres 30 tentatives (instance injoignable)"
+          exit 1
+
+      - name: Run Playwright E2E tests
+        working-directory: front/admin-dashboard
+        env:
+          CI: true
+          BASE_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}
+        run: npm run test:e2e:staging
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-blade-portal-playwright-report
+          path: |
+            front/admin-dashboard/playwright-report/
+            front/admin-dashboard/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  e2e-web-vitrine:
+    timeout-minutes: 45
+    name: Web Vitrine E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: should-run
+    if: needs.should-run.outputs.run_e2e == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/web/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/web
+        run: npm ci
+
+      - name: Install Playwright
+        working-directory: front/web
+        run: |
+                    npx playwright install --with-deps chromium
+
+      # Issue #5146 : la suite funnel prospect (e2e/funnel.spec.ts) poll la
+      # VRAIE API trial (provisioning). L'API (gestionemployerbackend) est en
+      # plan Render `starter` (ne dort pas comme le free tier) ; la vitrine
+      # `front/web` est sur Vercel (pas Render, cf. docs/CI_CD_SECRETS.md).
+      # Ce warm-up reste utile juste après un déploiement frais des deux
+      # services (premières requêtes plus lentes), d'où la boucle de retry.
+      - name: Warm up API + vitrine after fresh deploy (issue #1725)
+        working-directory: front/web
+        env:
+          API_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}
+          WEB_URL: ${{ github.event.inputs.web_staging_url || env.DEFAULT_WEB_STAGING_URL }}
+        run: |
+          set -euo pipefail
+          API="${API_URL%/}"
+          [[ "${API}" == */api/v1 ]] || API="${API}/api/v1"
+          warm() {
+            local target="$1"
+            echo "Warming up ${target}..."
+            for attempt in {1..30}; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${target}" || echo 000)
+              if [[ "${code}" != "000" ]]; then
+                echo "Warm-up OK (HTTP ${code}) apres ${attempt} tentative(s)"
+                return 0
+              fi
+              echo "Tentative ${attempt}/30 : HTTP ${code} — nouvel essai dans 5s"
+              sleep 5
+            done
+            echo "Warm-up KO apres 30 tentatives (${target} injoignable)"
+            exit 1
+          }
+          warm "${API}/health"
+          warm "${WEB_URL}/signup"
+          echo "Stabilisation 20s avant la suite Playwright"
+          sleep 20
+
+      - name: Run Playwright E2E tests
+        working-directory: front/web
+        env:
+          CI: true
+          BASE_URL: ${{ github.event.inputs.web_staging_url || env.DEFAULT_WEB_STAGING_URL }}
+        run: npx playwright test e2e/staging-smoke.spec.ts --project=chromium
+
+      # Issue #5146 : E2E funnel prospect (vitrine → signup → trial →
+      # dashboard) contre staging/prod. Config dédiée
+      # playwright.staging-funnel.config.ts (expect.timeout 15 s, poll
+      # /trial/status jusqu'à 180 s, retries 0 à cause du throttle
+      # `throttle:5,15` sur /trial/signup). E2E_API_URL = API Laravel
+      # (défaut : prod Render) ; E2E_MAILCATCHER_URL = boîte de test
+      # Mailpit/MailHog (optionnelle : sans elle, US1.2/US3 sont skippés).
+      # Fail-closed conservé : pas de continue-on-error — un échec de test
+      # rend le run rouge (garde #1833, aucun faux vert).
+      - name: Run Playwright funnel prospect E2E (issue #5146)
+        working-directory: front/web
+        env:
+          CI: true
+          BASE_URL: ${{ github.event.inputs.web_staging_url || env.DEFAULT_WEB_STAGING_URL }}
+          E2E_API_URL: ${{ github.event.inputs.staging_url || env.DEFAULT_STAGING_URL }}
+          E2E_MAILCATCHER_URL: ${{ vars.E2E_MAILCATCHER_URL }}
+        run: npx playwright test e2e/funnel.spec.ts --project=chromium --config=playwright.staging-funnel.config.ts
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-web-playwright-report
+          path: |
+            front/web/playwright-report/
+            front/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

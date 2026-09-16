@@ -1,0 +1,51 @@
+import { expect, test } from '@playwright/test'
+
+test.describe('Error handling smoke tests', () => {
+  test('404 page renders for unknown routes', async ({ page }) => {
+    await page.goto('/this-route-does-not-exist-12345')
+
+    // Should either redirect to login or show a proper error page
+    // Not a browser-level error
+    await expect(page.locator('body')).toBeVisible()
+  })
+
+  test('API errors do not leak stack traces', async ({ page }) => {
+    await page.goto('/login')
+
+    // Check that no PHP/Laravel stack traces are visible on the page
+    const body = await page.locator('body').textContent()
+    expect(body).not.toContain('vendor/laravel')
+    expect(body).not.toContain('Stack trace')
+    expect(body).not.toContain('SQLSTATE')
+  })
+
+  test('page loads without console errors', async ({ page }) => {
+    const consoleErrors = []
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text())
+      }
+    })
+
+    await page.goto('/login')
+    await page.waitForLoadState('networkidle')
+
+    // Filter out expected errors (e.g., favicon 404, API connection) and the
+    // known benign browser message about `upgrade-insecure-requests` in a
+    // report-only CSP (Chrome logs it as a console error even though the
+    // directive is a no-op there — see public/_headers).
+    // The CORS message for the health-check probe is also benign: the E2E
+    // preview (http://127.0.0.1:4173) probes the deployed API which may not
+    // (yet) serve an ACAO header for that origin (issue #6457) — the probe
+    // itself is not part of the assertion.
+    const unexpectedErrors = consoleErrors.filter(
+      (msg) =>
+        !msg.includes('favicon') &&
+        !msg.includes('net::ERR_') &&
+        !msg.includes('Failed to load resource') &&
+        !msg.includes('upgrade-insecure-requests') &&
+        !msg.includes('blocked by CORS policy'),
+    )
+    expect(unexpectedErrors).toHaveLength(0)
+  })
+})

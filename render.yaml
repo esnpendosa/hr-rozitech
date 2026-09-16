@@ -1,0 +1,434 @@
+# render.yaml — Leopardo RH infrastructure on Render
+# https://render.com/docs/infrastructure-as-code
+#
+# ⚠️ RÔLE DE CE BLUEPRINT (chantier CI/CD dev/prod) :
+# Tier CONTINU dev/test. Ce fichier est la **source de vérité déclarative**
+# du workspace Render dev (« africanovatech ») : il décrit ce qui DOIT
+# exister, mais les déploiements réels sont pilotés par les workflows
+# GitHub Actions (deploy-main.yml via RENDER_DEPLOY_HOOK_URL, gate tests +
+# filtre api/**) — il n'y a PAS de sync automatique du blueprint à chaque
+# push. Toute sync manuelle (dashboard Render → « New + » / Blueprint) doit
+# être faite avec prudence : Render mappe les services par `name:` ; un
+# renommage recrée un service au lieu de le renommer (doublon/orphelin).
+# Les noms de service physiques et APP_ENV=production ci-dessous sont donc
+# laissés inchangés intentionnellement (dette de nommage historique — le
+# « vrai » environnement de production, promu uniquement sur tag git validé
+# vX.Y.Z, vit dans render.prod.yaml + deploy-prod.yml ; voir
+# docs/ops/RENDER_DEV_PROD_TOPOLOGY.md).
+#
+# ⚠️ ALIGNEMENT SUR LA RÉALITÉ (vérifié dashboard 2026-09-04, re-vérifié
+# healthchecks publics 2026-09-05 — PR #6831) :
+#   - La base de données réelle du dev est **Neon Postgres** (projet
+#     « leopardorh », host *.eu-west-2.aws.neon.tech), branchée via la
+#     variable `DB_URL` (sync: false, saisie dans le dashboard Render).
+#     L'entrée Postgres Render `leopardo-db` ci-dessous a été SUPPRIMÉE :
+#     elle n'a jamais existé dans le workspace (le Postgres Render gratuit
+#     expire après 30 jours et a été abandonné après test).
+#   - CACHE_STORE / SESSION_DRIVER : valeur déclarée `file`. Au boot, le
+#     conteneur exécute `php artisan infra:probe-availability` (décision
+#     2026-08-21) qui bascule sur Redis si une instance est joignable
+#     (REDIS_URL sync: false), sinon reste sur file — AVANT config:cache.
+#   - REDIS_URL / REDIS_PASSWORD : sync: false — l'instance Key Value du
+#     workspace s'appelle « leopardoai » (constat 2026-09-04) ; ne pas la
+#     laisser recréer par le blueprint (une seule instance gratuite par
+#     workspace).
+#   - QUEUE_CONNECTION=database partout (#5578) : drain mono-conteneur dans
+#     le web service (docker-entrypoint.sh) + drain de secours GitHub Actions
+#     (queue-worker-fallback.yml).
+#
+# Modèle de confiance proxy (issue #4494) :
+# Render est l'unique proxy de bord devant l'API (web service
+# gestionemployerbackend). Le middleware trustProxies de l'app ne fait
+# confiance qu'aux réseaux privés (loopback + RFC1918 10/8, 172.16/12,
+# 192.168/16 + ULA IPv6 fc00::/7) : Render atteint l'app depuis son réseau
+# interne, donc X-Forwarded-For y est honoré ; toute connexion directe
+# (peer IP publique) voit XFF ignoré → `$request->ip()` = IP réelle du
+# client, rate-limits par IP non contournables.
+# ⚠️ Si Render migre son réseau interne hors RFC1918, mettre à jour la liste
+# dans api/bootstrap/app.php AVANT tout déploiement.
+
+services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Web Service — Laravel API (déploiement hook-piloté, jamais autoDeploy)
+  # ──────────────────────────────────────────────────────────────────────────
+  - type: web
+    name: gestionemployerbackend
+    runtime: docker
+    dockerfilePath: api/Dockerfile.prod
+    dockerContext: .
+    region: frankfurt
+    plan: starter
+    healthCheckPath: /api/v1/health
+    # #6700 : autoDeploy:false — le déploiement de l'API est piloté
+    # par le workflow deploy-main.yml via RENDER_DEPLOY_HOOK_URL (gate tests +
+    # filtre api/**). autoDeploy:true redéployait à CHAQUE push main (même
+    # web/mobile/docs only) → gaspillage des build hours gratuits (~500 h/mois).
+    autoDeploy: false
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      # Issue #7213 : doc API Blade publique sur le tier dev (QA/démos).
+      # Verrouillée en prod (render.prod.yaml, Gate viewApiDocs).
+      - key: API_DOCS_PUBLIC
+        value: "true"
+      # Audit #1697 : ne jamais créer les sociétés démo / reset le mot de
+      # passe super-admin « password123 » en production.
+      - key: DISABLE_DEMO_SEEDING
+        value: "true"
+      - key: APP_URL
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          property: host
+      - key: LOG_CHANNEL
+        value: stderr
+      # Issue #5586 : LOG_LEVEL=info pour que StructuredLogging (canal
+      # `structured`, info) et les breadcrumbs Sentry soient effectifs en prod
+      # (error filtrait tout le logging structuré).
+      - key: LOG_LEVEL
+        value: info
+      # Database — Neon Postgres externe (PAS un Postgres Render).
+      # Valeur réelle saisie dans le dashboard Render (sync: false) sous forme
+      # d'URL unique DB_URL (config/database.php pgsql → env('DB_URL')) ;
+      # si la config live du service utilise encore des DB_HOST/PORT/DATABASE/
+      # USERNAME/PASSWORD individuels, les remplacer par DB_URL (même schéma
+      # que render.prod.yaml). DB_SEARCH_PATH reste requis (multi-tenant).
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DB_URL
+        sync: false
+      - key: DB_SEARCH_PATH
+        value: shared_tenants,public
+      # Redis — instance Key Value du workspace (« leopardoai », constat
+      # 2026-09-04) branchée dans le dashboard (sync: false). REDIS_CLIENT=
+      # predis reste le défaut ; le probe d'entrypoint (infra:probe-
+      # availability) choisit redis ou file au boot selon la joignabilité.
+      - key: REDIS_CLIENT
+        value: predis
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      # App secrets
+      - key: APP_KEY
+        generateValue: true
+      # Issue #5578 : la queue est sur database (probe + drain GH #5204/#5205),
+      # pas sur Redis (quota Upstash, incident 2026-08-19).
+      - key: QUEUE_CONNECTION
+        value: database
+      # CACHE_STORE/SESSION_DRIVER : `file` par défaut — le probe d'entrypoint
+      # bascule sur redis à chaud si REDIS_URL est joignable (cf. en-tête).
+      - key: CACHE_STORE
+        value: file
+      - key: SESSION_DRIVER
+        value: file
+      # Issue #5586 : Sentry était inerte en prod (DSN absent → aucun
+      # événement). DSN optionnel : renseigner SENTRY_LARAVEL_DSN dans le
+      # dashboard Render (secret sync: false) pour activer le report d'erreurs
+      # + breadcrumbs (config/sentry.php valide l'URL ; vide = désactivé).
+      - key: SENTRY_LARAVEL_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+      # Stripe
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER
+        sync: false
+      - key: STRIPE_PRICE_BUSINESS
+        sync: false
+      - key: STRIPE_PRICE_ENTERPRISE
+        sync: false
+      # Chargily
+      - key: CHARGILY_API_KEY
+        sync: false
+      - key: CHARGILY_WEBHOOK_SECRET
+        sync: false
+      # Google OAuth
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # QA #2277 : doit pointer vers le callback VITRINE (proxy Next) —
+      # https://leopardo-rh.com/api/v1/auth/google/callback (à aligner dans la
+      # console Google Cloud). Le cookie de session est posé sur la vitrine.
+      - key: GOOGLE_REDIRECT_URL
+        sync: false
+      # Firebase
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      # Mail
+      - key: MAIL_MAILER
+        value: resend
+      - key: MAIL_HOST
+        sync: false
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      # Transport HTTP Resend (#5139 : le SMTP sortant est bloqué par Render).
+      - key: RESEND_KEY
+        sync: false
+      - key: MAIL_ENCRYPTION
+        value: tls
+      - key: MAIL_FROM_ADDRESS
+        value: noreply@hurkonsan.com
+      - key: MAIL_FROM_NAME
+        value: "Leopardo RH"
+      # Demo / ops (issue #2336) : le super-admin et le cockpit admin ne
+      # sont utilisables que si ces variables sont renseignées sur Render.
+      # SUPER_ADMIN_PASSWORD : mot de passe du compte admin@leopardo-rh.com
+      # seedé par SuperAdminSeeder (sinon généré aléatoirement → login
+      # impossible). sync: false → à saisir dans le dashboard Render.
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: FORCE_SUPER_ADMIN_PASSWORD_RESET
+        value: "true"
+      - key: ADMIN_DASHBOARD_URL
+        sync: false
+      # Opt-in demo (GET /api/v1/demo-users) — staging/demo uniquement.
+      - key: DEMO_MODE_ENABLED
+        value: "false"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Background Worker — Laravel Queue Worker
+  # Processes: push notifications, emails, PDF generation, payroll runs
+  # ──────────────────────────────────────────────────────────────────────────
+  # ⚠️ Constat 2026-09-04 : ce service n'existe PAS (encore) dans le
+  # workspace dev — la queue est drainée par le worker mono-conteneur du
+  # web service (docker-entrypoint.sh, connexion database). Le provisionner
+  # via une sync manuelle du blueprint quand un worker dédié sera nécessaire.
+  - type: worker
+    name: leopardo-queue-worker
+    runtime: docker
+    dockerfilePath: api/Dockerfile.prod
+    dockerContext: .
+    region: frankfurt
+    plan: starter
+    # #6700 : pas de hook Render dédié pour les workers → autoDeploy:false
+    # (déploiement manuel / blueprint sync assumé ; un autoDeploy:true sur
+    # dockerContext racine rebuildait à CHAQUE push main).
+    autoDeploy: false
+    # Issue #5578 : la queue est sur database — le worker consomme la
+    # connexion par défaut (aligné sur le probe et le drain GH Actions).
+    dockerCommand: >-
+      php artisan queue:work
+      --queue=webhooks,audit,notifications,emails,pdf,payroll,documents,default
+      --tries=3
+      --timeout=300
+      --sleep=3
+      --max-jobs=500
+      --max-time=3600
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      # Audit #1697 : ne jamais créer les sociétés démo / reset le mot de
+      # passe super-admin « password123 » en production.
+      - key: DISABLE_DEMO_SEEDING
+        value: "true"
+      # #6558 (audit ops M-3) : migrations + seed UNIQUEMENT sur le service
+      # web (RUN_MIGRATIONS hérité du Dockerfile sinon) — jamais au boot des
+      # workers/scheduler (course de migrations + seed non idempotent à
+      # chaque redémarrage).
+      - key: RUN_MIGRATIONS
+        value: "false"
+      # Audit #4412 : les workers génèrent des URLs absolues (reset password,
+      # notifications, liens bulletins) — APP_URL requis sur tous les services.
+      - key: APP_URL
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          property: host
+      - key: LOG_CHANNEL
+        value: stderr
+      # Issue #5586 : LOG_LEVEL=info (StructuredLogging + Sentry effectifs).
+      - key: LOG_LEVEL
+        value: info
+      # Issue #5586 : Sentry DSN partagé depuis le web service (même clé).
+      - key: SENTRY_LARAVEL_DSN
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          envVarKey: SENTRY_LARAVEL_DSN
+      # Database — Neon (DB_URL sync: false, cf. web service).
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DB_URL
+        sync: false
+      - key: DB_SEARCH_PATH
+        value: shared_tenants,public
+      # Redis — Key Value du workspace branchée dans le dashboard.
+      - key: REDIS_CLIENT
+        value: predis
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      # #3907 : APP_KEY référencé depuis le web service (envVarKey) — un
+      # generateValue indépendant donnerait une clé différente → sessions/
+      # files chiffrées indéchiffrables entre services au provisionnement frais.
+      - key: APP_KEY
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          envVarKey: APP_KEY
+      - key: QUEUE_CONNECTION
+        value: database
+      # CACHE_STORE : file par défaut (probe d'entrypoint, cf. en-tête).
+      - key: CACHE_STORE
+        value: file
+      # Issue #5586 : Sentry sur le worker aussi (erreurs de jobs queue :
+      # PDF, paie, webhooks — cf. #4340).
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: MAIL_MAILER
+        value: resend
+      - key: MAIL_HOST
+        sync: false
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      # Transport HTTP Resend (#5139 : le SMTP sortant est bloqué par Render).
+      - key: RESEND_KEY
+        sync: false
+      - key: MAIL_ENCRYPTION
+        value: tls
+      - key: MAIL_FROM_ADDRESS
+        value: noreply@hurkonsan.com
+      - key: MAIL_FROM_NAME
+        value: "Leopardo RH"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: CHARGILY_API_KEY
+        sync: false
+      # ADMIN_DASHBOARD_URL : utilisé dans les emails envoyés aux managers
+      # depuis les jobs (liens vers le cockpit admin). sync: false → dashboard.
+      - key: ADMIN_DASHBOARD_URL
+        sync: false
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Background Worker — Scheduled tasks (scheduler)
+  # Runs php artisan schedule:run every minute
+  # ──────────────────────────────────────────────────────────────────────────
+  # ⚠️ Constat 2026-09-04 : ce service n'existe PAS (encore) dans le
+  # workspace dev — les tâches planifiées (schedule:run) ne sont PAS exécutées
+  # par le conteneur web (contrairement au drain de queue). À provisionner dès
+  # que les tâches planifiées doivent tourner (accrual congés, relances
+  # contrat/billing, réconciliation recouvrement…).
+  - type: worker
+    name: leopardo-scheduler
+    runtime: docker
+    dockerfilePath: api/Dockerfile.prod
+    dockerContext: .
+    region: frankfurt
+    plan: starter
+    autoDeploy: false
+    dockerCommand: >-
+      sh -c "while true; do php artisan schedule:run --no-interaction; sleep 60; done"
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      # Audit #1697 : ne jamais créer les sociétés démo / reset le mot de
+      # passe super-admin « password123 » en production.
+      - key: DISABLE_DEMO_SEEDING
+        value: "true"
+      # #6558 (audit ops M-3) : migrations + seed UNIQUEMENT sur le service
+      # web (RUN_MIGRATIONS hérité du Dockerfile sinon) — jamais au boot des
+      # workers/scheduler (course de migrations + seed non idempotent à
+      # chaque redémarrage).
+      - key: RUN_MIGRATIONS
+        value: "false"
+      # Audit #4412 : les workers génèrent des URLs absolues (reset password,
+      # notifications, liens bulletins) — APP_URL requis sur tous les services.
+      - key: APP_URL
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          property: host
+      - key: LOG_CHANNEL
+        value: stderr
+      # Issue #5586 : LOG_LEVEL=info (cohérence web/worker/scheduler).
+      - key: LOG_LEVEL
+        value: info
+      # Issue #5586 : Sentry DSN partagé depuis le web service.
+      - key: SENTRY_LARAVEL_DSN
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          envVarKey: SENTRY_LARAVEL_DSN
+      # Database — Neon (DB_URL sync: false, cf. web service).
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DB_URL
+        sync: false
+      - key: DB_SEARCH_PATH
+        value: shared_tenants,public
+      # Redis — Key Value du workspace branchée dans le dashboard.
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      # #3907 : APP_KEY partagé avec le web service (envVarKey) — clé unique
+      # requise pour déchiffrer sessions/files (cf. worker).
+      - key: APP_KEY
+        fromService:
+          name: gestionemployerbackend
+          type: web
+          envVarKey: APP_KEY
+      # Issue #5578 : la queue est sur database (le scheduler soumet des jobs).
+      - key: QUEUE_CONNECTION
+        value: database
+      # Mail (issue #3594) : le scheduler envoie des emails synchrones (rappels,
+      # alertes, notifications planifiées). Sans MAIL_* il retombe sur
+      # config/mail.php 'host' => 127.0.0.1:25 et tout envoi échoue en silence.
+      # Bloc aligné sur le web service (mêmes valeurs/sync: false).
+      - key: MAIL_MAILER
+        value: resend
+      - key: MAIL_HOST
+        sync: false
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      # Transport HTTP Resend (#5139 : le SMTP sortant est bloqué par Render).
+      - key: RESEND_KEY
+        sync: false
+      - key: MAIL_ENCRYPTION
+        value: tls
+      - key: MAIL_FROM_ADDRESS
+        value: noreply@hurkonsan.com
+      - key: MAIL_FROM_NAME
+        value: "Leopardo RH"
+
+# Aucune base de données Render provisionnée par ce blueprint.
+# - Postgres : la base réelle (dev comme prod) est **Neon Postgres**,
+#   externe, branchée via DB_URL (sync: false, dashboard Render). Le Postgres
+#   Render gratuit expire après 30 jours et a été abandonné après test
+#   (l'ancienne entrée `leopardo-db` a été supprimée — elle n'a jamais existé
+#   dans le workspace).
+# - Redis : l'instance Key Value du workspace s'appelle « leopardoai »
+#   (constat 2026-09-04). Ne pas déclarer d'instance ici : le plan gratuit
+#   n'autorise qu'une instance par workspace et une entrée blueprint
+#   recréerait un doublon. REDIS_URL/REDIS_PASSWORD sont sync: false sur les
+#   services (valeur saisie dans le dashboard).

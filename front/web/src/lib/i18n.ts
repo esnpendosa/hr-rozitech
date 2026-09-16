@@ -1,0 +1,4175 @@
+export type AppLocale = 'id' | 'fr' | 'ar' | 'tr' | 'en';
+
+export type StoredAuthUser = {
+  id?: number | string;
+  first_name?: string | null;
+  last_name?: string | null;
+  name?: string | null;
+  email?: string | null;
+  language?: string | null;
+  is_rtl?: boolean;
+  role?: string | null;
+  manager_role?: string | null;
+  capabilities?: Record<string, unknown> | null;
+  // Features tenant (FeatureFlag::for) renvoyées au niveau racine par
+  // /auth/me (EmployeeResource) : {rh, finance, cameras, muhasebe, leo_ai}.
+  features?: Record<string, unknown> | null;
+  company?: {
+    id?: number | string | null;
+    name?: string | null;
+    language?: string | null;
+    timezone?: string | null;
+    currency?: string | null;
+    features?: Record<string, unknown> | null;
+    metadata?: Record<string, unknown> | null;
+    // #7235 — profil d'activité déclaré à l'inscription : `company`
+    // (entreprise) ou `solo` (indépendant, sans outils d'équipe).
+    type?: string | null;
+    // #7235 — secteur / métier vertical (ex. « restaurant »).
+    sector?: string | null;
+    // #7235 — sélection EXPLICITE des outils horizontaux faite à
+    // l'inscription ({ employees: true, attendance: false, … }). `null` ou
+    // absent = aucune sélection déclarée → comportement historique.
+    modules?: Record<string, unknown> | null;
+    // #7235 — essai : `subscription_end` alimente le compteur de jours
+    // restants dans l'application (les CTA « essai 14 jours » de la vitrine
+    // disparaissent, l'inscription est directe).
+    status?: string | null;
+    subscription_end?: string | null;
+  } | null;
+  plan?: {
+    name?: string | null;
+    features?: Record<string, unknown> | null;
+  } | null;
+};
+
+export const SUPPORTED_LOCALES: AppLocale[] = ['id', 'fr', 'ar', 'tr', 'en'];
+export const AUTH_TOKEN_KEY = 'auth_token';
+export const AUTH_USER_KEY = 'auth_user';
+export const PREFERRED_LOCALE_KEY = 'preferred_locale';
+
+export type CopyTree = {
+  login: {
+    title: string;
+    subtitle: string;
+    clientSpace: string;
+    heroTitle: string;
+    heroCopy: string;
+    secureBadge: string;
+    trustPoints: string[];
+    back: string;
+    email: string;
+    password: string;
+    showPassword: string;
+    hidePassword: string;
+    remember: string;
+    forgot: string;
+    submit: string;
+    loading: string;
+    demoAccess: string;
+    demoUnavailable: string;
+    accountCreatedFree: string;
+    accountCreatedPaid: string;
+    demoTitle: string;
+    demoSubtitle: string;
+    close: string;
+    supportCopy: string;
+    supportLink: string;
+    errors: {
+      generic: string;
+      missingToken: string;
+      missingUser: string;
+      google: string;
+      googleNetwork: string;
+      googleAuthFailed: string;
+      googleNoAccount: string;
+      googleNoAccountCta: string;
+      googleUnavailable: string;
+    };
+  };
+  dashboard: {
+    heading: string;
+    employees: string;
+    present: string;
+    live: string;
+    late: string;
+    activity: string;
+    team: string;
+    attendance: string;
+    payroll: string;
+    settings: string;
+    logout: string;
+    language: string;
+    userMenuAccount: string;
+    userMenuPassword: string;
+    userMenuSecurity: string;
+    presentBadge: string;
+    employeeLabel: string;
+    checkInAt: string;
+    featureLockedRole: string;
+    featureLockedPlan: string;
+    featureLockedBadge: string;
+    featureLockedExplanation: string;
+    featureLockedAdminHint: string;
+    featureLockedPlanRoleTitle: string;
+    featureLockedPlanRoleBody: string;
+    featureLockedCta: string;
+    /** #7322 — auto-activation d'un module horizontal depuis « Modules & plan » */
+    activate: string;
+    activating: string;
+    activateError: string;
+    recent_activity: string;
+    noNotifications: string;
+    managePreferences: string;
+    /** #R8 — lien de reprise d'onboarding dans la sidebar */
+    resumeOnboarding: string;
+    /** #7225 — titre de section « Mon métier » (verticales activées) */
+    businessSection: string;
+    /** #7328 — libellé du menu RH (regroupe les modules RH en sous-menus) */
+    hrMenu: string;
+    /** #7225 — libellés de navigation localisés (le libellé du module est data, pas une string FR) */
+    modules: {
+      dashboard: string; employees: string; attendance: string; attendance_geo: string;
+      absences: string; contracts: string; payroll: string; training: string;
+      reports: string; partner: string; billing: string; integrations: string;
+      marketing: string; accounting: string; crm: string; restaurant: string;
+      restaurant_kitchen: string; edu_manager: string; travel: string; fuel: string; showcase: string;
+    };
+    /** #7225 — « Entreprise » (bandeau horizontal transverse) */
+    sectionEnterprise: string;
+    /** #7225 — « Modules & plan » (panneau de découverte) */
+    sectionModules: string;
+    /** #7225 — « Découvrir les métiers » (tenant sans verticale) */
+    sectionDiscoverBusiness: string;
+    /** #7225 — « À activer » (modules verrouillés, découvrables) */
+    sectionLocked: string;
+  };
+  passwordReset: {
+    title: string;
+    subtitle: string;
+    emailLabel: string;
+    emailPlaceholder: string;
+    submit: string;
+    submitting: string;
+    successTitle: string;
+    successBody: string;
+    backToLogin: string;
+    newPasswordLabel: string;
+    newPasswordPlaceholder: string;
+    confirmPasswordLabel: string;
+    confirmPasswordPlaceholder: string;
+    submitReset: string;
+    submittingReset: string;
+    resetSuccessTitle: string;
+    resetSuccessBody: string;
+    invalidEmail: string;
+    invalidPassword: string;
+    passwordMismatch: string;
+    missingTokenTitle: string;
+    missingTokenBody: string;
+    genericError: string;
+    showPassword: string;
+    hidePassword: string;
+  };
+  accountActivation: {
+    title: string;
+    subtitle: string;
+    passwordLabel: string;
+    passwordPlaceholder: string;
+    confirmPasswordLabel: string;
+    confirmPasswordPlaceholder: string;
+    submit: string;
+    submitting: string;
+    successTitle: string;
+    successBody: string;
+    backToLogin: string;
+    invalidPassword: string;
+    passwordMismatch: string;
+    missingTokenTitle: string;
+    missingTokenBody: string;
+    alreadyAccepted: string;
+    expired: string;
+    genericError: string;
+    /** #7267 — societe suspendue/expiree (403 COMPANY_SUSPENDED) */
+    companySuspended: string;
+    /** #7267 — pre-validation du lien d'invitation */
+    validating: string;
+    showPassword: string;
+    hidePassword: string;
+  };
+  onboarding: {
+    stepBadge: string;
+    next: string;
+    finish: string;
+    validating: string;
+    skip: string;
+    close: string;
+    retry: string;
+    errorGeneric: string;
+    /** Audit 2026-09-14 — étapes « required » à action réelle (créer un département / un employé) */
+    actionCreateDepartment: string;
+    actionAddEmployee: string;
+    actionResumeHint: string;
+    allStepsDone: string;
+    quickStart: string;
+    later: string;
+    firstCheckinHint: string;
+    qrShow: string;
+    qrHide: string;
+    qrHint: string;
+    qrError: string;
+    qrLoading: string;
+    /** #R5 — feedback file d'attente pour invite_manager */
+    inviteManagerHint: string;
+    /** #R10 — estimation du temps par étape (template : {n} = minutes) */
+    estimatedMinutes: string;
+    /** #R13 — aide CSV pour first_employee */
+    csvColumnsHint: string;
+    steps: Record<string, { title: string; desc: string }>;
+  };
+  absences: {
+    title: string;
+    subtitle: string;
+    listTitle: string;
+    request: string;
+    loading: string;
+    approve: string;
+    reject: string;
+    cancel: string;
+    rejectTitle: string;
+    rejectBody: string;
+    reasonLabel: string;
+    reasonPlaceholder: string;
+    reasonRequired: string;
+    rejectConfirm: string;
+    rejectInProgress: string;
+    statusPending: string;
+    statusApproved: string;
+    statusRejected: string;
+    statusCancelled: string;
+    loadError: string;
+    empty: string;
+    newAbsence: string;
+    newAbsenceHint: string;
+    type: string;
+    typeRequired: string;
+    typeFallback: string;
+    start: string;
+    end: string;
+    reason: string;
+    reasonHint: string;
+    dateMissing: string;
+    submitToHr: string;
+    submittedSnack: string;
+    noTypeAvailable: string;
+    failure: string;
+  };
+  payrollPage: {
+    title: string;
+    subtitle: string;
+    statTotalGross: string;
+    statTotalNet: string;
+    statPayslips: string;
+    tabSlips: string;
+    tabRuns: string;
+    searchPlaceholder: string;
+    columnEmployee: string;
+    columnPeriod: string;
+    columnGross: string;
+    columnNet: string;
+    columnStatus: string;
+    columnCompliance: string;
+    columnActions: string;
+    columnEmployees: string;
+    columnTotalGross: string;
+    columnTotalNet: string;
+    loading: string;
+    noPayslips: string;
+    noRuns: string;
+    statusValidated: string;
+    statusDraft: string;
+    statusCompleted: string;
+    runDraft: string;
+    runCalculated: string;
+    runValidated: string;
+    runLocked: string;
+    runCalculate: string;
+    runValidate: string;
+    runLock: string;
+    runUnlock: string;
+    runConfirmLock: string;
+    runConfirmUnlock: string;
+    runConfirmValidate: string;
+    runConfirmValidateCta: string;
+    runPlaceholderBadge: string;
+    runPlaceholderWarning: string;
+    runActionError: string;
+    runCancel: string;
+    downloadPdf: string;
+    viewDetail: string;
+    resultsCount: string;
+    detailTitle: string;
+    detailClose: string;
+    detailLoading: string;
+    detailError: string;
+    detailDeductions: string;
+    detailEmployerContributions: string;
+    detailTotalCost: string;
+    detailWorkingDays: string;
+    detailDaysWorked: string;
+    detailOvertimeHours: string;
+    detailSalaryBreakdown: string;
+    salaryDecompTitle: string;
+    salaryMonthly: string;
+    salaryDailyRate: string;
+    salaryHourlyRate: string;
+    salaryCompositionDays: string;
+    salaryCompositionHours: string;
+  };
+  smartAttendancePage: {
+    title: string;
+    subtitle: string;
+    allSessions: string;
+    settings: string;
+    pendingSessionsTitle: string;
+    noPendingSessions: string;
+    columnEmployee: string;
+    columnCheckIn: string;
+    columnCheckOut: string;
+    columnDuration: string;
+    columnStatus: string;
+    columnActions: string;
+    approve: string;
+    reject: string;
+    employeeFallback: string;
+    dashboardLoadError: string;
+    approveError: string;
+    rejectError: string;
+    statusDetected: string;
+    statusPendingValidation: string;
+    statusApproved: string;
+    statusRejected: string;
+    statusCancelled: string;
+    statTotal: string;
+    statDetected: string;
+    statPending: string;
+    statApproved: string;
+    statRejected: string;
+    approveModalTitle: string;
+    approveModalBody: string;
+    approveModalNoteLabel: string;
+    approveModalNotePlaceholder: string;
+    approveModalConfirm: string;
+    approveModalInProgress: string;
+    rejectModalTitle: string;
+    rejectModalBody: string;
+    rejectModalReasonLabel: string;
+    rejectModalReasonPlaceholder: string;
+    rejectModalReasonRequired: string;
+    rejectModalConfirm: string;
+    rejectModalInProgress: string;
+    cancel: string;
+  };
+  smartAttendanceSessionsPage: {
+    title: string;
+    subtitle: string;
+    backToDashboard: string;
+    loadError: string;
+    filtersTitle: string;
+    filterStatus: string;
+    filterStatusAll: string;
+    filterEmployee: string;
+    filterEmployeePlaceholder: string;
+    filterDateFrom: string;
+    filterDateTo: string;
+    apply: string;
+    reset: string;
+    exportCsv: string;
+    sessionsTitle: string;
+    sessionCountSingular: string;
+    sessionCountPlural: string;
+    columnEmployee: string;
+    columnCheckIn: string;
+    columnCheckOut: string;
+    columnDuration: string;
+    columnStatus: string;
+    columnDetail: string;
+    noSessions: string;
+    viewDetail: string;
+    employeeFallback: string;
+    pageLabel: string;
+    previous: string;
+    next: string;
+    csvHeaderId: string;
+    csvHeaderEmployee: string;
+    csvHeaderMatricule: string;
+    csvHeaderCheckIn: string;
+    csvHeaderCheckOut: string;
+    csvHeaderDuration: string;
+    csvHeaderStatus: string;
+  };
+  smartAttendanceSessionDetailPage: {
+    title: string;
+    subtitle: string;
+    backToSessions: string;
+    loadError: string;
+    notFound: string;
+    employeeFallback: string;
+    noteLabel: string;
+    rejectionReasonLabel: string;
+    timelineTitle: string;
+    checkInDetected: string;
+    departure: string;
+    durationLabel: string;
+    gpsCoordinatesTitle: string;
+    checkInLabel: string;
+    checkOutLabel: string;
+    viewOnMaps: string;
+    gpsHistoryTitle: string;
+    columnType: string;
+    columnTime: string;
+    columnLatitude: string;
+    columnLongitude: string;
+    columnAccuracy: string;
+    pendingValidationNotice: string;
+    approve: string;
+    reject: string;
+    approveErrorGeneric: string;
+    rejectErrorGeneric: string;
+  };
+  smartAttendanceSettingsPage: {
+    title: string;
+    subtitle: string;
+    backToDashboard: string;
+    loadError: string;
+    saveError: string;
+    saveSuccess: string;
+    currentModeLabel: string;
+    modeFree: string;
+    modeGpsAuto: string;
+    modeQrCode: string;
+    modeManual: string;
+    gpsLabel: string;
+    gpsEnabled: string;
+    gpsDisabled: string;
+    radiusLabel: string;
+    configurationTitle: string;
+    modeFieldLabel: string;
+    modeFreeHint: string;
+    gpsToggleTitle: string;
+    gpsToggleSubtitle: string;
+    geofenceConfigTitle: string;
+    latitudeLabel: string;
+    longitudeLabel: string;
+    radiusFieldLabel: string;
+    radiusHint: string;
+    save: string;
+    saving: string;
+    cancel: string;
+  };
+  developerSettingsPage: {
+    title: string;
+    subtitle: string;
+    loadTokensError: string;
+    loadWebhooksError: string;
+    createTokenError: string;
+    deleteTokenError: string;
+    createWebhookError: string;
+    deleteWebhookError: string;
+    updateWebhookError: string;
+    revokeTokenConfirm: string;
+    deleteWebhookConfirm: string;
+    revealedTokenNotice: string;
+    revealedTokenDismiss: string;
+    apiKeysTitle: string;
+    loading: string;
+    noTokens: string;
+    createdOn: string;
+    unknownDate: string;
+    lastUsedOn: string;
+    neverUsed: string;
+    revoke: string;
+    tokenNamePlaceholder: string;
+    webhooksTitle: string;
+    noWebhooks: string;
+    eventsCount: string;
+    failuresCount: string;
+    noFailures: string;
+    active: string;
+    inactive: string;
+    triggeredOn: string;
+    neverTriggered: string;
+    delete: string;
+    addEndpoint: string;
+    apiDocsTitle: string;
+    apiDocsBody: string;
+    openExplorer: string;
+    newWebhookModalTitle: string;
+    destinationUrlLabel: string;
+    eventsToListenLabel: string;
+    cancel: string;
+    creating: string;
+    create: string;
+  };
+  partnerPage: {
+    loading: string;
+    applyErrorPrefix: string;
+    notApplied: {
+      title: string;
+      subtitle: string;
+      individual: string;
+      agency: string;
+    };
+    pending: {
+      title: string;
+      body: string;
+    };
+    dashboard: {
+      title: string;
+      subtitle: string;
+    };
+    metrics: {
+      conversions: string;
+      totalEarned: string;
+      pending: string;
+      withdrawable: string;
+    };
+    commissions: {
+      title: string;
+      empty: string;
+    };
+    table: {
+      tenantId: string;
+      date: string;
+      status: string;
+      amount: string;
+      statusPaid: string;
+      statusPending: string;
+    };
+    payout: {
+      title: string;
+      body: string;
+      request: string;
+      sending: string;
+      insufficient: string;
+      success: string;
+      errorPrefix: string;
+    };
+    referral: {
+      title: string;
+      unavailable: string;
+      copy: string;
+      copied: string;
+      copyError: string;
+    };
+  };
+  offlinePage: {
+    title: string;
+    body: string;
+    edgeModeTitle: string;
+    edgeModeBody: string;
+    retry: string;
+  };
+  // #4574 Lot 2 — portail client : sections restantes localisées ×4.
+  billing: {
+    title: string;
+    subtitle: string;
+    statusActive: string;
+    statusCancelled: string;
+    statusPastDue: string;
+    statusPaid: string;
+    statusPending: string;
+    cancelConfirm: string;
+    cancelError: string;
+    renewError: string;
+    noPaymentAccount: string;
+    downloadError: string;
+    noActivePeriod: string;
+    periodRange: string;
+    cancelLabel: string;
+    loadError: string;
+  };
+  contracts: {
+    title: string;
+    subtitle: string;
+    statusAll: string;
+    statusActive: string;
+    statusSuspended: string;
+    statusActives: string;
+    statusSuspendeds: string;
+    statusTerminated: string;
+    statusDraft: string;
+  };
+  absencesPage: {
+    loadError: string;
+    approve: string;
+    reject: string;
+    rejectTitle: string;
+    rejectReasonPlaceholder: string;
+    reasonRequired: string;
+    cancel: string;
+    confirmReject: string;
+    approveSuccess: string;
+    rejectSuccess: string;
+    actionError: string;
+  };
+  attendancePage: {
+    loadError: string;
+  };
+  socialPage: {
+    title: string;
+    subtitle: string;
+    loadError: string;
+    createError: string;
+  };
+  socialMarketingPage: {
+    title: string;
+    subtitle: string;
+    loadAccountError: string;
+    loadPostsError: string;
+    connectError: string;
+    disconnectError: string;
+    createError: string;
+    publishError: string;
+    deleteError: string;
+    statusActive: string;
+  };
+  trainingPage: {
+    loadError: string;
+    createError: string;
+  };
+  notificationsPage: {
+    statusEnabled: string;
+    statusDisabled: string;
+  };
+  travelPortal: {
+    title: string;
+    subtitle: string;
+    referenceLabel: string;
+    referencePlaceholder: string;
+    codeLabel: string;
+    codePlaceholder: string;
+    track: string;
+    tracking: string;
+    status: string;
+    trip: string;
+    tickets: string;
+    passengers: string;
+    total: string;
+    downloadTicket: string;
+    cancel: string;
+    cancelConfirm: string;
+    cancelling: string;
+    cancelReasonPlaceholder: string;
+    cancelled: string;
+    statusPending: string;
+    statusConfirmed: string;
+    statusRefunded: string;
+    statusCompleted: string;
+    notFound: string;
+    invalidCode: string;
+    departurePast: string;
+    error: string;
+  };
+};
+
+const copy: Record<AppLocale, CopyTree> = {
+  fr: {
+    login: {
+      title: 'Connexion à RMIH',
+      subtitle: 'Accédez à votre espace RH, suivez vos équipes et pilotez les modules actifs de votre entreprise.',
+      clientSpace: 'Espace client',
+      heroTitle: 'Un accès RH clair pour chaque manager, chaque pays et chaque équipe.',
+      heroCopy: 'Votre portail client reste connecté à l’API RMIH, avec permissions, langue et contexte tenant appliqués dès la connexion.',
+      secureBadge: 'Connexion sécurisée',
+      trustPoints: [
+        'Session liée à votre tenant',
+        'Permissions appliquées par rôle',
+        'Interface prête pour manager, RH et employé',
+      ],
+      back: 'Retour au site',
+      email: 'Adresse email',
+      password: 'Mot de passe',
+      showPassword: 'Afficher le mot de passe',
+      hidePassword: 'Masquer le mot de passe',
+      remember: 'Se souvenir de moi',
+      forgot: 'Mot de passe oublié ?',
+      submit: 'Se connecter',
+      loading: 'Connexion...',
+      demoAccess: 'Tester avec un compte démo',
+      demoUnavailable: 'Accès démo momentanément indisponible (API injoignable).',
+    accountCreatedFree: 'Compte créé ! Connectez-vous pour accéder à votre espace gratuit.',
+    accountCreatedPaid: 'Inscription reçue ! Connectez-vous pour continuer.',
+      demoTitle: 'Choisir un compte démo',
+      demoSubtitle: 'Sélectionnez un rôle pour pré-remplir le formulaire, puis lancez la connexion.',
+      close: 'Fermer',
+      supportCopy: 'Besoin d’aide pour récupérer un accès ?',
+      supportLink: 'Contacter le support',
+      errors: {
+        generic: 'Une erreur est survenue.',
+        missingToken: 'Le jeton de connexion est absent de la réponse API.',
+        missingUser: 'Le profil utilisateur est absent de la réponse API.',
+        // Issue #5173 — erreurs Google propagées par le callback vitrine
+        // (`/auth/login?error=...`). Afficher un message clair au lieu d'un
+        // formulaire muet après un échec OAuth.
+        google: 'La connexion avec Google a échoué. Veuillez réessayer.',
+        googleNetwork: 'Impossible de contacter Google. Vérifiez votre connexion et réessayez.',
+        googleAuthFailed: 'Google a refusé la connexion. Veuillez réessayer.',
+        googleNoAccount: 'Aucun compte RMIH n’est associé à cet email Google. Demandez une invitation à votre administrateur.',
+        googleNoAccountCta: 'Démarrer un essai sans invitation',
+        googleUnavailable: 'La connexion Google n’est pas encore disponible. Utilisez votre email et votre mot de passe.',
+      },
+    },
+    dashboard: {
+      heading: 'Tableau de bord',
+      employees: 'Employés actifs',
+      present: 'Présents',
+      live: 'En direct',
+      late: 'Retards',
+      activity: 'Activité récente',
+      team: 'Employés',
+      attendance: 'Pointages',
+      payroll: 'Paie',
+      settings: 'Paramètres',
+      logout: 'Déconnexion',
+      userMenuAccount: 'Mon compte',
+      userMenuPassword: 'Changer mon mot de passe',
+      userMenuSecurity: 'Sécurité (2FA)',
+      language: 'Langue',
+      presentBadge: 'Présent',
+      employeeLabel: 'Employé',
+      checkInAt: 'Check-in à',
+      featureLockedRole: "Votre rôle actuel ne permet pas d'accéder à ce module.",
+      featureLockedPlan: "Ce module n'est pas inclus dans votre plan actuel.",
+      featureLockedBadge: 'Module non inclus',
+      featureLockedExplanation: "RMIH garde l'interface explicite afin d'éviter les 404 confuses et les erreurs API inutiles.",
+      featureLockedAdminHint: "Demandez l'activation au super administrateur de la plateforme ou passez sur un plan incluant ce module.",
+      featureLockedPlanRoleTitle: 'Plan & rôle',
+      featureLockedPlanRoleBody: "Les modules visibles dans cet espace sont calculés depuis les droits, le plan de l'entreprise et le rôle utilisateur.",
+      featureLockedCta: "Demander l'activation",
+      activate: 'Activer',
+      activating: 'Activation…',
+      activateError: "L'activation a échoué. Réessayez.",
+      recent_activity: 'Activité récente',
+      noNotifications: 'Aucune notification récente.',
+      managePreferences: 'Gérer mes préférences',
+      resumeOnboarding: '▶ Reprendre la configuration',
+      businessSection: 'Mon métier',
+      hrMenu: 'RH',
+      modules: {
+        dashboard: 'Tableau de bord',
+        employees: 'Employés',
+        attendance: 'Pointages',
+        attendance_geo: 'Sessions GPS',
+        absences: 'Absences',
+        contracts: 'Contrats',
+        payroll: 'Paie',
+        training: 'Formations',
+        reports: 'Rapports',
+        partner: 'Programme Partenaire',
+        billing: 'Facturation',
+        integrations: 'Intégrations',
+        marketing: 'Marketing',
+        accounting: 'Comptabilité',
+        crm: 'CRM Client',
+        restaurant: 'Restaurant',
+        restaurant_kitchen: 'Cuisine',
+        edu_manager: 'Scolarité',
+        travel: 'Agence de voyage',
+        fuel: 'Station-service',
+        showcase: 'Site vitrine',
+      },
+      sectionEnterprise: 'Entreprise',
+      sectionModules: 'Modules & plan',
+      sectionDiscoverBusiness: 'Découvrir les métiers',
+      sectionLocked: 'À activer',
+    },
+    passwordReset: {
+      title: 'Mot de passe oublié',
+      subtitle: "Saisissez l'adresse email de votre compte : nous vous enverrons un lien de réinitialisation sécurisé.",
+      emailLabel: 'Adresse email',
+      emailPlaceholder: 'vous@entreprise.com',
+      submit: 'Envoyer le lien',
+      submitting: 'Envoi...',
+      successTitle: 'Email envoyé',
+      successBody: "Si un compte existe avec cette adresse, un lien de réinitialisation vient d'être envoyé. Pensez à vérifier vos spams.",
+      backToLogin: 'Retour à la connexion',
+      newPasswordLabel: 'Nouveau mot de passe',
+      newPasswordPlaceholder: '8 caractères minimum',
+      confirmPasswordLabel: 'Confirmer le mot de passe',
+      confirmPasswordPlaceholder: 'Répétez le mot de passe',
+      submitReset: 'Réinitialiser le mot de passe',
+      submittingReset: 'Réinitialisation...',
+      resetSuccessTitle: 'Mot de passe réinitialisé',
+      resetSuccessBody: 'Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.',
+      invalidEmail: 'Adresse email invalide.',
+      invalidPassword: 'Le mot de passe doit contenir au moins 8 caractères.',
+      passwordMismatch: 'Les deux mots de passe ne correspondent pas.',
+      missingTokenTitle: 'Lien invalide ou expiré',
+      missingTokenBody: 'Le lien de réinitialisation est invalide ou a expiré. Relancez une demande de réinitialisation.',
+      genericError: 'Une erreur est survenue. Réessayez dans quelques instants.',
+      showPassword: 'Afficher le mot de passe',
+      hidePassword: 'Masquer le mot de passe',
+    },
+    accountActivation: {
+      title: 'Activez votre compte',
+      subtitle: 'Définissez un mot de passe pour activer votre compte RMIH.',
+      passwordLabel: 'Mot de passe',
+      passwordPlaceholder: '8 caractères minimum',
+      confirmPasswordLabel: 'Confirmer le mot de passe',
+      confirmPasswordPlaceholder: 'Répétez le mot de passe',
+      submit: 'Activer mon compte',
+      submitting: 'Activation…',
+      successTitle: 'Compte activé !',
+      successBody: 'Votre compte est actif. Vous pouvez maintenant vous connecter.',
+      backToLogin: 'Aller à la connexion',
+      invalidPassword: 'Le mot de passe doit contenir au moins 8 caractères.',
+      passwordMismatch: 'Les deux mots de passe ne correspondent pas.',
+      missingTokenTitle: 'Lien invalide ou expiré',
+      missingTokenBody: 'Ce lien d\'activation est invalide ou a expiré. Contactez votre manager pour recevoir une nouvelle invitation.',
+      alreadyAccepted: 'Ce lien a déjà été utilisé. Connectez-vous directement.',
+      expired: 'Ce lien a expiré. Demandez une nouvelle invitation.',
+      genericError: 'Une erreur est survenue. Réessayez dans quelques instants.',
+      companySuspended: 'Accès de votre entreprise suspendu. Contactez votre administrateur.',
+      validating: 'Vérification de votre lien…',
+      showPassword: 'Afficher le mot de passe',
+      hidePassword: 'Masquer le mot de passe',
+    },
+    onboarding: {
+      stepBadge: 'Étape {current} sur {total}',
+      next: 'Suivant',
+      finish: 'Terminer',
+      validating: 'Validation...',
+      skip: 'Passer cette étape',
+      close: "Fermer l'assistant de configuration",
+      retry: 'Réessayer',
+      errorGeneric: 'Impossible de charger les étapes de configuration.',
+      actionCreateDepartment: 'Créer un département',
+      actionAddEmployee: 'Ajouter un employé',
+      actionResumeHint: "L'assistant reprendra automatiquement dès que ce sera fait.",
+      allStepsDone: 'Configuration terminée !',
+      quickStart: 'Quick Start',
+      later: 'Recommandé plus tard',
+      firstCheckinHint: "Effectuez un premier pointage depuis l'app mobile ou le kiosque, puis marquez cette étape comme terminée.",
+      qrShow: "Afficher le QR de l'entreprise",
+      qrHide: 'Masquer le QR',
+      qrHint: "Scannez ce QR avec l'app mobile Leopardo pour rejoindre l'entreprise.",
+      qrError: 'Impossible de charger le QR.',
+      qrLoading: 'Chargement du QR...',
+      // #R5 — feedback queue pour l'étape invite_manager.
+      inviteManagerHint: "Un email d'invitation est envoyé en file d'attente. Si votre invité ne reçoit rien sous 5 min, vérifiez que les workers de queue sont actifs (Render).",
+      // #R10 — estimation du temps par étape.
+      estimatedMinutes: '~{n} min',
+      // #R13 — aide contextuelle CSV pour first_employee.
+      csvColumnsHint: "Colonnes CSV requises : prénom, nom, email, salaire_base. Exportez depuis Excel en CSV UTF-8.",
+      // #R1 — clés alignées sur DEFAULT_STEPS (SeedDefaultSteps.php), 10 étapes.
+      steps: {
+        company_info: {
+          title: 'Informations entreprise',
+          desc: 'Renseignez le nom, pays, devise et fuseau horaire de votre société.',
+        },
+        first_department: {
+          title: 'Premier département',
+          desc: 'Créez votre premier département (ex. Production, RH).',
+        },
+        first_employee: {
+          title: 'Premier employé',
+          desc: 'Ajoutez vos employés. Import CSV recommandé pour plus de 3 personnes.',
+        },
+        first_attendance: {
+          title: 'Premier pointage',
+          desc: "Effectuez un premier pointage depuis l'app mobile ou le kiosque.",
+        },
+        invite_manager: {
+          title: 'Inviter un gestionnaire',
+          desc: 'Invitez un collègue comme co-gestionnaire (optionnel).',
+        },
+        configure_schedules: {
+          title: 'Configurer les horaires',
+          desc: 'Créez vos plannings et règles de présence.',
+        },
+        first_report: {
+          title: 'Premier rapport',
+          desc: 'Générez votre premier rapport mensuel de présences (optionnel).',
+        },
+        configure_payroll: {
+          title: 'Configurer la paie',
+          desc: 'Renseignez la structure salariale et les paramètres de paie.',
+        },
+        install_kiosk: {
+          title: 'Installer un kiosque',
+          desc: 'Connectez votre borne ZKTeco pour le pointage sur site (optionnel).',
+        },
+        activate_geofence: {
+          title: 'Activer la géolocalisation',
+          desc: 'Délimitez les zones de pointage autorisées (optionnel).',
+        },
+      },
+    },
+    absences: {
+      title: 'Absences',
+      subtitle: 'Demandes, soldes et décisions RH',
+      listTitle: 'Mes demandes',
+      request: 'Demander',
+      loading: 'Chargement des absences',
+      approve: 'Approuver',
+      reject: 'Refuser',
+      cancel: 'Annuler',
+      rejectTitle: 'Refuser la demande',
+      rejectBody: "Précisez le motif du refus (obligatoire). L'employé sera notifié.",
+      reasonLabel: 'Motif du refus',
+      reasonPlaceholder: 'Motif obligatoire…',
+      reasonRequired: 'Le motif est obligatoire pour refuser.',
+      rejectConfirm: 'Confirmer le refus',
+      rejectInProgress: 'Refus en cours...',
+      statusPending: 'En attente',
+      statusApproved: 'Approuvée',
+      statusRejected: 'Refusée',
+      statusCancelled: 'Annulée',
+      loadError: 'Impossible de charger les absences.',
+      empty: 'Aucune absence.',
+      newAbsence: 'Nouvelle absence',
+      newAbsenceHint: 'Choisissez le type de solde et la période à transmettre au RH.',
+      type: 'Type',
+      typeRequired: "Type d'absence requis",
+      typeFallback: 'Absence',
+      start: 'Début',
+      end: 'Fin',
+      reason: 'Motif',
+      reasonHint: 'Ex : rendez-vous médical, congé familial…',
+      dateMissing: 'Dates de début et fin requises (fin ≥ début).',
+      submitToHr: 'Soumettre au RH',
+      submittedSnack: "Demande d'absence transmise au RH.",
+      noTypeAvailable: "Aucun type d'absence disponible. Contactez le RH pour configurer les soldes.",
+      failure: 'Échec : ',
+    },
+    payrollPage: {
+      title: 'Paie',
+      subtitle: "Bulletins de paie et cycles de paie, avec export PDF direct, connecte a l'API RH pour chaque tenant.",
+      statTotalGross: 'Total Brut',
+      statTotalNet: 'Total Net',
+      statPayslips: 'Bulletins',
+      tabSlips: 'Bulletins de paie',
+      tabRuns: 'Cycles de paie',
+      searchPlaceholder: 'Rechercher par nom ou période…',
+      columnEmployee: 'Employé',
+      columnPeriod: 'Période',
+      columnGross: 'Brut',
+      columnNet: 'Net',
+      columnStatus: 'Statut',
+      columnCompliance: 'Conformité',
+      columnActions: 'Actions',
+      columnEmployees: 'Employés',
+      columnTotalGross: 'Total Brut',
+      columnTotalNet: 'Total Net',
+      loading: 'Chargement...',
+      noPayslips: 'Aucun bulletin trouvé.',
+      noRuns: 'Aucun cycle de paie.',
+      statusValidated: 'Valide',
+      statusDraft: 'Brouillon',
+      statusCompleted: 'Termine',
+      runDraft: 'Brouillon',
+      runCalculated: 'Calculé',
+      runValidated: 'Validé',
+      runLocked: 'Verrouillé',
+      runCalculate: 'Calculer',
+      runValidate: 'Valider (RH)',
+      runLock: 'Verrouiller',
+      runUnlock: 'Déverrouiller',
+      runConfirmLock: 'Verrouiller la clôture de ce cycle ?',
+      runConfirmUnlock: 'Déverrouiller la clôture de ce cycle ?',
+      runConfirmValidate: 'Valider une paie aux barèmes indicatifs ?',
+      runConfirmValidateCta: 'Valider quand même',
+      runPlaceholderBadge: 'Barèmes indicatifs',
+      runPlaceholderWarning: 'Les barèmes de paie de ce pays ne sont pas validés légalement : les bulletins peuvent contenir des montants incorrects. Vérifiez avec un expert-comptable local.',
+      runActionError: "Impossible d'exécuter l'action sur ce cycle de paie.",
+      runCancel: 'Annuler',
+      downloadPdf: 'Télécharger PDF',
+      viewDetail: 'Voir detail',
+      resultsCount: 'resultats',
+      detailTitle: 'Detail du bulletin',
+      detailClose: 'Fermer',
+      detailLoading: 'Chargement du detail...',
+      detailError: 'Detail indisponible pour le moment — affichage des données de la liste.',
+      detailDeductions: 'Deductions',
+      detailEmployerContributions: 'Charges patronales',
+      detailTotalCost: 'Coût total employeur',
+      detailWorkingDays: 'Jours ouvres',
+      detailDaysWorked: 'Jours travailles',
+      detailOvertimeHours: 'Heures supplementaires',
+      detailSalaryBreakdown: 'Composition du salaire',
+      salaryDecompTitle: 'Décomposition du salaire',
+      salaryMonthly: 'Salaire mensuel',
+      salaryDailyRate: 'Taux journalier',
+      salaryHourlyRate: 'Taux horaire',
+      salaryCompositionDays: 'Ce mois : {days} jours × {rate} = {total}',
+      salaryCompositionHours: 'Ce mois : {hours} h × {rate} = {total}',
+    },
+    smartAttendancePage: {
+      title: 'Smart Attendance',
+      subtitle: 'Suivi intelligent de présence par geolocalisation — validation des sessions en attente et statistiques du jour.',
+      allSessions: 'Toutes les sessions →',
+      settings: 'Parametres',
+      pendingSessionsTitle: 'Sessions en attente de validation',
+      noPendingSessions: 'Aucune session en attente de validation.',
+      columnEmployee: 'Employe',
+      columnCheckIn: 'Arrivee',
+      columnCheckOut: 'Depart',
+      columnDuration: 'Duree',
+      columnStatus: 'Statut',
+      columnActions: 'Actions',
+      approve: 'Approuver',
+      reject: 'Refuser',
+      employeeFallback: 'Employé',
+      dashboardLoadError: 'Impossible de charger le tableau de bord.',
+      approveError: "Erreur lors de l'approbation.",
+      rejectError: 'Erreur lors du refus.',
+      statusDetected: 'Detecte',
+      statusPendingValidation: 'En attente',
+      statusApproved: 'Approuve',
+      statusRejected: 'Refuse',
+      statusCancelled: 'Annule',
+      statTotal: 'Total',
+      statDetected: 'Detectes',
+      statPending: 'En attente',
+      statApproved: 'Approuves',
+      statRejected: 'Refuses',
+      approveModalTitle: 'Approuver la session',
+      approveModalBody: 'Vous allez approuver la session de {name}. Cette action est definitive.',
+      approveModalNoteLabel: 'Note (optionnel)',
+      approveModalNotePlaceholder: 'Ajouter une note…',
+      approveModalConfirm: 'Approuver',
+      approveModalInProgress: 'En cours…',
+      rejectModalTitle: 'Refuser la session',
+      rejectModalBody: 'Vous allez refuser la session de {name}. Veuillez indiquer une raison.',
+      rejectModalReasonLabel: 'Raison du refus',
+      rejectModalReasonPlaceholder: 'Raison obligatoire…',
+      rejectModalReasonRequired: 'La raison est obligatoire.',
+      rejectModalConfirm: 'Refuser',
+      rejectModalInProgress: 'En cours…',
+      cancel: 'Annuler',
+    },
+    smartAttendanceSessionsPage: {
+      title: 'Sessions de présence',
+      subtitle: 'Liste complete des sessions Smart Attendance avec filtres avances et pagination.',
+      backToDashboard: '← Tableau de bord',
+      loadError: 'Impossible de charger les sessions.',
+      filtersTitle: 'Filtres',
+      filterStatus: 'Statut',
+      filterStatusAll: 'Tous les statuts',
+      filterEmployee: 'Employé (ID ou nom)',
+      filterEmployeePlaceholder: 'Rechercher…',
+      filterDateFrom: 'Date debut',
+      filterDateTo: 'Date fin',
+      apply: 'Appliquer',
+      reset: 'Reinitialiser',
+      exportCsv: '⬇ Export CSV',
+      sessionsTitle: 'Sessions',
+      sessionCountSingular: 'session',
+      sessionCountPlural: 'sessions',
+      columnEmployee: 'Employe',
+      columnCheckIn: 'Arrivee',
+      columnCheckOut: 'Depart',
+      columnDuration: 'Duree',
+      columnStatus: 'Statut',
+      columnDetail: 'Detail',
+      noSessions: 'Aucune session trouvee pour ces critères.',
+      viewDetail: 'Voir →',
+      employeeFallback: 'Employe',
+      pageLabel: 'Page',
+      previous: '← Precedent',
+      next: 'Suivant →',
+      csvHeaderId: 'ID',
+      csvHeaderEmployee: 'Employé',
+      csvHeaderMatricule: 'Matricule',
+      csvHeaderCheckIn: 'Arrivee',
+      csvHeaderCheckOut: 'Depart',
+      csvHeaderDuration: 'Duree (min)',
+      csvHeaderStatus: 'Statut',
+    },
+    smartAttendanceSessionDetailPage: {
+      title: 'Detail de session',
+      subtitle: 'Informations completes de la session de présence geolocalisee.',
+      backToSessions: '← Retour aux sessions',
+      loadError: 'Impossible de charger la session.',
+      notFound: 'Session introuvable.',
+      employeeFallback: 'Employe',
+      noteLabel: 'Note : ',
+      rejectionReasonLabel: 'Raison du refus : ',
+      timelineTitle: 'Timeline',
+      checkInDetected: 'Arrivee detectee',
+      departure: 'Depart',
+      durationLabel: 'Duree : ',
+      gpsCoordinatesTitle: 'Coordonnees GPS',
+      checkInLabel: 'Check-in',
+      checkOutLabel: 'Check-out',
+      viewOnMaps: 'Voir sur Maps →',
+      gpsHistoryTitle: 'Historique des événements GPS',
+      columnType: 'Type',
+      columnTime: 'Heure',
+      columnLatitude: 'Latitude',
+      columnLongitude: 'Longitude',
+      columnAccuracy: 'Precision (m)',
+      pendingValidationNotice: 'Cette session est en attente de validation.',
+      approve: 'Approuver',
+      reject: 'Refuser',
+      approveErrorGeneric: "Erreur lors de l'approbation.",
+      rejectErrorGeneric: 'Erreur lors du refus.',
+    },
+    smartAttendanceSettingsPage: {
+      title: 'Paramètres Smart Attendance',
+      subtitle: 'Configuration du mode de pointage et du géofence entreprise.',
+      backToDashboard: '← Tableau de bord',
+      loadError: 'Impossible de charger les paramètres.',
+      saveError: "Erreur lors de l'enregistrement.",
+      saveSuccess: 'Paramètres enregistrés avec succès.',
+      currentModeLabel: 'Mode actuel',
+      modeFree: 'Libre (pas de mode forcé)',
+      modeGpsAuto: 'GPS automatique',
+      modeQrCode: 'QR Code',
+      modeManual: 'Manuel',
+      gpsLabel: 'GPS : ',
+      gpsEnabled: 'Activé',
+      gpsDisabled: 'Désactivé',
+      radiusLabel: 'Rayon : ',
+      configurationTitle: 'Configuration',
+      modeFieldLabel: 'Mode de pointage',
+      modeFreeHint: '“Libre” laisse l’employé choisir la méthode disponible.',
+      gpsToggleTitle: 'Géolocalisation GPS',
+      gpsToggleSubtitle: 'Activer la vérification de position',
+      geofenceConfigTitle: 'Configuration du géofence',
+      latitudeLabel: 'Latitude',
+      longitudeLabel: 'Longitude',
+      radiusFieldLabel: 'Rayon (mètres)',
+      radiusHint: 'Distance maximale autorisée depuis le lieu de travail.',
+      save: 'Enregistrer',
+      saving: 'Enregistrement…',
+      cancel: 'Annuler',
+    },
+    developerSettingsPage: {
+      title: 'Espace Développeur',
+      subtitle: 'Gerez vos cles API et vos webhooks pour integrer RMIH a vos outils.',
+      loadTokensError: 'Impossible de charger les cles API.',
+      loadWebhooksError: 'Impossible de charger les webhooks.',
+      createTokenError: 'Impossible de créer la clé API.',
+      deleteTokenError: 'Impossible de revoquer la cle API.',
+      createWebhookError: 'Impossible de créer le webhook.',
+      deleteWebhookError: 'Impossible de supprimer le webhook.',
+      updateWebhookError: 'Impossible de mettre à jour le webhook.',
+      revokeTokenConfirm: "Revoquer cette cle API ? Les integrations qui l'utilisent cesseront de fonctionner.",
+      deleteWebhookConfirm: 'Supprimer cet endpoint webhook ?',
+      revealedTokenNotice: 'Cle "{name}" creee — copiez-la maintenant, elle ne sera plus jamais affichee :',
+      revealedTokenDismiss: "J'ai copie la cle, masquer",
+      apiKeysTitle: 'Cles API',
+      loading: 'Chargement...',
+      noTokens: 'Aucune cle API creee pour le moment.',
+      createdOn: 'Creee le {date}',
+      unknownDate: 'Date inconnue',
+      lastUsedOn: ' · dernière utilisation le {date}',
+      neverUsed: ' · jamais utilisee',
+      revoke: 'Revoquer',
+      tokenNamePlaceholder: 'Nom de la cle (ex: Production)',
+      webhooksTitle: 'Webhooks',
+      noWebhooks: 'Aucun endpoint webhook configuré.',
+      eventsCount: '{count} evenement(s)',
+      failuresCount: '{count} échec(s)',
+      noFailures: 'aucun échec',
+      active: 'Actif',
+      inactive: 'Inactif',
+      triggeredOn: 'Déclenché le {date}',
+      neverTriggered: 'Jamais déclenché',
+      delete: 'Supprimer',
+      addEndpoint: 'Ajouter un endpoint',
+      apiDocsTitle: 'Documentation API',
+      apiDocsBody: 'Découvrez comment integrer nos webhooks signes (format Svix) et nos endpoints REST.',
+      openExplorer: "Ouvrir l'Explorer",
+      newWebhookModalTitle: 'Nouvel endpoint webhook',
+      destinationUrlLabel: 'URL de destination',
+      eventsToListenLabel: 'Événements a ecouter',
+      cancel: 'Annuler',
+      creating: 'Creation...',
+      create: 'Créer',
+    },
+    partnerPage: {
+      loading: 'Chargement de votre espace...',
+      applyErrorPrefix: 'Erreur lors de la candidature : ',
+      notApplied: {
+        title: 'Devenir Partenaire',
+        subtitle: "Rejoignez l'écosystème RMIH et gagnez des commissions sur chaque entreprise que vous parrainez. Jusqu'à 20 % de commission récurrente.",
+        individual: "Postuler en tant qu'Individuel",
+        agency: "Postuler en tant qu'Agence",
+      },
+      pending: {
+        title: 'Candidature en cours',
+        body: "Votre demande est en cours de validation par notre équipe commerciale. Vous recevrez un email dès que votre accès sera activé.",
+      },
+      dashboard: {
+        title: 'Dashboard Partenaire',
+        subtitle: 'Suivez vos conversions et vos commissions RMIH — statut partenaire actif.',
+      },
+      metrics: {
+        conversions: 'Conversions',
+        totalEarned: 'Gains totaux',
+        pending: 'En attente',
+        withdrawable: 'Solde retirable',
+      },
+      commissions: {
+        title: 'Dernières commissions',
+        empty: 'Aucune commission enregistrée.',
+      },
+      table: {
+        tenantId: 'Tenant ID',
+        date: 'Date',
+        status: 'Statut',
+        amount: 'Montant',
+        statusPaid: 'Payée',
+        statusPending: 'En attente',
+      },
+      payout: {
+        title: 'Paiement',
+        body: 'Vos commissions sont payées une fois le seuil atteint. Vérifiez que vos coordonnées bancaires sont à jour.',
+        request: 'Demander un virement',
+        sending: 'Envoi...',
+        insufficient: 'Solde insuffisant pour demander un virement (minimum 100,00 €).',
+        success: 'Demande de virement envoyée avec succès.',
+        errorPrefix: 'Erreur lors de la demande de virement : ',
+      },
+      referral: {
+        title: 'Lien de parrainage',
+        unavailable: 'Lien indisponible',
+        copy: 'Copier mon lien',
+        copied: 'Copié !',
+        copyError: 'Impossible de copier le lien. Copiez-le manuellement.',
+      },
+    },
+    offlinePage: {
+      title: 'Pas de connexion Internet',
+      body: "Vous êtes actuellement hors ligne. Si un Edge node Leopardo est disponible sur votre reseau local, l'application continue de fonctionner normalement.",
+      edgeModeTitle: 'Mode Edge actif ?',
+      edgeModeBody: "Accédez à l'interface locale via :",
+      retry: 'Reessayer',
+    },
+
+  billing: {
+    title: 'Facturation',
+    subtitle: 'Gérez votre abonnement, vos factures et vos informations de paiement.',
+    statusActive: 'Actif',
+    statusCancelled: 'Annulé',
+    statusPastDue: 'Impayé',
+    statusPaid: 'Payée',
+    statusPending: 'En attente',
+    cancelConfirm: 'Annuler votre abonnement ? Vous perdrez l\'accès aux modules premium à la fin de la période en cours.',
+    cancelError: 'Impossible d\'annuler l\'abonnement.',
+    renewError: 'Impossible de réactiver l\'abonnement.',
+    noPaymentAccount: 'Aucun compte de paiement associé. Souscrivez d\'abord à un plan.',
+    downloadError: 'Impossible de télécharger la facture.',
+    noActivePeriod: 'Aucune période active',
+    periodRange: 'Période : {start} au {end}',
+    cancelLabel: 'Annuler l\'abonnement',
+    loadError: 'Impossible de charger les informations de facturation.',
+  },
+  contracts: {
+    title: 'Contrats',
+    subtitle: 'Gestion des contrats de votre équipe',
+    statusAll: 'Tous les statuts',
+    statusActive: 'Actif',
+    statusSuspended: 'Suspendu',
+    statusActives: 'Actifs',
+    statusSuspendeds: 'Suspendus',
+    statusTerminated: 'Terminé',
+    statusDraft: 'Brouillon',
+  },
+  absencesPage: {
+    loadError: 'Impossible de charger les absences.',
+    approve: 'Approuver',
+    reject: 'Refuser',
+    rejectTitle: 'Refuser la demande',
+    rejectReasonPlaceholder: 'Motif du refus (obligatoire)',
+    reasonRequired: 'Le motif du refus est obligatoire.',
+    cancel: 'Annuler',
+    confirmReject: 'Confirmer le refus',
+    approveSuccess: 'Demande approuvée.',
+    rejectSuccess: 'Demande refusée.',
+    actionError: "Impossible d'effectuer l'action.",
+  },
+  attendancePage: { loadError: 'Impossible de charger le pointage.' },
+  socialPage: {
+    title: 'Réseaux sociaux',
+    subtitle: 'Publiez et planifiez vos contenus',
+    loadError: 'Impossible de charger les publications.',
+    createError: 'Impossible de créer la publication.',
+  },
+  socialMarketingPage: {
+    title: 'Marketing',
+    subtitle: 'Connectez votre compte social et gérez vos publications',
+    loadAccountError: 'Impossible de charger le compte social.',
+    loadPostsError: 'Impossible de charger les publications.',
+    connectError: 'Impossible de connecter le compte social.',
+    disconnectError: 'Impossible de déconnecter le compte social.',
+    createError: 'Impossible de créer la publication.',
+    publishError: 'Impossible de publier la publication.',
+    deleteError: 'Impossible de supprimer la publication.',
+    statusActive: 'Actif',
+  },
+  trainingPage: {
+    loadError: 'Impossible de charger les formations.',
+    createError: 'Impossible de créer la formation.',
+  },
+  notificationsPage: {
+    statusEnabled: 'Activé',
+    statusDisabled: 'Désactivé',
+  },
+  travelPortal: {
+    title: "Espace voyageur",
+    subtitle: "Suivez votre réservation, téléchargez vos e-billets et gérez votre voyage.",
+    referenceLabel: "Référence de réservation",
+    referencePlaceholder: "Ex. GV-2026-0001",
+    codeLabel: "Code de validation",
+    codePlaceholder: "Code de validation (sur votre e-billet)",
+    track: "Suivre ma réservation",
+    tracking: "Suivi…",
+    status: "Statut",
+    trip: "Trajet",
+    tickets: "Billets",
+    passengers: "Passagers",
+    total: "Total",
+    downloadTicket: "Télécharger l'e-billet",
+    cancel: "Annuler la réservation",
+    cancelConfirm: "Confirmer l'annulation",
+    cancelling: "Annulation…",
+    cancelReasonPlaceholder: "Expliquez le motif de l'annulation",
+    cancelled: "Annulée",
+    statusPending: "En attente",
+    statusConfirmed: "Confirmée",
+    statusRefunded: "Remboursée",
+    statusCompleted: "Terminée",
+    notFound: "Réservation introuvable. Vérifiez la référence et le code.",
+    invalidCode: "Code de validation invalide.",
+    departurePast: "L'annulation n'est plus possible : le départ est passé.",
+    error: "Une erreur est survenue. Réessayez.",
+  },
+
+  },
+  ar: {
+    login: {
+      title: 'تسجيل الدخول إلى RMIH',
+      subtitle: 'ادخل إلى مساحة الموارد البشرية مع اللغة والدور والصلاحيات المناسبة.',
+      clientSpace: 'مساحة العميل',
+      heroTitle: 'دخول واضح وآمن للمديرين وفرق الموارد البشرية والموظفين.',
+      heroCopy: 'تطبق البوابة سياق الشركة واللغة والصلاحيات مباشرة بعد تسجيل الدخول.',
+      secureBadge: 'تسجيل دخول آمن',
+      trustPoints: [
+        'جلسة مرتبطة بالشركة',
+        'صلاحيات حسب الدور',
+        'واجهة تدعم العربية و RTL',
+      ],
+      back: 'العودة إلى الموقع',
+      email: 'البريد الإلكتروني',
+      password: 'كلمة المرور',
+      showPassword: 'إظهار كلمة المرور',
+      hidePassword: 'إخفاء كلمة المرور',
+      remember: 'تذكرني',
+      forgot: 'نسيت كلمة المرور؟',
+      submit: 'تسجيل الدخول',
+      loading: 'جار تسجيل الدخول...',
+      demoAccess: 'تجربة حساب تجريبي',
+      demoUnavailable: 'الوصول التجريبي غير متاح مؤقتاً.',
+    accountCreatedFree: 'تم إنشاء الحساب! سجّل الدخول للوصول إلى مساحتك المجانية.',
+    accountCreatedPaid: 'تم استلام التسجيل! سجّل الدخول للمتابعة.',
+      demoTitle: 'اختيار حساب تجريبي',
+      demoSubtitle: 'اختر دورا لملء النموذج ثم سجل الدخول.',
+      close: 'إغلاق',
+      supportCopy: 'تحتاج مساعدة لاسترجاع الدخول؟',
+      supportLink: 'اتصل بالدعم',
+      errors: {
+        generic: 'حدث خطأ.',
+        missingToken: 'رمز تسجيل الدخول غير موجود في رد ال API.',
+        missingUser: 'ملف المستخدم غير موجود في رد ال API.',
+        google: 'فشل تسجيل الدخول عبر Google. حاول مرة أخرى.',
+        googleNetwork: 'تعذر الوصول إلى Google. تحقق من اتصالك وحاول مرة أخرى.',
+        googleAuthFailed: 'رفض Google تسجيل الدخول. حاول مرة أخرى.',
+        googleNoAccount: 'لا يوجد حساب RMIH مرتبط ببريد Google هذا. اطلب دعوة من المسؤول.',
+        googleNoAccountCta: 'ابدأ تجربة دون دعوة',
+        googleUnavailable: 'تسجيل الدخول عبر Google غير متاح بعد. استخدم بريدك وكلمة المرور.',
+      },
+    },
+    dashboard: {
+      heading: 'لوحة التحكم',
+      employees: 'الموظفون النشطون',
+      present: 'حاضرون',
+      live: 'مباشر',
+      late: 'التأخيرات',
+      activity: 'النشاط الأخير',
+      team: 'الموظفون',
+      attendance: 'الحضور',
+      payroll: 'الرواتب',
+      settings: 'الإعدادات',
+      logout: 'تسجيل الخروج',
+      userMenuAccount: 'حسابي',
+      userMenuPassword: 'تغيير كلمة المرور',
+      userMenuSecurity: 'الأمان (2FA)',
+      language: 'اللغة',
+      presentBadge: 'حاضر',
+      employeeLabel: 'موظف',
+      checkInAt: 'تسجيل الدخول في',
+      featureLockedRole: 'دورك الحالي لا يسمح بالوصول إلى هذه الوحدة.',
+      featureLockedPlan: 'هذه الوحدة غير مشمولة في خطتك الحالية.',
+      featureLockedBadge: 'الوحدة غير مشمولة',
+      featureLockedExplanation: 'يحافظ RMIH على واجهة واضحة لتجنب أخطاء 404 المربكة وأخطاء API غير الضرورية.',
+      featureLockedAdminHint: 'اطلب تفعيل الوحدة من مدير المنصة أو انتقل إلى خطة تتضمن هذه الوحدة.',
+      featureLockedPlanRoleTitle: 'الخطة والدور',
+      featureLockedPlanRoleBody: 'تُحسب الوحدات الظاهرة في هذه المساحة بناءً على الصلاحيات وخطة الشركة ودور المستخدم.',
+      featureLockedCta: 'طلب التفعيل',
+      activate: 'تفعيل',
+      activating: 'جارٍ التفعيل…',
+      activateError: 'فشل التفعيل. يرجى المحاولة مرة أخرى.',
+      recent_activity: 'النشاط الأخير',
+      noNotifications: 'لا توجد إشعارات حديثة.',
+      managePreferences: 'إدارة تفضيلاتي',
+      resumeOnboarding: '▶ استئناف الإعداد',
+      businessSection: 'قطاع عملك',
+      hrMenu: 'الموارد البشرية',
+      modules: {
+        dashboard: 'لوحة القيادة',
+        employees: 'الموظفون',
+        attendance: 'الحضور',
+        attendance_geo: 'جلسات GPS',
+        absences: 'الإجازات',
+        contracts: 'العقود',
+        payroll: 'الرواتب',
+        training: 'التدريب',
+        reports: 'التقارير',
+        partner: 'برنامج الشراكة',
+        billing: 'الفوترة',
+        integrations: 'التكاملات',
+        marketing: 'التسويق',
+        accounting: 'المحاسبة',
+        crm: 'إدارة العملاء',
+        restaurant: 'مطعم',
+        restaurant_kitchen: 'المطبخ',
+        edu_manager: 'الإدارة المدرسية',
+        travel: 'وكالة سفر',
+        fuel: 'محطة وقود',
+        showcase: 'موقع التعريف',
+      },
+      sectionEnterprise: 'الشركة',
+      sectionModules: 'الوحدات والخطة',
+      sectionDiscoverBusiness: 'اكتشف القطاعات',
+      sectionLocked: 'للتفعيل',
+    },
+    passwordReset: {
+      title: 'نسيت كلمة المرور؟',
+      subtitle: 'أدخل البريد الإلكتروني لحسابك وسنرسل لك رابط إعادة تعيين آمنًا.',
+      emailLabel: 'البريد الإلكتروني',
+      emailPlaceholder: 'you@company.com',
+      submit: 'إرسال الرابط',
+      submitting: 'جارٍ الإرسال...',
+      successTitle: 'تم إرسال البريد الإلكتروني',
+      successBody: 'إذا كان هناك حساب بهذا العنوان، فقد تم إرسال رابط إعادة التعيين للتو. لا تنسَ التحقق من مجلد الرسائل غير المرغوب فيها.',
+      backToLogin: 'العودة إلى تسجيل الدخول',
+      newPasswordLabel: 'كلمة المرور الجديدة',
+      newPasswordPlaceholder: '8 أحرف على الأقل',
+      confirmPasswordLabel: 'تأكيد كلمة المرور',
+      confirmPasswordPlaceholder: 'أعد إدخال كلمة المرور',
+      submitReset: 'إعادة تعيين كلمة المرور',
+      submittingReset: 'جارٍ إعادة التعيين...',
+      resetSuccessTitle: 'تمت إعادة تعيين كلمة المرور',
+      resetSuccessBody: 'يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.',
+      invalidEmail: 'عنوان بريد إلكتروني غير صالح.',
+      invalidPassword: 'يجب أن تتكون كلمة المرور من 8 أحرف على الأقل.',
+      passwordMismatch: 'كلمتا المرور غير متطابقتين.',
+      missingTokenTitle: 'رابط غير صالح أو منتهي الصلاحية',
+      missingTokenBody: 'رابط إعادة التعيين هذا غير صالح أو انتهت صلاحيته. يرجى طلب رابط جديد.',
+      genericError: 'حدث خطأ ما. يرجى المحاولة مرة أخرى بعد قليل.',
+      showPassword: 'إظهار كلمة المرور',
+      hidePassword: 'إخفاء كلمة المرور',
+    },
+    accountActivation: {
+      title: 'تفعيل حسابك',
+      subtitle: 'حدد كلمة مرور لتفعيل حسابك في ليوباردو RH.',
+      passwordLabel: 'كلمة المرور',
+      passwordPlaceholder: '8 أحرف على الأقل',
+      confirmPasswordLabel: 'تأكيد كلمة المرور',
+      confirmPasswordPlaceholder: 'أعد إدخال كلمة المرور',
+      submit: 'تفعيل حسابي',
+      submitting: 'جارٍ التفعيل…',
+      successTitle: 'تم تفعيل الحساب!',
+      successBody: 'حسابك أصبح نشطًا. يمكنك الآن تسجيل الدخول.',
+      backToLogin: 'الانتقال إلى تسجيل الدخول',
+      invalidPassword: 'يجب أن تتكون كلمة المرور من 8 أحرف على الأقل.',
+      passwordMismatch: 'كلمتا المرور غير متطابقتين.',
+      missingTokenTitle: 'رابط غير صالح أو منتهي الصلاحية',
+      missingTokenBody: 'رابط التفعيل هذا غير صالح أو انتهت صلاحيته. تواصل مع مديرك للحصول على دعوة جديدة.',
+      alreadyAccepted: 'تم استخدام هذا الرابط بالفعل. سجّل الدخول مباشرة.',
+      expired: 'انتهت صلاحية هذا الرابط. اطلب دعوة جديدة.',
+      genericError: 'حدث خطأ ما. حاول مرة أخرى بعد قليل.',
+      companySuspended: 'تم تعليق وصول شركتك. تواصل مع المسؤول.',
+      validating: 'جارٍ التحقق من رابطك…',
+      showPassword: 'إظهار كلمة المرور',
+      hidePassword: 'إخفاء كلمة المرور',
+    },
+    onboarding: {
+      stepBadge: 'الخطوة {current} من {total}',
+      next: 'التالي',
+      finish: 'إنهاء',
+      validating: 'جارٍ التحقق...',
+      skip: 'تخطي هذه الخطوة',
+      close: 'إغلاق مساعد الإعداد',
+      retry: 'إعادة المحاولة',
+      errorGeneric: 'تعذر تحميل خطوات الإعداد.',
+      actionCreateDepartment: 'إنشاء قسم',
+      actionAddEmployee: 'إضافة موظف',
+      actionResumeHint: "يستأنف المساعد تلقائياً بمجرد إنجاز ذلك.",
+      allStepsDone: 'اكتمل الإعداد!',
+      quickStart: 'بداية سريعة',
+      later: 'موصى به لاحقًا',
+      firstCheckinHint: 'قم بأول تسجيل حضور من تطبيق الجوال أو الكشك، ثم ضع علامة على هذه الخطوة كمكتملة.',
+      qrShow: 'إظهار رمز QR للشركة',
+      qrHide: 'إخفاء رمز QR',
+      qrHint: 'امسح رمز QR هذا بتطبيق Leopardo للجوال للانضمام إلى الشركة.',
+      qrError: 'تعذر تحميل رمز QR.',
+      qrLoading: 'جارٍ تحميل رمز QR...',
+      inviteManagerHint: 'سيتم إرسال بريد الدعوة عبر قائمة الانتظار. إذا لم يصل الإشعار خلال 5 دقائق، تأكد من تشغيل عمال قائمة الانتظار (Render).',
+      estimatedMinutes: '~{n} دقيقة',
+      csvColumnsHint: 'أعمدة CSV المطلوبة: الاسم الأول، اسم العائلة، البريد الإلكتروني، الراتب الأساسي. صدّر من Excel بتنسيق CSV UTF-8.',
+      steps: {
+        company_info: {
+          title: 'معلومات الشركة',
+          desc: 'أدخل الاسم والبلد والعملة والمنطقة الزمنية لشركتك.',
+        },
+        first_department: {
+          title: 'أول قسم',
+          desc: 'أنشئ قسمك الأول (مثل: الإنتاج، الموارد البشرية).',
+        },
+        first_employee: {
+          title: 'أول موظف',
+          desc: 'أضف موظفيك. يُنصح باستيراد CSV لأكثر من 3 أشخاص.',
+        },
+        first_attendance: {
+          title: 'أول تسجيل حضور',
+          desc: 'قم بتسجيل حضور من التطبيق المحمول أو الكشك.',
+        },
+        invite_manager: {
+          title: 'دعوة مدير',
+          desc: 'ادعُ زميلاً كمدير مشارك (اختياري).',
+        },
+        configure_schedules: {
+          title: 'ضبط الجداول الزمنية',
+          desc: 'أنشئ جداولك وقواعد الحضور.',
+        },
+        first_report: {
+          title: 'أول تقرير',
+          desc: 'أنشئ أول تقرير حضور شهري (اختياري).',
+        },
+        configure_payroll: {
+          title: 'ضبط الرواتب',
+          desc: 'أدخل هيكل الرواتب وإعدادات الدفع لشركتك.',
+        },
+        install_kiosk: {
+          title: 'تركيب الكشك',
+          desc: 'اربط كشك ZKTeco لتسجيل الحضور في الموقع (اختياري).',
+        },
+        activate_geofence: {
+          title: 'تفعيل الحدود الجغرافية',
+          desc: 'حدد مناطق تسجيل الحضور المسموحة (اختياري).',
+        },
+      },
+    },
+    absences: {
+      title: 'الإجازات',
+      subtitle: 'الطلبات والأرصدة وقرارات الموارد البشرية',
+      listTitle: 'طلباتي',
+      request: 'طلب',
+      loading: 'جارٍ تحميل الإجازات',
+      approve: 'موافقة',
+      reject: 'رفض',
+      cancel: 'إلغاء',
+      rejectTitle: 'رفض الطلب',
+      rejectBody: 'يرجى تحديد سبب الرفض (إلزامي). سيتم إشعار الموظف.',
+      reasonLabel: 'سبب الرفض',
+      reasonPlaceholder: 'السبب إلزامي…',
+      reasonRequired: 'السبب إلزامي للرفض.',
+      rejectConfirm: 'تأكيد الرفض',
+      rejectInProgress: 'جارٍ الرفض...',
+      statusPending: 'قيد الانتظار',
+      statusApproved: 'تمت الموافقة',
+      statusRejected: 'مرفوض',
+      statusCancelled: 'ملغى',
+      loadError: 'تعذر تحميل الإجازات.',
+      empty: 'لا توجد إجازات.',
+      newAbsence: 'غياب جديد',
+      newAbsenceHint: 'اختر نوع الرصيد والفترة لإرسالها إلى الموارد البشرية.',
+      type: 'النوع',
+      typeRequired: 'نوع الغياب مطلوب',
+      typeFallback: 'غياب',
+      start: 'البداية',
+      end: 'النهاية',
+      reason: 'السبب',
+      reasonHint: 'مثال: موعد طبي، إجازة عائلية...',
+      dateMissing: 'تاريخا البداية والنهاية مطلوبان (النهاية ≥ البداية).',
+      submitToHr: 'إرسال إلى الموارد البشرية',
+      submittedSnack: 'تم إرسال طلب الغياب إلى الموارد البشرية.',
+      noTypeAvailable: 'لا يوجد نوع غياب متاح. اتصل بالموارد البشرية لتهيئة الأرصدة.',
+      failure: 'خطأ: ',
+    },
+    payrollPage: {
+      title: 'الرواتب',
+      subtitle: 'كشوف الرواتب ودورات الرواتب، مع تصدير PDF مباشر، متصلة بواجهة برمجة الموارد البشرية لكل شركة.',
+      statTotalGross: 'إجمالي الإجمالي',
+      statTotalNet: 'إجمالي الصافي',
+      statPayslips: 'كشوف الرواتب',
+      tabSlips: 'كشوف الرواتب',
+      tabRuns: 'دورات الرواتب',
+      searchPlaceholder: 'البحث بالاسم أو الفترة...',
+      columnEmployee: 'الموظف',
+      columnPeriod: 'الفترة',
+      columnGross: 'الإجمالي',
+      columnNet: 'الصافي',
+      columnStatus: 'الحالة',
+      columnCompliance: 'المطابقة',
+      columnActions: 'الإجراءات',
+      columnEmployees: 'الموظفون',
+      columnTotalGross: 'إجمالي الإجمالي',
+      columnTotalNet: 'إجمالي الصافي',
+      loading: 'جار التحميل...',
+      noPayslips: 'لا توجد كشوف رواتب.',
+      noRuns: 'لا توجد دورة رواتب.',
+      statusValidated: 'معتمد',
+      statusDraft: 'مسودة',
+      statusCompleted: 'مكتمل',
+      runDraft: 'مسودة',
+      runCalculated: 'تم الحساب',
+      runValidated: 'تم الاعتماد',
+      runLocked: 'مقفل',
+      runCalculate: 'احسب',
+      runValidate: 'اعتماد (موارد بشرية)',
+      runLock: 'قفل',
+      runUnlock: 'فتح القفل',
+      runConfirmLock: 'قفل إقفال دورة الرواتب هذه؟',
+      runConfirmUnlock: 'فتح إقفال دورة الرواتب هذه؟',
+      runConfirmValidate: 'التحقق من رواتب بشرائح استرشادية؟',
+      runConfirmValidateCta: 'تحقق على أي حال',
+      runPlaceholderBadge: 'شرائح استرشادية',
+      runPlaceholderWarning: 'شرائح الرواتب لهذا البلد غير معتمدة قانونياً: قد تحتوي كشوف الرواتب على مبالغ غير صحيحة. تحقق مع محاسب قانوني محلي.',
+      runActionError: 'تعذر تنفيذ الإجراء على دورة الرواتب.',
+      runCancel: 'إلغاء',
+      downloadPdf: 'تحميل PDF',
+      viewDetail: 'عرض التفاصيل',
+      resultsCount: 'نتائج',
+      detailTitle: 'تفاصيل كشف الراتب',
+      detailClose: 'إغلاق',
+      detailLoading: 'جار تحميل التفاصيل...',
+      detailError: 'التفاصيل غير متوفرة حاليا — عرض بيانات القائمة.',
+      detailDeductions: 'الخصومات',
+      detailEmployerContributions: 'اشتراكات صاحب العمل',
+      detailTotalCost: 'التكلفة الإجمالية لصاحب العمل',
+      detailWorkingDays: 'أيام العمل',
+      detailDaysWorked: 'أيام العمل الفعلية',
+      detailOvertimeHours: 'ساعات العمل الإضافي',
+      detailSalaryBreakdown: 'تفاصيل الراتب',
+      salaryDecompTitle: 'تفاصيل الراتب',
+      salaryMonthly: 'الراتب الشهري',
+      salaryDailyRate: 'الأجر اليومي',
+      salaryHourlyRate: 'الأجر بالساعة',
+      salaryCompositionDays: 'هذا الشهر: {days} يومًا × {rate} = {total}',
+      salaryCompositionHours: 'هذا الشهر: {hours} ساعة × {rate} = {total}',
+    },
+    smartAttendancePage: {
+      title: 'الحضور الذكي',
+      subtitle: 'تتبع ذكي للحضور بالموقع الجغرافي — اعتماد الجلسات المعلقة وإحصائيات اليوم.',
+      allSessions: 'جميع الجلسات ←',
+      settings: 'الإعدادات',
+      pendingSessionsTitle: 'جلسات في انتظار الاعتماد',
+      noPendingSessions: 'لا توجد جلسات في انتظار الاعتماد.',
+      columnEmployee: 'الموظف',
+      columnCheckIn: 'الوصول',
+      columnCheckOut: 'المغادرة',
+      columnDuration: 'المدة',
+      columnStatus: 'الحالة',
+      columnActions: 'الإجراءات',
+      approve: 'اعتماد',
+      reject: 'رفض',
+      employeeFallback: 'موظف',
+      dashboardLoadError: 'تعذر تحميل لوحة التحكم.',
+      approveError: 'خطأ أثناء الاعتماد.',
+      rejectError: 'خطأ أثناء الرفض.',
+      statusDetected: 'مكتشف',
+      statusPendingValidation: 'قيد الانتظار',
+      statusApproved: 'معتمد',
+      statusRejected: 'مرفوض',
+      statusCancelled: 'ملغى',
+      statTotal: 'الإجمالي',
+      statDetected: 'مكتشف',
+      statPending: 'قيد الانتظار',
+      statApproved: 'معتمد',
+      statRejected: 'مرفوض',
+      approveModalTitle: 'اعتماد الجلسة',
+      approveModalBody: 'ستقوم باعتماد جلسة {name}. هذا الإجراء نهائي.',
+      approveModalNoteLabel: 'ملاحظة (اختياري)',
+      approveModalNotePlaceholder: 'إضافة ملاحظة…',
+      approveModalConfirm: 'اعتماد',
+      approveModalInProgress: 'جار التنفيذ…',
+      rejectModalTitle: 'رفض الجلسة',
+      rejectModalBody: 'ستقوم برفض جلسة {name}. يرجى تحديد السبب.',
+      rejectModalReasonLabel: 'سبب الرفض',
+      rejectModalReasonPlaceholder: 'السبب مطلوب…',
+      rejectModalReasonRequired: 'السبب مطلوب.',
+      rejectModalConfirm: 'رفض',
+      rejectModalInProgress: 'جار التنفيذ…',
+      cancel: 'إلغاء',
+    },
+    smartAttendanceSessionsPage: {
+      title: 'جلسات الحضور',
+      subtitle: 'قائمة كاملة بجلسات Smart Attendance مع مرشحات متقدمة وترقيم صفحات.',
+      backToDashboard: '← لوحة التحكم',
+      loadError: 'تعذر تحميل الجلسات.',
+      filtersTitle: 'المرشحات',
+      filterStatus: 'الحالة',
+      filterStatusAll: 'جميع الحالات',
+      filterEmployee: 'الموظف (رقم أو اسم)',
+      filterEmployeePlaceholder: 'بحث…',
+      filterDateFrom: 'تاريخ البداية',
+      filterDateTo: 'تاريخ النهاية',
+      apply: 'تطبيق',
+      reset: 'إعادة التعيين',
+      exportCsv: '⬇ تصدير CSV',
+      sessionsTitle: 'الجلسات',
+      sessionCountSingular: 'جلسة',
+      sessionCountPlural: 'جلسات',
+      columnEmployee: 'الموظف',
+      columnCheckIn: 'الوصول',
+      columnCheckOut: 'المغادرة',
+      columnDuration: 'المدة',
+      columnStatus: 'الحالة',
+      columnDetail: 'التفاصيل',
+      noSessions: 'لم يتم العثور على جلسات لهذه المعايير.',
+      viewDetail: 'عرض ←',
+      employeeFallback: 'موظف',
+      pageLabel: 'صفحة',
+      previous: '← السابق',
+      next: 'التالي →',
+      csvHeaderId: 'الرقم',
+      csvHeaderEmployee: 'الموظف',
+      csvHeaderMatricule: 'رقم الموظف',
+      csvHeaderCheckIn: 'الوصول',
+      csvHeaderCheckOut: 'المغادرة',
+      csvHeaderDuration: 'المدة (دقيقة)',
+      csvHeaderStatus: 'الحالة',
+    },
+    smartAttendanceSessionDetailPage: {
+      title: 'تفاصيل الجلسة',
+      subtitle: 'معلومات كاملة عن جلسة الحضور بالموقع الجغرافي.',
+      backToSessions: '← الرجوع إلى الجلسات',
+      loadError: 'تعذر تحميل الجلسة.',
+      notFound: 'الجلسة غير موجودة.',
+      employeeFallback: 'موظف',
+      noteLabel: 'ملاحظة: ',
+      rejectionReasonLabel: 'سبب الرفض: ',
+      timelineTitle: 'المخطط الزمني',
+      checkInDetected: 'الوصول المكتشف',
+      departure: 'المغادرة',
+      durationLabel: 'المدة: ',
+      gpsCoordinatesTitle: 'إحداثيات GPS',
+      checkInLabel: 'الوصول',
+      checkOutLabel: 'المغادرة',
+      viewOnMaps: 'عرض على الخريطة ←',
+      gpsHistoryTitle: 'سجل أحداث GPS',
+      columnType: 'النوع',
+      columnTime: 'الوقت',
+      columnLatitude: 'خط العرض',
+      columnLongitude: 'خط الطول',
+      columnAccuracy: 'الدقة (م)',
+      pendingValidationNotice: 'هذه الجلسة في انتظار الاعتماد.',
+      approve: 'اعتماد',
+      reject: 'رفض',
+      approveErrorGeneric: 'خطأ أثناء الاعتماد.',
+      rejectErrorGeneric: 'خطأ أثناء الرفض.',
+    },
+    smartAttendanceSettingsPage: {
+      title: 'إعدادات Smart Attendance',
+      subtitle: 'إعداد وضع التسجيل والنطاق الجغرافي للشركة.',
+      backToDashboard: '← لوحة التحكم',
+      loadError: 'تعذر تحميل الإعدادات.',
+      saveError: 'خطأ أثناء الحفظ.',
+      saveSuccess: 'تم حفظ الإعدادات بنجاح.',
+      currentModeLabel: 'الوضع الحالي',
+      modeFree: 'حر (بدون وضع مفروض)',
+      modeGpsAuto: 'GPS تلقائي',
+      modeQrCode: 'رمز QR',
+      modeManual: 'يدوي',
+      gpsLabel: 'GPS: ',
+      gpsEnabled: 'مفعّل',
+      gpsDisabled: 'معطّل',
+      radiusLabel: 'النطاق: ',
+      configurationTitle: 'التكوين',
+      modeFieldLabel: 'وضع التسجيل',
+      modeFreeHint: 'يسمح الوضع الحر للموظف باختيار الطريقة المتاحة.',
+      gpsToggleTitle: 'تحديد الموقع GPS',
+      gpsToggleSubtitle: 'تفعيل التحقق من الموقع',
+      geofenceConfigTitle: 'إعداد النطاق الجغرافي',
+      latitudeLabel: 'خط العرض',
+      longitudeLabel: 'خط الطول',
+      radiusFieldLabel: 'النطاق (متر)',
+      radiusHint: 'المسافة القصوى المسموح بها من مكان العمل.',
+      save: 'حفظ',
+      saving: 'جار التنفيذ…',
+      cancel: 'إلغاء',
+    },
+    developerSettingsPage: {
+      title: 'إعدادات المطور',
+      subtitle: 'أدر مفاتيح API والويب هوكس لدمج RMIH مع أدواتك.',
+      loadTokensError: 'تعذر تحميل مفاتيح API.',
+      loadWebhooksError: 'تعذر تحميل الردود.',
+      createTokenError: 'تعذر إنشاء مفتاح API.',
+      deleteTokenError: 'تعذر إلغاء مفتاح API.',
+      createWebhookError: 'تعذر إنشاء الويب هوك.',
+      deleteWebhookError: 'تعذر حذف الويب هوك.',
+      updateWebhookError: 'تعذر تحديث الويب هوك.',
+      revokeTokenConfirm: 'هل تريد إلغاء مفتاح API هذا؟ ستوقف التكاملات المستخدمة له عن العمل.',
+      deleteWebhookConfirm: 'حذف نقطة الويب هوك هذه؟',
+      revealedTokenNotice: 'مفتاح "{name}" تم إنشاؤه — انسخه الآن، لن يعرض مرة أخرى:',
+      revealedTokenDismiss: 'لقد نسخت المفتاح، إخفاء',
+      apiKeysTitle: 'مفاتيح API',
+      loading: 'تحميل...',
+      noTokens: 'لم يتم إنشاء أي مفتاح API حتى الآن.',
+      createdOn: 'أنشئ في {date}',
+      unknownDate: 'تاريخ مفقود',
+      lastUsedOn: ' · آخر استعمال في {date}',
+      neverUsed: ' · لم يستخدم قط',
+      revoke: 'إلغاء',
+      tokenNamePlaceholder: 'اسم المفتاح (مثلاً: الإنتاج)',
+      webhooksTitle: 'الويب هوكس',
+      noWebhooks: 'لا توجد نقاط رد ويب مكوّنة.',
+      eventsCount: '{count} حدث(ان)',
+      failuresCount: '{count} فشل(ات)',
+      noFailures: 'لا يوجد فشل',
+      active: 'نشط',
+      inactive: 'معطل',
+      triggeredOn: 'تم التفعيل في {date}',
+      neverTriggered: 'لم يتم التفعيل قط',
+      delete: 'حذف',
+      addEndpoint: 'إضافة نقطة',
+      apiDocsTitle: 'وثائق API',
+      apiDocsBody: 'اكتشف كيفية دمج ردودنا الموقعة (بتنسيق Svix) ونقاط REST.',
+      openExplorer: 'فتح المستكشف',
+      newWebhookModalTitle: 'نقطة رد ويب جديدة',
+      destinationUrlLabel: 'رابط الوجهة',
+      eventsToListenLabel: 'الأحداث المراد الاستماع لها',
+      cancel: 'إلغاء',
+      creating: 'الإنشاء...',
+      create: 'إنشاء',
+    },
+    partnerPage: {
+      loading: 'جارٍ تحميل مساحتك...',
+      applyErrorPrefix: 'خطأ أثناء التقديم: ',
+      notApplied: {
+        title: 'كن شريكاً',
+        subtitle: 'انضم إلى منظومة RMIH واربح عمولات عن كل شركة تحيلها. عمولة متكررة تصل إلى 20%.',
+        individual: 'التقديم كفرد',
+        agency: 'التقديم كوكالة',
+      },
+      pending: {
+        title: 'الطلب قيد المراجعة',
+        body: 'يتم حالياً مراجعة طلبك من قبل فريق المبيعات. ستتلقى بريداً إلكترونياً فور تفعيل وصولك.',
+      },
+      dashboard: {
+        title: 'لوحة تحكم الشريك',
+        subtitle: 'تابع تحويلاتك وعمولاتك في RMIH — حالة شريك نشط.',
+      },
+      metrics: {
+        conversions: 'التحويلات',
+        totalEarned: 'إجمالي الأرباح',
+        pending: 'قيد الانتظار',
+        withdrawable: 'الرصيد القابل للسحب',
+      },
+      commissions: {
+        title: 'أحدث العمولات',
+        empty: 'لا توجد عمولات مسجلة.',
+      },
+      table: {
+        tenantId: 'معرّف المستأجر',
+        date: 'التاريخ',
+        status: 'الحالة',
+        amount: 'المبلغ',
+        statusPaid: 'مدفوعة',
+        statusPending: 'قيد الانتظار',
+      },
+      payout: {
+        title: 'الدفع',
+        body: 'تُدفع عمولاتك بمجرد بلوغ الحد الأدنى. تأكد من أن بياناتك البنكية محدّثة.',
+        request: 'طلب تحويل',
+        sending: 'جارٍ الإرسال...',
+        insufficient: 'الرصيد غير كافٍ لطلب تحويل (الحد الأدنى 100,00 €).',
+        success: 'تم إرسال طلب التحويل بنجاح.',
+        errorPrefix: 'خطأ أثناء طلب التحويل: ',
+      },
+      referral: {
+        title: 'رابط الإحالة',
+        unavailable: 'الرابط غير متاح',
+        copy: 'نسخ رابطه',
+        copied: 'تم النسخ!',
+        copyError: 'تعذر نسخ الرابط. انسخه يدوياً.',
+      },
+    },
+    offlinePage: {
+      title: 'لا يوجد اتصال بالإنترنت',
+      body: 'أنت غير متصل حاليا بالإنترنت. في حال توفر عقدة Leopardo Edge على شبكتك المحلية، يستمر التطبيق في العمل بشكل طبيعي.',
+      edgeModeTitle: 'وضع Edge نشط؟',
+      edgeModeBody: 'ادخل إلى الواجهة المحلية عبر:',
+      retry: 'إعادة المحاولة',
+    },
+
+  billing: {
+    title: 'الفواتير',
+    subtitle: 'إدارة اشتراكك وفواتيرك ومعلومات الدفع.',
+    statusActive: 'نشط',
+    statusCancelled: 'ملغى',
+    statusPastDue: 'متأخر',
+    statusPaid: 'مدفوع',
+    statusPending: 'قيد الانتظار',
+    cancelConfirm: 'إلغاء اشتراكك؟ ستفقد الوصول إلى الوحدات المميزة في نهاية الفترة الحالية.',
+    cancelError: 'تعذر إلغاء الاشتراك.',
+    renewError: 'تعذر إعادة تفعيل الاشتراك.',
+    noPaymentAccount: 'لا يوجد حساب دفع مرتبط. اشترك في خطة أولاً.',
+    downloadError: 'تعذر تنزيل الفاتورة.',
+    noActivePeriod: 'لا توجد فترة نشطة',
+    periodRange: 'الفترة: {start} إلى {end}',
+    cancelLabel: 'إلغاء الاشتراك',
+    loadError: 'تعذر تحميل معلومات الفوترة.',
+  },
+  contracts: {
+    title: 'العقود',
+    subtitle: 'إدارة عقود فريقك',
+    statusAll: 'كل الحالات',
+    statusActive: 'نشط',
+    statusSuspended: 'موقوف',
+    statusActives: 'نشطة',
+    statusSuspendeds: 'موقوفة',
+    statusTerminated: 'منتهي',
+    statusDraft: 'مسودة',
+  },
+  absencesPage: {
+    loadError: 'تعذر تحميل حالات الغياب.',
+    approve: 'موافقة',
+    reject: 'رفض',
+    rejectTitle: 'رفض الطلب',
+    rejectReasonPlaceholder: 'سبب الرفض (إلزامي)',
+    reasonRequired: 'سبب الرفض إلزامي.',
+    cancel: 'إلغاء',
+    confirmReject: 'تأكيد الرفض',
+    approveSuccess: 'تمت الموافقة على الطلب.',
+    rejectSuccess: 'تم رفض الطلب.',
+    actionError: 'تعذر تنفيذ الإجراء.',
+  },
+  attendancePage: { loadError: 'تعذر تحميل الحضور.' },
+  socialPage: {
+    title: 'وسائل التواصل',
+    subtitle: 'انشر محتواك وجدوله',
+    loadError: 'تعذر تحميل المنشورات.',
+    createError: 'تعذر إنشاء المنشور.',
+  },
+  socialMarketingPage: {
+    title: 'التسويق',
+    subtitle: 'اربط حسابك الاجتماعي وأدر منشوراتك',
+    loadAccountError: 'تعذر تحميل الحساب الاجتماعي.',
+    loadPostsError: 'تعذر تحميل المنشورات.',
+    connectError: 'تعذر ربط الحساب الاجتماعي.',
+    disconnectError: 'تعذر فصل الحساب الاجتماعي.',
+    createError: 'تعذر إنشاء المنشور.',
+    publishError: 'تعذر نشر المنشور.',
+    deleteError: 'تعذر حذف المنشور.',
+    statusActive: 'نشط',
+  },
+  trainingPage: {
+    loadError: 'تعذر تحميل التدريبات.',
+    createError: 'تعذر إنشاء التدريب.',
+  },
+  notificationsPage: {
+    statusEnabled: 'مفعل',
+    statusDisabled: 'معطل',
+  },
+  travelPortal: {
+    title: "فضاء المسافر",
+    subtitle: "تابع حجزك وحمّل تذاكرك الإلكترونية وأدر رحلتك.",
+    referenceLabel: "مرجع الحجز",
+    referencePlaceholder: "مثال GV-2026-0001",
+    codeLabel: "رمز التحقق",
+    codePlaceholder: "الرمز المستلم عبر البريد",
+    track: "تتبع حجزي",
+    tracking: "جارٍ التتبع…",
+    status: "الحالة",
+    trip: "الرحلة",
+    tickets: "التذاكر",
+    passengers: "المسافرون",
+    total: "الإجمالي",
+    downloadTicket: "تنزيل التذكرة الإلكترونية",
+    cancel: "إلغاء الحجز",
+    cancelConfirm: "تأكيد الإلغاء",
+    cancelling: "جارٍ الإلغاء…",
+    cancelReasonPlaceholder: "سبب الإلغاء",
+    cancelled: "ملغاة",
+    statusPending: "قيد الانتظار",
+    statusConfirmed: "مؤكدة",
+    statusRefunded: "مستردة",
+    statusCompleted: "مكتملة",
+    notFound: "الحجز غير موجود. تحقق من المرجع والرمز.",
+    invalidCode: "رمز تحقق غير صالح.",
+    departurePast: "لم يعد الإلغاء ممكنًا: فات موعد الانطلاق.",
+    error: "حدث خطأ. حاول مرة أخرى.",
+  },
+
+  },
+  tr: {
+    login: {
+      title: 'RMIH girisi',
+      subtitle: 'Sirket alaniniza, ekiplerinize ve aktif IK modullerinize guvenli sekilde erisin.',
+      clientSpace: 'Musteri alani',
+      heroTitle: 'Her yonetici, ulke ve ekip icin net bir IK girisi.',
+      heroCopy: 'RMIH portali giristen itibaren tenant, rol, dil ve izin baglaminizi uygular.',
+      secureBadge: 'Guvenli giris',
+      trustPoints: [
+        'Tenant bazli oturum',
+        'Rol bazli izinler',
+        'Yonetici, IK ve calisan icin hazir arayuz',
+      ],
+      back: 'Siteye don',
+      email: 'E-posta',
+      password: 'Sifre',
+      showPassword: 'Sifreyi goster',
+      hidePassword: 'Sifreyi gizle',
+      remember: 'Beni hatirla',
+      forgot: 'Sifremi unuttum?',
+      submit: 'Giris yap',
+      loading: 'Giris yapiliyor...',
+      demoAccess: 'Demo hesapla dene',
+      demoUnavailable: 'Demo erisimi gecici olarak kullanilamiyor.',
+    accountCreatedFree: 'Hesap oluşturuldu! Ücretsiz alanınıza erişmek için giriş yapın.',
+    accountCreatedPaid: 'Kayıt alındı! Devam etmek için giriş yapın.',
+      demoTitle: 'Demo hesabi sec',
+      demoSubtitle: 'Formu doldurmak icin bir rol secin, sonra girisi baslatin.',
+      close: 'Kapat',
+      supportCopy: 'Erisim kurtarma icin yardim mi gerekiyor?',
+      supportLink: 'Destekle iletisime gec',
+      errors: {
+        generic: 'Bir hata olustu.',
+        missingToken: 'API yanitinda giris tokeni yok.',
+        missingUser: 'API yanitinda kullanici profili yok.',
+        google: 'Google ile giris basarisiz oldu. Lutfen tekrar deneyin.',
+        googleNetwork: 'Google ile baglanti kurulamadi. Baglantinizi kontrol edip tekrar deneyin.',
+        googleAuthFailed: 'Google girisini reddetti. Lutfen tekrar deneyin.',
+        googleNoAccount: 'Bu Google e-postasiyla iliskili RMIH hesabi yok. Yoneticinizden davet isteyin.',
+        googleNoAccountCta: 'Davet olmadan deneme başlat',
+        googleUnavailable: 'Google ile giris henuz kullanilamiyor. E-posta ve sifrenizle giris yapin.',
+      },
+    },
+    dashboard: {
+      heading: 'Kontrol paneli',
+      employees: 'Aktif calisanlar',
+      present: 'mevcut',
+      live: 'Canlı',
+      late: 'Gecikmeler',
+      activity: 'Son etkinlik',
+      team: 'Calisanlar',
+      attendance: 'Devam',
+      payroll: 'Bordro',
+      settings: 'Ayarlar',
+      logout: 'Cikis yap',
+      userMenuAccount: 'Hesabım',
+      userMenuPassword: 'Parolamı değiştir',
+      userMenuSecurity: 'Güvenlik (2FA)',
+      language: 'Dil',
+      presentBadge: 'Burada',
+      employeeLabel: 'Calisan',
+      checkInAt: 'Giris saati',
+      featureLockedRole: "Mevcut rolunuz bu module erisim izni vermiyor.",
+      featureLockedPlan: "Bu modul mevcut planiniza dahil degil.",
+      featureLockedBadge: 'Modul dahil degil',
+      featureLockedExplanation: "RMIH, kafa karistiran 404'leri ve gereksiz API hatalarini onlemek icin arayuzu acik tutar.",
+      featureLockedAdminHint: 'Aktivasyonu platform super yoneticisinden isteyin veya bu modulu iceren bir plana gecin.',
+      featureLockedPlanRoleTitle: 'Plan ve rol',
+      featureLockedPlanRoleBody: 'Bu alanda gorunen moduller, haklara, sirket planina ve kullanici rolune gore hesaplanir.',
+      featureLockedCta: 'Aktivasyon iste',
+      activate: 'Etkinleştir',
+      activating: 'Etkinleştiriliyor…',
+      activateError: 'Etkinleştirme başarısız oldu. Tekrar deneyin.',
+      recent_activity: 'Son etkinlik',
+      noNotifications: 'Yeni bildirim yok.',
+      managePreferences: 'Tercihlerimi yönet',
+      resumeOnboarding: '▶ Yapılandırmaya devam et',
+      businessSection: 'İş kolunuz',
+      hrMenu: 'İK',
+      modules: {
+        dashboard: 'Panel',
+        employees: 'Çalışanlar',
+        attendance: 'Giriş-çıkışlar',
+        attendance_geo: 'GPS oturumları',
+        absences: 'İzinler',
+        contracts: 'Sözleşmeler',
+        payroll: 'Bordro',
+        training: 'Eğitimler',
+        reports: 'Raporlar',
+        partner: 'İş ortaklığı',
+        billing: 'Faturalama',
+        integrations: 'Entegrasyonlar',
+        marketing: 'Pazarlama',
+        accounting: 'Muhasebe',
+        crm: 'Müşteri CRM',
+        restaurant: 'Restoran',
+        restaurant_kitchen: 'Mutfak',
+        edu_manager: 'Okul yönetimi',
+        travel: 'Seyahat acentesi',
+        fuel: 'Akaryakıt istasyonu',
+        showcase: 'Tanıtım sitesi',
+      },
+      sectionEnterprise: 'Şirket',
+      sectionModules: 'Modüller ve plan',
+      sectionDiscoverBusiness: 'İş kollarını keşfet',
+      sectionLocked: 'Etkinleştirilecek',
+    },
+    passwordReset: {
+      title: 'Şifrenizi mi unuttunuz?',
+      subtitle: 'Hesabınızın e-posta adresini girin, size güvenli bir sıfırlama bağlantısı gönderelim.',
+      emailLabel: 'E-posta adresi',
+      emailPlaceholder: 'siz@sirket.com',
+      submit: 'Bağlantıyı gönder',
+      submitting: 'Gönderiliyor...',
+      successTitle: 'E-posta gönderildi',
+      successBody: 'Bu adresle bir hesap varsa, az önce bir sıfırlama bağlantısı gönderildi. Spam klasörünüzü kontrol etmeyi unutmayın.',
+      backToLogin: 'Girişe dön',
+      newPasswordLabel: 'Yeni şifre',
+      newPasswordPlaceholder: 'En az 8 karakter',
+      confirmPasswordLabel: 'Şifreyi onayla',
+      confirmPasswordPlaceholder: 'Şifrenizi tekrar girin',
+      submitReset: 'Şifreyi sıfırla',
+      submittingReset: 'Sıfırlanıyor...',
+      resetSuccessTitle: 'Şifre sıfırlandı',
+      resetSuccessBody: 'Artık yeni şifrenizle giriş yapabilirsiniz.',
+      invalidEmail: 'Geçersiz e-posta adresi.',
+      invalidPassword: 'Şifre en az 8 karakter olmalıdır.',
+      passwordMismatch: 'İki şifre birbiriyle eşleşmiyor.',
+      missingTokenTitle: 'Geçersiz veya süresi dolmuş bağlantı',
+      missingTokenBody: 'Bu sıfırlama bağlantısı geçersiz veya süresi dolmuş. Lütfen yeni bir tane isteyin.',
+      genericError: 'Bir hata oluştu. Lütfen birkaç dakika sonra tekrar deneyin.',
+      showPassword: 'Şifreyi göster',
+      hidePassword: 'Şifreyi gizle',
+    },
+    accountActivation: {
+      title: 'Hesabınızı etkinleştirin',
+      subtitle: 'RMIH hesabınızı etkinleştirmek için bir şifre belirleyin.',
+      passwordLabel: 'Şifre',
+      passwordPlaceholder: 'En az 8 karakter',
+      confirmPasswordLabel: 'Şifreyi onayla',
+      confirmPasswordPlaceholder: 'Şifrenizi tekrar girin',
+      submit: 'Hesabımı etkinleştir',
+      submitting: 'Etkinleştiriliyor…',
+      successTitle: 'Hesap etkinleştirildi!',
+      successBody: 'Hesabınız artık aktif. Giriş yapabilirsiniz.',
+      backToLogin: 'Girişe git',
+      invalidPassword: 'Şifre en az 8 karakter olmalıdır.',
+      passwordMismatch: 'Şifreler eşleşmiyor.',
+      missingTokenTitle: 'Geçersiz veya süresi dolmuş bağlantı',
+      missingTokenBody: 'Bu etkinleştirme bağlantısı geçersiz veya süresi dolmuş. Yeni bir davet için yöneticinizle iletişime geçin.',
+      alreadyAccepted: 'Bu bağlantı zaten kullanıldı. Doğrudan giriş yapın.',
+      expired: 'Bu bağlantının süresi doldu. Yeni bir davet isteyin.',
+      genericError: 'Bir hata oluştu. Birkaç dakika sonra tekrar deneyin.',
+      companySuspended: 'Şirket erişiminiz askıya alındı. Yöneticinizle iletişime geçin.',
+      validating: 'Bağlantınız kontrol ediliyor…',
+      showPassword: 'Şifreyi göster',
+      hidePassword: 'Şifreyi gizle',
+    },
+    onboarding: {
+      stepBadge: 'Adım {current} / {total}',
+      next: 'İleri',
+      finish: 'Bitir',
+      validating: 'Doğrulanıyor...',
+      skip: 'Bu adımı atla',
+      close: 'Kurulum asistanını kapat',
+      retry: 'Tekrar dene',
+      errorGeneric: 'Kurulum adımları yüklenemedi.',
+      actionCreateDepartment: 'Departman olustur',
+      actionAddEmployee: 'Calisan ekle',
+      actionResumeHint: "Bu adim tamamlaninca asistan otomatik devam eder.",
+      allStepsDone: 'Kurulum tamamlandı!',
+      quickStart: 'Hızlı Başlangıç',
+      later: 'Daha sonra önerilir',
+      firstCheckinHint: 'Mobil uygulamadan veya kiosktan ilk girişinizi yapın, ardından bu adımı tamamlandı olarak işaretleyin.',
+      qrShow: "Şirketin QR kodunu göster",
+      qrHide: 'QR kodunu gizle',
+      qrHint: "Şirkete katılmak için bu QR kodunu Leopardo mobil uygulamasıyla tarayın.",
+      qrError: 'QR kodu yüklenemedi.',
+      qrLoading: 'QR kodu yükleniyor...',
+      inviteManagerHint: 'Davet e-postası kuyruk aracılığıyla gönderilecek. 5 dakika içinde gelmezse Render üzerindeki kuyruk işçilerinin çalıştığından emin olun.',
+      estimatedMinutes: '~{n} dak',
+      csvColumnsHint: 'Gerekli CSV sütunları: ad, soyad, e-posta, temel_maaş. Excel\'den CSV UTF-8 olarak dışa aktarın.',
+      steps: {
+        company_info: {
+          title: 'Şirket bilgileri',
+          desc: 'Şirketinizin adını, ülkesini, para birimini ve saat dilimini girin.',
+        },
+        first_department: {
+          title: 'İlk departman',
+          desc: 'İlk departmanınızı oluşturun (örn. Üretim, İK).',
+        },
+        first_employee: {
+          title: 'İlk çalışan',
+          desc: 'Çalışanlarınızı ekleyin. 3\'ten fazlası için CSV içe aktarma önerilir.',
+        },
+        first_attendance: {
+          title: 'İlk giriş',
+          desc: 'Mobil uygulama veya kiosktan ilk girişi yapın.',
+        },
+        invite_manager: {
+          title: 'Yönetici davet et',
+          desc: 'Bir meslektaşı ortak yönetici olarak davet edin (isteğe bağlı).',
+        },
+        configure_schedules: {
+          title: 'Çalışma saatlerini kurun',
+          desc: 'Programlarınızı ve devam kurallarınızı oluşturun.',
+        },
+        first_report: {
+          title: 'İlk rapor',
+          desc: 'İlk aylık devam raporunuzu oluşturun (isteğe bağlı).',
+        },
+        configure_payroll: {
+          title: 'Bordroyu kurun',
+          desc: 'Maaş yapınızı ve bordro ayarlarınızı doldurun.',
+        },
+        install_kiosk: {
+          title: 'Kiosk kur',
+          desc: 'Sahada giriş için ZKTeco kioskunuzu bağlayın (isteğe bağlı).',
+        },
+        activate_geofence: {
+          title: 'Coğrafi sınırları etkinleştir',
+          desc: 'İzin verilen giriş alanlarını belirleyin (isteğe bağlı).',
+        },
+      },
+    },
+    absences: {
+      title: 'İzinler',
+      subtitle: 'Talepler, bakiyeler ve İK kararları',
+      listTitle: 'Taleplerim',
+      request: 'Talep et',
+      loading: 'İzinler yükleniyor',
+      approve: 'Onayla',
+      reject: 'Reddet',
+      cancel: 'İptal',
+      rejectTitle: 'Talebi reddet',
+      rejectBody: 'Reddetme nedenini belirtin (zorunlu). Çalışana bildirim gönderilecektir.',
+      reasonLabel: 'Reddetme nedeni',
+      reasonPlaceholder: 'Zorunlu neden…',
+      reasonRequired: 'Reddetmek için neden zorunludur.',
+      rejectConfirm: 'Reddi onayla',
+      rejectInProgress: 'Reddediliyor...',
+      statusPending: 'Beklemede',
+      statusApproved: 'Onaylandı',
+      statusRejected: 'Reddedildi',
+      statusCancelled: 'İptal edildi',
+      loadError: 'İzinler yüklenemedi.',
+      empty: 'İzin yok.',
+      newAbsence: 'Yeni izin',
+      newAbsenceHint: "İK'ya iletilecek bakiye türünü ve dönemi seçin.",
+      type: 'Tür',
+      typeRequired: 'İzin türü zorunlu',
+      typeFallback: 'İzin',
+      start: 'Başlangıç',
+      end: 'Bitiş',
+      reason: 'Gerekçe',
+      reasonHint: 'Örn: doktor randevusu, aile izni...',
+      dateMissing: 'Başlangıç ve bitiş tarihleri zorunludur (bitiş ≥ başlangıç).',
+      submitToHr: "İK'ya gönder",
+      submittedSnack: "İzin talebi İK'ya iletildi.",
+      noTypeAvailable: 'İzin türü yok. Bakiyeleri yapılandırmak için İK ile iletişime geçin.',
+      failure: 'Hata: ',
+    },
+    payrollPage: {
+      title: 'Bordro',
+      subtitle: 'Bordrolar ve bordro donemleri, her kiraci icin IK API sine bagli dogrudan PDF disa aktarimi ile.',
+      statTotalGross: 'Toplam Brut',
+      statTotalNet: 'Toplam Net',
+      statPayslips: 'Bordrolar',
+      tabSlips: 'Bordrolar',
+      tabRuns: 'Bordro donemleri',
+      searchPlaceholder: 'Ad veya donem ile ara...',
+      columnEmployee: 'Calisan',
+      columnPeriod: 'Donem',
+      columnGross: 'Brut',
+      columnNet: 'Net',
+      columnStatus: 'Durum',
+      columnCompliance: 'Uyumluluk',
+      columnActions: 'Islemler',
+      columnEmployees: 'Calisanlar',
+      columnTotalGross: 'Toplam Brut',
+      columnTotalNet: 'Toplam Net',
+      loading: 'Yukleniyor...',
+      noPayslips: 'Bordro bulunamadi.',
+      noRuns: 'Bordro donemi bulunamadi.',
+      statusValidated: 'Onaylandi',
+      statusDraft: 'Taslak',
+      statusCompleted: 'Tamamlandi',
+      runDraft: 'Taslak',
+      runCalculated: 'Hesaplandı',
+      runValidated: 'Onaylandı',
+      runLocked: 'Kilitli',
+      runCalculate: 'Hesapla',
+      runValidate: 'Onayla (İK)',
+      runLock: 'Kilitle',
+      runUnlock: 'Kilidi aç',
+      runConfirmLock: 'Bu maaş döneminin kapanışı kilitlensin mi?',
+      runConfirmUnlock: 'Bu maaş döneminin kapanış kilidi açılsın mı?',
+      runConfirmValidate: 'Gösterge niteliğindeki maaş dilimleriyle onaylansın mı?',
+      runConfirmValidateCta: 'Yine de onayla',
+      runPlaceholderBadge: 'Gösterge dilimler',
+      runPlaceholderWarning: 'Bu ülkenin maaş dilimleri yasal olarak doğrulanmamıştır: maaş bordroları hatalı tutarlar içerebilir. Yerel bir mali müşavire danışın.',
+      runActionError: 'Maaş döneminde işlem gerçekleştirilemedi.',
+      runCancel: 'İptal',
+      downloadPdf: 'PDF indir',
+      viewDetail: 'Detayi gor',
+      resultsCount: 'sonuc',
+      detailTitle: 'Bordro Detayi',
+      detailClose: 'Kapat',
+      detailLoading: 'Detay yukleniyor...',
+      detailError: 'Detay su anda mevcut degil — liste verileri gosteriliyor.',
+      detailDeductions: 'Kesintiler',
+      detailEmployerContributions: 'Isveren katkilari',
+      detailTotalCost: 'Isveren toplam maliyeti',
+      detailWorkingDays: 'Calisma gunleri',
+      detailDaysWorked: 'Filii calisilan gunler',
+      detailOvertimeHours: 'Fazla mesai saatleri',
+      detailSalaryBreakdown: 'Maas detayi',
+      salaryDecompTitle: 'Maaş dökümü',
+      salaryMonthly: 'Aylık maaş',
+      salaryDailyRate: 'Günlük ücret',
+      salaryHourlyRate: 'Saatlik ücret',
+      salaryCompositionDays: 'Bu ay: {days} gün × {rate} = {total}',
+      salaryCompositionHours: 'Bu ay: {hours} saat × {rate} = {total}',
+    },
+    smartAttendancePage: {
+      title: 'Akilli Devam',
+      subtitle: 'Konum tabanli akilli devam takibi — bekleyen oturumlarin onayi ve gunun istatistikleri.',
+      allSessions: 'Tum oturumlar →',
+      settings: 'Ayarlar',
+      pendingSessionsTitle: 'Onay bekleyen oturumlar',
+      noPendingSessions: 'Onay bekleyen oturum yok.',
+      columnEmployee: 'Calisan',
+      columnCheckIn: 'Giris',
+      columnCheckOut: 'Cikis',
+      columnDuration: 'Sure',
+      columnStatus: 'Durum',
+      columnActions: 'Islemler',
+      approve: 'Onayla',
+      reject: 'Reddet',
+      employeeFallback: 'Calisan',
+      dashboardLoadError: 'Panel yuklenemedi.',
+      approveError: 'Onaylama sirasinda hata olustu.',
+      rejectError: 'Reddetme sirasinda hata olustu.',
+      statusDetected: 'Tespit edildi',
+      statusPendingValidation: 'Beklemede',
+      statusApproved: 'Onaylandi',
+      statusRejected: 'Reddedildi',
+      statusCancelled: 'Iptal edildi',
+      statTotal: 'Toplam',
+      statDetected: 'Tespit edilen',
+      statPending: 'Beklemede',
+      statApproved: 'Onaylanan',
+      statRejected: 'Reddedilen',
+      approveModalTitle: 'Oturumu onayla',
+      approveModalBody: '{name} oturumunu onaylayacaksiniz. Bu islem kesindir.',
+      approveModalNoteLabel: 'Not (opsiyonel)',
+      approveModalNotePlaceholder: 'Bir not ekleyin…',
+      approveModalConfirm: 'Onayla',
+      approveModalInProgress: 'Isleniyor…',
+      rejectModalTitle: 'Oturumu reddet',
+      rejectModalBody: '{name} oturumunu reddedeceksiniz. Lutfen bir neden belirtin.',
+      rejectModalReasonLabel: 'Reddetme nedeni',
+      rejectModalReasonPlaceholder: 'Neden zorunludur…',
+      rejectModalReasonRequired: 'Neden zorunludur.',
+      rejectModalConfirm: 'Reddet',
+      rejectModalInProgress: 'Isleniyor…',
+      cancel: 'Vazgec',
+    },
+    smartAttendanceSessionsPage: {
+      title: 'Devam oturumlari',
+      subtitle: 'Gelismis filtreler ve sayfalama ile Akilli Devam oturumlarinin tam listesi.',
+      backToDashboard: '← Panel',
+      loadError: 'Oturumlar yuklenemedi.',
+      filtersTitle: 'Filtreler',
+      filterStatus: 'Durum',
+      filterStatusAll: 'Tum durumlar',
+      filterEmployee: 'Calisan (ID veya ad)',
+      filterEmployeePlaceholder: 'Ara…',
+      filterDateFrom: 'Baslangic tarihi',
+      filterDateTo: 'Bitis tarihi',
+      apply: 'Uygula',
+      reset: 'Sifirla',
+      exportCsv: '⬇ CSV disa aktar',
+      sessionsTitle: 'Oturumlar',
+      sessionCountSingular: 'oturum',
+      sessionCountPlural: 'oturum',
+      columnEmployee: 'Calisan',
+      columnCheckIn: 'Giris',
+      columnCheckOut: 'Cikis',
+      columnDuration: 'Sure',
+      columnStatus: 'Durum',
+      columnDetail: 'Detay',
+      noSessions: 'Bu kriterlere uygun oturum bulunamadi.',
+      viewDetail: 'Goruntule →',
+      employeeFallback: 'Calisan',
+      pageLabel: 'Sayfa',
+      previous: '← Onceki',
+      next: 'Sonraki →',
+      csvHeaderId: 'ID',
+      csvHeaderEmployee: 'Calisan',
+      csvHeaderMatricule: 'Sicil no',
+      csvHeaderCheckIn: 'Giris',
+      csvHeaderCheckOut: 'Cikis',
+      csvHeaderDuration: 'Sure (dk)',
+      csvHeaderStatus: 'Durum',
+    },
+    smartAttendanceSessionDetailPage: {
+      title: 'Oturum detayi',
+      subtitle: 'Konum tabanli devam oturumunun tam bilgileri.',
+      backToSessions: '← Oturumlara don',
+      loadError: 'Oturum yuklenemedi.',
+      notFound: 'Oturum bulunamadi.',
+      employeeFallback: 'Calisan',
+      noteLabel: 'Not: ',
+      rejectionReasonLabel: 'Reddetme nedeni: ',
+      timelineTitle: 'Zaman cizelgesi',
+      checkInDetected: 'Tespit edilen giris',
+      departure: 'Cikis',
+      durationLabel: 'Sure: ',
+      gpsCoordinatesTitle: 'GPS koordinatlari',
+      checkInLabel: 'Giris',
+      checkOutLabel: 'Cikis',
+      viewOnMaps: 'Haritada goster →',
+      gpsHistoryTitle: 'GPS olay gecmisi',
+      columnType: 'Tur',
+      columnTime: 'Saat',
+      columnLatitude: 'Enlem',
+      columnLongitude: 'Boylam',
+      columnAccuracy: 'Hassasiyet (m)',
+      pendingValidationNotice: 'Bu oturum onay beklemektedir.',
+      approve: 'Onayla',
+      reject: 'Reddet',
+      approveErrorGeneric: 'Onaylama sirasinda hata olustu.',
+      rejectErrorGeneric: 'Reddetme sirasinda hata olustu.',
+    },
+    smartAttendanceSettingsPage: {
+      title: 'Akilli Devam Ayarlari',
+      subtitle: 'Yoklama modu ve sirket cografi sinirinin yapilandirmasi.',
+      backToDashboard: '← Panel',
+      loadError: 'Ayarlar yuklenemedi.',
+      saveError: 'Kaydetme sirasinda hata olustu.',
+      saveSuccess: 'Ayarlar basariyla kaydedildi.',
+      currentModeLabel: 'Mevcut mod',
+      modeFree: 'Serbest (zorunlu mod yok)',
+      modeGpsAuto: 'Otomatik GPS',
+      modeQrCode: 'QR Kod',
+      modeManual: 'Manuel',
+      gpsLabel: 'GPS: ',
+      gpsEnabled: 'Etkin',
+      gpsDisabled: 'Devre disi',
+      radiusLabel: 'Yaricap: ',
+      configurationTitle: 'Yapilandirma',
+      modeFieldLabel: 'Yoklama modu',
+      modeFreeHint: '"Serbest" calisanin mevcut yontemi secmesine izin verir.',
+      gpsToggleTitle: 'GPS konum belirleme',
+      gpsToggleSubtitle: 'Konum dogrulamasini etkinlestir',
+      geofenceConfigTitle: 'Cografi sinir yapilandirmasi',
+      latitudeLabel: 'Enlem',
+      longitudeLabel: 'Boylam',
+      radiusFieldLabel: 'Yaricap (metre)',
+      radiusHint: 'Isyerinden izin verilen maksimum uzaklik.',
+      save: 'Kaydet',
+      saving: 'Kaydediliyor…',
+      cancel: 'Vazgec',
+    },
+    developerSettingsPage: {
+      title: 'Gelistirici Alani',
+      subtitle: 'RMIH\'yi araclarinizla entegre etmek icin API anahtarlarinizi ve webhook\'larinizi yonetin.',
+      loadTokensError: 'API anahtarlari yuklenemedi.',
+      loadWebhooksError: 'Webhook\'lar yuklenemedi.',
+      createTokenError: 'API anahtari olusturulamadi.',
+      deleteTokenError: 'API anahtari iptal edilemedi.',
+      createWebhookError: 'Webhook olusturulamadi.',
+      deleteWebhookError: 'Webhook silinemedi.',
+      updateWebhookError: 'Webhook guncellenemedi.',
+      revokeTokenConfirm: 'Bu API anahtari iptal edilsin mi? Bunu kullanan entegrasyonlar calismayi durduracak.',
+      deleteWebhookConfirm: 'Bu webhook endpoint\'i silinsin mi?',
+      revealedTokenNotice: '"{name}" anahtari olusturuldu — simdi kopyalayin, bir daha gosterilmeyecek:',
+      revealedTokenDismiss: 'Anahtari kopyaladim, gizle',
+      apiKeysTitle: 'API Anahtarlari',
+      loading: 'Yukleniyor...',
+      noTokens: 'Henuz olusturulmus bir API anahtari yok.',
+      createdOn: '{date} tarihinde olusturuldu',
+      unknownDate: 'Tarih bilinmiyor',
+      lastUsedOn: ' · son kullanim {date}',
+      neverUsed: ' · hic kullanilmadi',
+      revoke: 'Iptal et',
+      tokenNamePlaceholder: 'Anahtar adi (orn: Uretim)',
+      webhooksTitle: 'Webhook\'lar',
+      noWebhooks: 'Yapilandirilmis webhook endpoint\'i yok.',
+      eventsCount: '{count} olay',
+      failuresCount: '{count} hata',
+      noFailures: 'hata yok',
+      active: 'Aktif',
+      inactive: 'Devre disi',
+      triggeredOn: '{date} tarihinde tetiklendi',
+      neverTriggered: 'Hic tetiklenmedi',
+      delete: 'Sil',
+      addEndpoint: 'Endpoint ekle',
+      apiDocsTitle: 'API Dokumantasyonu',
+      apiDocsBody: 'Imzali webhook\'larimizi (Svix formati) ve REST endpoint\'lerimizi nasil entegre edeceginizi ogrenin.',
+      openExplorer: "Explorer'i ac",
+      newWebhookModalTitle: 'Yeni webhook endpoint\'i',
+      destinationUrlLabel: 'Hedef URL',
+      eventsToListenLabel: 'Dinlenecek olaylar',
+      cancel: 'Vazgec',
+      creating: 'Olusturuluyor...',
+      create: 'Olustur',
+    },
+    partnerPage: {
+      loading: 'Alanınız yükleniyor...',
+      applyErrorPrefix: 'Başvuru sırasında hata: ',
+      notApplied: {
+        title: 'Partner Olun',
+        subtitle: "RMIH ekosistemine katılın ve yönlendirdiğiniz her şirket için komisyon kazanın. %20'ye varan düzenli komisyon.",
+        individual: 'Bireysel olarak başvurun',
+        agency: 'Ajans olarak başvurun',
+      },
+      pending: {
+        title: 'Başvuru inceleniyor',
+        body: 'Başvurunuz satış ekibimiz tarafından doğrulanıyor. Erişiminiz etkinleştirilir etkinleştirilmez bir e-posta alacaksınız.',
+      },
+      dashboard: {
+        title: 'Partner Paneli',
+        subtitle: 'RMIH dönüşümlerinizi ve komisyonlarınızı takip edin — aktif partner durumu.',
+      },
+      metrics: {
+        conversions: 'Dönüşümler',
+        totalEarned: 'Toplam kazanç',
+        pending: 'Beklemede',
+        withdrawable: 'Çekilebilir bakiye',
+      },
+      commissions: {
+        title: 'Son komisyonlar',
+        empty: 'Kayıtlı komisyon yok.',
+      },
+      table: {
+        tenantId: 'Tenant Kimliği',
+        date: 'Tarih',
+        status: 'Durum',
+        amount: 'Tutar',
+        statusPaid: 'Ödendi',
+        statusPending: 'Beklemede',
+      },
+      payout: {
+        title: 'Ödeme',
+        body: 'Komisyonlarınız eşiğe ulaşıldığında ödenir. Banka bilgilerinizin güncel olduğundan emin olun.',
+        request: 'Havale talep et',
+        sending: 'Gönderiliyor...',
+        insufficient: 'Havale talep etmek için bakiye yetersiz (minimum 100,00 €).',
+        success: 'Havale talebi başarıyla gönderildi.',
+        errorPrefix: 'Havale talebi sırasında hata: ',
+      },
+      referral: {
+        title: 'Referans bağlantısı',
+        unavailable: 'Bağlantı kullanılamıyor',
+        copy: 'Bağlantımı kopyala',
+        copied: 'Kopyalandı!',
+        copyError: 'Bağlantı kopyalanamadı. Lütfen elle kopyalayın.',
+      },
+    },
+    offlinePage: {
+      title: 'Internet baglantisi yok',
+      body: 'Su anda cevrimdisisiniz. Yerel agnizda bir Leopardo Edge node mevcutsa, uygulama normal sekilde calismaya devam eder.',
+      edgeModeTitle: 'Edge modu aktif mi?',
+      edgeModeBody: 'Yerel arayuze su adresten erisin:',
+      retry: 'Yeniden dene',
+    },
+
+  billing: {
+    title: 'Faturalama',
+    subtitle: 'Aboneliğinizi, faturalarınızı ve ödeme bilgilerinizi yönetin.',
+    statusActive: 'Aktif',
+    statusCancelled: 'İptal edildi',
+    statusPastDue: 'Vadesi geçti',
+    statusPaid: 'Ödendi',
+    statusPending: 'Beklemede',
+    cancelConfirm: 'Aboneliğiniz iptal edilsin mi? Premium modüllere erişiminizi geçerli dönemin sonunda kaybedersiniz.',
+    cancelError: 'Abonelik iptal edilemedi.',
+    renewError: 'Abonelik yeniden etkinleştirilemedi.',
+    noPaymentAccount: 'Bağlı ödeme hesabı yok. Önce bir plana abone olun.',
+    downloadError: 'Fatura indirilemedi.',
+    noActivePeriod: 'Etkin dönem yok',
+    periodRange: 'Dönem: {start} - {end}',
+    cancelLabel: 'Aboneliği iptal et',
+    loadError: 'Faturalama bilgileri yüklenemedi.',
+  },
+  contracts: {
+    title: 'Sözleşmeler',
+    subtitle: 'Ekip sözleşmelerinizi yönetin',
+    statusAll: 'Tüm durumlar',
+    statusActive: 'Aktif',
+    statusSuspended: 'Askıya alındı',
+    statusActives: 'Aktif',
+    statusSuspendeds: 'Askıya alındı',
+    statusTerminated: 'Sonlandırıldı',
+    statusDraft: 'Taslak',
+  },
+  absencesPage: {
+    loadError: 'Devamsızlıklar yüklenemedi.',
+    approve: 'Onayla',
+    reject: 'Reddet',
+    rejectTitle: 'Talebi reddet',
+    rejectReasonPlaceholder: 'Reddetme nedeni (zorunlu)',
+    reasonRequired: 'Reddetme nedeni zorunludur.',
+    cancel: 'İptal',
+    confirmReject: 'Reddi onayla',
+    approveSuccess: 'Talep onaylandı.',
+    rejectSuccess: 'Talep reddedildi.',
+    actionError: 'İşlem gerçekleştirilemedi.',
+  },
+  attendancePage: { loadError: 'Yoklama yüklenemedi.' },
+  socialPage: {
+    title: 'Sosyal medya',
+    subtitle: 'İçeriklerinizi yayınlayın ve planlayın',
+    loadError: 'Yayınlar yüklenemedi.',
+    createError: 'Yayın oluşturulamadı.',
+  },
+  socialMarketingPage: {
+    title: 'Pazarlama',
+    subtitle: 'Sosyal hesabınızı bağlayın ve yayınlarınızı yönetin',
+    loadAccountError: 'Sosyal hesap yüklenemedi.',
+    loadPostsError: 'Yayınlar yüklenemedi.',
+    connectError: 'Sosyal hesap bağlanamadı.',
+    disconnectError: 'Sosyal hesap bağlantısı kesilemedi.',
+    createError: 'Yayın oluşturulamadı.',
+    publishError: 'Yayın yayınlanamadı.',
+    deleteError: 'Yayın silinemedi.',
+    statusActive: 'Aktif',
+  },
+  trainingPage: {
+    loadError: 'Eğitimler yüklenemedi.',
+    createError: 'Eğitim oluşturulamadı.',
+  },
+  notificationsPage: {
+    statusEnabled: 'Etkin',
+    statusDisabled: 'Devre dışı',
+  },
+  travelPortal: {
+    title: "Yolcu alanı",
+    subtitle: "Rezervasyonunuzu takip edin, e-biletlerinizi indirin ve seyahatinizi yönetin.",
+    referenceLabel: "Rezervasyon referansı",
+    referencePlaceholder: "Örn. GV-2026-0001",
+    codeLabel: "Doğrulama kodu",
+    codePlaceholder: "E-posta ile alınan kod",
+    track: "Rezervasyonumu takip et",
+    tracking: "Takip ediliyor…",
+    status: "Durum",
+    trip: "Sefer",
+    tickets: "Biletler",
+    passengers: "Yolcular",
+    total: "Toplam",
+    downloadTicket: "E-bileti indir",
+    cancel: "Rezervasyonu iptal et",
+    cancelConfirm: "İptali onayla",
+    cancelling: "İptal ediliyor…",
+    cancelReasonPlaceholder: "İptal nedeni",
+    cancelled: "İptal edildi",
+    statusPending: "Beklemede",
+    statusConfirmed: "Onaylandı",
+    statusRefunded: "İade edildi",
+    statusCompleted: "Tamamlandı",
+    notFound: "Rezervasyon bulunamadı. Referansı ve kodu kontrol edin.",
+    invalidCode: "Geçersiz doğrulama kodu.",
+    departurePast: "İptal artık mümkün değil: kalkış geçti.",
+    error: "Bir hata oluştu. Tekrar deneyin.",
+  },
+
+  },
+  id: {
+
+    login: {
+      title: 'Masuk ke RMIH',
+      subtitle: 'Akses ruang kerja personalia, pantau tim, dan kelola fitur aktif perusahaan Anda.',
+      clientSpace: 'Portal Klien',
+      heroTitle: 'Akses personalia & HR yang transparan untuk setiap manajer, cabang, dan tim.',
+      heroCopy: 'Portal Anda terhubung aman ke sistem RMIH dengan izin akses dan konteks perusahaan langsung aktif.',
+      secureBadge: 'Masuk Aman',
+      trustPoints: [
+        'Sesi terenkripsi untuk perusahaan Anda',
+        'Hak akses sesuai peran (RBAC)',
+        'Tersedia untuk manajer, HR, dan karyawan',
+      ],
+      back: 'Kembali ke situs',
+      email: 'Alamat email',
+      password: 'Kata sandi',
+      showPassword: 'Tampilkan kata sandi',
+      hidePassword: 'Sembunyikan kata sandi',
+      remember: 'Ingat saya',
+      forgot: 'Lupa kata sandi?',
+      submit: 'Masuk',
+      loading: 'Memproses masuk...',
+      demoAccess: 'Coba Akun Demo (1-Klik)',
+      demoUnavailable: 'Akses demo sedang tidak tersedia.',
+      accountCreatedFree: 'Akun berhasil dibuat! Silakan masuk.',
+      accountCreatedPaid: 'Pendaftaran diterima! Silakan masuk.',
+      demoTitle: 'Pilih Akun Demo',
+      demoSubtitle: 'Pilih peran di bawah ini untuk mengisi formulir otomatis, lalu tekan Masuk.',
+      close: 'Tutup',
+      supportCopy: 'Butuh bantuan masuk akun?',
+      supportLink: 'Hubungi Bantuan',
+      errors: {
+        generic: 'Terjadi kesalahan. Silakan coba lagi.',
+        missingToken: 'Token login tidak ditemukan dari respons API.',
+        missingUser: 'Profil pengguna tidak ditemukan dari respons API.',
+        google: 'Login dengan Google gagal. Silakan coba lagi.',
+        googleNetwork: 'Tidak dapat terhubung ke Google. Periksa koneksi internet Anda.',
+        googleAuthFailed: 'Google menolak permintaan login. Silakan coba lagi.',
+        googleNoAccount: 'Tidak ada akun RMIH yang terhubung dengan email Google ini. Hubungi administrator Anda untuk mendapatkan undangan.',
+        googleNoAccountCta: 'Mulai uji coba tanpa undangan',
+        googleUnavailable: 'Login dengan Google belum tersedia. Gunakan email dan kata sandi Anda.',
+      },
+    },
+    dashboard: {
+      heading: 'Dasbor',
+      employees: 'Karyawan aktif',
+      present: 'hadir',
+      live: 'Langsung',
+      late: 'Terlambat',
+      activity: 'Aktivitas terkini',
+      team: 'Karyawan',
+      attendance: 'Absensi & Kehadiran',
+      payroll: 'Penggajian',
+      settings: 'Pengaturan',
+      logout: 'Keluar',
+      userMenuAccount: 'Akun saya',
+      userMenuPassword: 'Ubah kata sandi',
+      userMenuSecurity: 'Keamanan (2FA)',
+      language: 'Bahasa',
+      presentBadge: 'Hadir',
+      employeeLabel: 'Karyawan',
+      checkInAt: 'Masuk pukul',
+      featureLockedRole: "Peran Anda saat ini tidak mengizinkan akses ke modul ini.",
+      featureLockedPlan: "Modul ini tidak termasuk dalam paket Anda saat ini.",
+      featureLockedBadge: 'Modul tidak tersedia',
+      featureLockedExplanation: "RMIH menampilkan antarmuka yang jelas agar tidak ada halaman 404 yang membingungkan.",
+      featureLockedAdminHint: "Minta super administrator platform untuk mengaktifkannya, atau beralih ke paket yang menyertakan modul ini.",
+      featureLockedPlanRoleTitle: 'Paket & peran',
+      featureLockedPlanRoleBody: 'Modul yang terlihat dihitung berdasarkan izin, paket perusahaan, dan peran pengguna.',
+      featureLockedCta: 'Minta aktivasi',
+      activate: 'Aktifkan',
+      activating: 'Mengaktifkan…',
+      activateError: 'Aktivasi gagal. Silakan coba lagi.',
+      recent_activity: 'Aktivitas terkini',
+      noNotifications: 'Tidak ada notifikasi terbaru.',
+      managePreferences: 'Kelola preferensi saya',
+      resumeOnboarding: '▶ Lanjutkan pengaturan',
+      businessSection: 'Bisnis Anda',
+      hrMenu: 'SDM',
+      modules: {
+        dashboard: 'Dasbor',
+        employees: 'Karyawan',
+        attendance: 'Absensi & Kehadiran',
+        attendance_geo: 'Sesi GPS',
+        absences: 'Izin & Cuti',
+        contracts: 'Kontrak',
+        payroll: 'Penggajian',
+        training: 'Pelatihan',
+        reports: 'Laporan',
+        partner: 'Program mitra',
+        billing: 'Tagihan',
+        integrations: 'Integrasi',
+        marketing: 'Pemasaran',
+        accounting: 'Akuntansi',
+        crm: 'CRM Klien',
+        restaurant: 'Restoran',
+        restaurant_kitchen: 'Dapur',
+        edu_manager: 'Manajemen sekolah',
+        travel: 'Agen perjalanan',
+        fuel: 'SPBU',
+        showcase: 'Situs vitrine',
+      },
+      sectionEnterprise: 'Perusahaan',
+      sectionModules: 'Modul & paket',
+      sectionDiscoverBusiness: 'Temukan modul bisnis',
+      sectionLocked: 'Untuk diaktifkan',
+    },
+    passwordReset: {
+      title: 'Lupa kata sandi?',
+      subtitle: 'Enter the email address of your account and we will send you a secure reset link.',
+      emailLabel: 'Alamat email',
+      emailPlaceholder: 'you@company.com',
+      submit: 'Send the link',
+      submitting: 'Sending...',
+      successTitle: 'Email sent',
+      successBody: "If an account exists with this address, a reset link has just been sent. Don't forget to check your spam folder.",
+      backToLogin: 'Back to login',
+      newPasswordLabel: 'New password',
+      newPasswordPlaceholder: 'At least 8 characters',
+      confirmPasswordLabel: 'Confirm password',
+      confirmPasswordPlaceholder: 'Repeat your password',
+      submitReset: 'Reset password',
+      submittingReset: 'Resetting...',
+      resetSuccessTitle: 'Password reset',
+      resetSuccessBody: 'You can now sign in with your new password.',
+      invalidEmail: 'Invalid email address.',
+      invalidPassword: 'Password must be at least 8 characters.',
+      passwordMismatch: 'The two passwords do not match.',
+      missingTokenTitle: 'Invalid or expired link',
+      missingTokenBody: 'This reset link is invalid or has expired. Please request a new one.',
+      genericError: 'Something went wrong. Please try again in a few moments.',
+      showPassword: 'Tampilkan kata sandi',
+      hidePassword: 'Sembunyikan kata sandi',
+    },
+    accountActivation: {
+      title: 'Activate your account',
+      subtitle: 'Set a password to activate your RMIH account.',
+      passwordLabel: 'Kata sandi',
+      passwordPlaceholder: '8 characters minimum',
+      confirmPasswordLabel: 'Confirm password',
+      confirmPasswordPlaceholder: 'Repeat your password',
+      submit: 'Activate my account',
+      submitting: 'Activating…',
+      successTitle: 'Account activated!',
+      successBody: 'Your account is now active. You can sign in.',
+      backToLogin: 'Go to sign in',
+      invalidPassword: 'Password must be at least 8 characters.',
+      passwordMismatch: 'The two passwords do not match.',
+      missingTokenTitle: 'Invalid or expired link',
+      missingTokenBody: 'This activation link is invalid or has expired. Contact your manager to get a new invitation.',
+      alreadyAccepted: 'This link has already been used. Sign in directly.',
+      expired: 'This link has expired. Request a new invitation.',
+      genericError: 'Something went wrong. Please try again in a moment.',
+      companySuspended: 'Your company access is suspended. Contact your administrator.',
+      validating: 'Checking your link…',
+      showPassword: 'Tampilkan kata sandi',
+      hidePassword: 'Sembunyikan kata sandi',
+    },
+    onboarding: {
+      stepBadge: 'Step {current} of {total}',
+      next: 'Next',
+      finish: 'Finish',
+      validating: 'Validating...',
+      skip: 'Skip this step',
+      close: 'Close the setup assistant',
+      retry: 'Retry',
+      errorGeneric: 'Unable to load the setup steps.',
+      actionCreateDepartment: 'Create a department',
+      actionAddEmployee: 'Add an employee',
+      actionResumeHint: "The wizard resumes automatically once it is done.",
+      allStepsDone: 'Setup complete!',
+      quickStart: 'Quick Start',
+      later: 'Recommended later',
+      firstCheckinHint: "Run a first check-in from the mobile app or the kiosk, then mark this step as done.",
+      qrShow: "Show the company QR code",
+      qrHide: 'Hide the QR code',
+      qrHint: "Scan this QR code with the Leopardo mobile app to join the company.",
+      qrError: 'Unable to load the QR code.',
+      qrLoading: 'Loading QR code...',
+      inviteManagerHint: 'An invitation email will be sent via the job queue. If it does not arrive within 5 minutes, make sure the queue workers are running on Render.',
+      estimatedMinutes: '~{n} min',
+      csvColumnsHint: 'Required CSV columns: first_name, last_name, email, base_salary. Export from Excel as CSV UTF-8.',
+      steps: {
+        company_info: {
+          title: 'Company information',
+          desc: 'Enter your company name, country, currency and time zone.',
+        },
+        first_department: {
+          title: 'First department',
+          desc: 'Create your first department (e.g. Production, HR).',
+        },
+        first_employee: {
+          title: 'First employee',
+          desc: 'Add your employees. CSV import recommended for more than 3 people.',
+        },
+        first_attendance: {
+          title: 'First check-in',
+          desc: 'Run a check-in from the mobile app or kiosk.',
+        },
+        invite_manager: {
+          title: 'Invite a manager',
+          desc: 'Invite a colleague as co-manager (optional).',
+        },
+        configure_schedules: {
+          title: 'Configure schedules',
+          desc: 'Create your schedules and attendance rules.',
+        },
+        first_report: {
+          title: 'First report',
+          desc: 'Generate your first monthly attendance report (optional).',
+        },
+        configure_payroll: {
+          title: 'Set up payroll',
+          desc: 'Fill in your salary structure and payroll settings.',
+        },
+        install_kiosk: {
+          title: 'Install a kiosk',
+          desc: 'Connect your ZKTeco kiosk for on-site clock-in (optional).',
+        },
+        activate_geofence: {
+          title: 'Activate geolocation',
+          desc: 'Define authorized check-in areas (optional).',
+        },
+      },
+    },
+    absences: {
+      title: 'Absences',
+      subtitle: 'Requests, balances and HR decisions',
+      listTitle: 'My requests',
+      request: 'Request',
+      loading: 'Loading absences',
+      approve: 'Approve',
+      reject: 'Reject',
+      cancel: 'Cancel',
+      rejectTitle: 'Reject request',
+      rejectBody: 'Please provide the rejection reason (required). The employee will be notified.',
+      reasonLabel: 'Rejection reason',
+      reasonPlaceholder: 'Required reason…',
+      reasonRequired: 'A reason is required to reject.',
+      rejectConfirm: 'Confirm rejection',
+      rejectInProgress: 'Rejecting...',
+      statusPending: 'Pending',
+      statusApproved: 'Approved',
+      statusRejected: 'Rejected',
+      statusCancelled: 'Cancelled',
+      loadError: 'Unable to load absences.',
+      empty: 'No absences.',
+      newAbsence: 'New absence',
+      newAbsenceHint: 'Choose the balance type and the period to send to HR.',
+      type: 'Type',
+      typeRequired: 'Absence type is required',
+      typeFallback: 'Absence',
+      start: 'Start',
+      end: 'End',
+      reason: 'Reason',
+      reasonHint: 'e.g. medical appointment, family leave...',
+      dateMissing: 'Start and end dates are required (end after or on start).',
+      submitToHr: 'Submit to HR',
+      submittedSnack: 'Absence request sent to HR.',
+      noTypeAvailable: 'No absence type available. Contact HR to configure balances.',
+      failure: 'Error: ',
+    },
+    payrollPage: {
+      title: 'Penggajian',
+      subtitle: 'Pay slips and payroll runs, with direct PDF export, connected to the HR API for each tenant.',
+      statTotalGross: 'Total Gross',
+      statTotalNet: 'Total Net',
+      statPayslips: 'Pay slips',
+      tabSlips: 'Pay slips',
+      tabRuns: 'Payroll runs',
+      searchPlaceholder: 'Search by name or period...',
+      columnEmployee: 'Karyawan',
+      columnPeriod: 'Period',
+      columnGross: 'Gross',
+      columnNet: 'Net',
+      columnStatus: 'Status',
+      columnCompliance: 'Compliance',
+      columnActions: 'Actions',
+      columnEmployees: 'Karyawan',
+      columnTotalGross: 'Total Gross',
+      columnTotalNet: 'Total Net',
+      loading: 'Loading...',
+      noPayslips: 'No pay slip found.',
+      noRuns: 'No payroll run found.',
+      statusValidated: 'Validated',
+      statusDraft: 'Draft',
+      statusCompleted: 'Completed',
+      runDraft: 'Draft',
+      runCalculated: 'Calculated',
+      runValidated: 'Validated',
+      runLocked: 'Locked',
+      runCalculate: 'Calculate',
+      runValidate: 'Validate (HR)',
+      runLock: 'Lock',
+      runUnlock: 'Unlock',
+      runConfirmLock: 'Lock this payroll run closure?',
+      runConfirmUnlock: 'Unlock this payroll run closure?',
+      runConfirmValidate: 'Validate a payroll with indicative brackets?',
+      runConfirmValidateCta: 'Validate anyway',
+      runPlaceholderBadge: 'Indicative brackets',
+      runPlaceholderWarning: 'Payroll brackets for this country are not legally validated: payslips may contain incorrect amounts. Check with a local certified accountant.',
+      runActionError: 'Unable to perform this action on the payroll run.',
+      runCancel: 'Cancel',
+      downloadPdf: 'Download PDF',
+      viewDetail: 'View detail',
+      resultsCount: 'results',
+      detailTitle: 'Pay slip details',
+      detailClose: 'Tutup',
+      detailLoading: 'Loading details...',
+      detailError: 'Details temporarily unavailable — showing list data.',
+      detailDeductions: 'Deductions',
+      detailEmployerContributions: 'Employer contributions',
+      detailTotalCost: 'Total employer cost',
+      detailWorkingDays: 'Working days',
+      detailDaysWorked: 'Actual days worked',
+      detailOvertimeHours: 'Overtime hours',
+      detailSalaryBreakdown: 'Salary breakdown',
+      salaryDecompTitle: 'Salary breakdown',
+      salaryMonthly: 'Monthly salary',
+      salaryDailyRate: 'Daily rate',
+      salaryHourlyRate: 'Hourly rate',
+      salaryCompositionDays: 'This month: {days} days × {rate} = {total}',
+      salaryCompositionHours: 'This month: {hours} h × {rate} = {total}',
+    },
+    smartAttendancePage: {
+      title: 'Smart Attendance',
+      subtitle: 'Smart geolocation-based attendance tracking — pending session validation and daily statistics.',
+      allSessions: 'All sessions →',
+      settings: 'Pengaturan',
+      pendingSessionsTitle: 'Sessions pending validation',
+      noPendingSessions: 'No session pending validation.',
+      columnEmployee: 'Karyawan',
+      columnCheckIn: 'Check-in',
+      columnCheckOut: 'Check-out',
+      columnDuration: 'Duration',
+      columnStatus: 'Status',
+      columnActions: 'Actions',
+      approve: 'Approve',
+      reject: 'Reject',
+      employeeFallback: 'Karyawan',
+      dashboardLoadError: 'Unable to load the dashboard.',
+      approveError: 'Error while approving.',
+      rejectError: 'Error while rejecting.',
+      statusDetected: 'Detected',
+      statusPendingValidation: 'Pending',
+      statusApproved: 'Approved',
+      statusRejected: 'Rejected',
+      statusCancelled: 'Cancelled',
+      statTotal: 'Total',
+      statDetected: 'Detected',
+      statPending: 'Pending',
+      statApproved: 'Approved',
+      statRejected: 'Rejected',
+      approveModalTitle: 'Approve session',
+      approveModalBody: "You are about to approve {name}'s session. This action is final.",
+      approveModalNoteLabel: 'Note (optional)',
+      approveModalNotePlaceholder: 'Add a note…',
+      approveModalConfirm: 'Approve',
+      approveModalInProgress: 'In progress…',
+      rejectModalTitle: 'Reject session',
+      rejectModalBody: "You are about to reject {name}'s session. Please provide a reason.",
+      rejectModalReasonLabel: 'Reason for rejection',
+      rejectModalReasonPlaceholder: 'Reason is required…',
+      rejectModalReasonRequired: 'The reason is required.',
+      rejectModalConfirm: 'Reject',
+      rejectModalInProgress: 'In progress…',
+      cancel: 'Cancel',
+    },
+    smartAttendanceSessionsPage: {
+      title: 'Attendance sessions',
+      subtitle: 'Full list of Smart Attendance sessions with advanced filters and pagination.',
+      backToDashboard: '← Dashboard',
+      loadError: 'Unable to load sessions.',
+      filtersTitle: 'Filters',
+      filterStatus: 'Status',
+      filterStatusAll: 'All statuses',
+      filterEmployee: 'Employee (ID or name)',
+      filterEmployeePlaceholder: 'Search…',
+      filterDateFrom: 'Start date',
+      filterDateTo: 'End date',
+      apply: 'Apply',
+      reset: 'Reset',
+      exportCsv: '⬇ Export CSV',
+      sessionsTitle: 'Sessions',
+      sessionCountSingular: 'session',
+      sessionCountPlural: 'sessions',
+      columnEmployee: 'Karyawan',
+      columnCheckIn: 'Check-in',
+      columnCheckOut: 'Check-out',
+      columnDuration: 'Duration',
+      columnStatus: 'Status',
+      columnDetail: 'Detail',
+      noSessions: 'No session found for these criteria.',
+      viewDetail: 'View →',
+      employeeFallback: 'Karyawan',
+      pageLabel: 'Page',
+      previous: '← Previous',
+      next: 'Next →',
+      csvHeaderId: 'ID',
+      csvHeaderEmployee: 'Karyawan',
+      csvHeaderMatricule: 'Employee number',
+      csvHeaderCheckIn: 'Check-in',
+      csvHeaderCheckOut: 'Check-out',
+      csvHeaderDuration: 'Duration (min)',
+      csvHeaderStatus: 'Status',
+    },
+    smartAttendanceSessionDetailPage: {
+      title: 'Session detail',
+      subtitle: 'Complete information for the geolocated attendance session.',
+      backToSessions: '← Back to sessions',
+      loadError: 'Unable to load the session.',
+      notFound: 'Session not found.',
+      employeeFallback: 'Karyawan',
+      noteLabel: 'Note: ',
+      rejectionReasonLabel: 'Rejection reason: ',
+      timelineTitle: 'Timeline',
+      checkInDetected: 'Arrival detected',
+      departure: 'Departure',
+      durationLabel: 'Duration: ',
+      gpsCoordinatesTitle: 'GPS coordinates',
+      checkInLabel: 'Check-in',
+      checkOutLabel: 'Check-out',
+      viewOnMaps: 'View on Maps →',
+      gpsHistoryTitle: 'GPS event history',
+      columnType: 'Type',
+      columnTime: 'Time',
+      columnLatitude: 'Latitude',
+      columnLongitude: 'Longitude',
+      columnAccuracy: 'Accuracy (m)',
+      pendingValidationNotice: 'This session is pending validation.',
+      approve: 'Approve',
+      reject: 'Reject',
+      approveErrorGeneric: 'Error while approving.',
+      rejectErrorGeneric: 'Error while rejecting.',
+    },
+    smartAttendanceSettingsPage: {
+      title: 'Smart Attendance settings',
+      subtitle: 'Configuration of the check-in mode and the company geofence.',
+      backToDashboard: '← Dashboard',
+      loadError: 'Unable to load settings.',
+      saveError: 'Error while saving.',
+      saveSuccess: 'Settings saved successfully.',
+      currentModeLabel: 'Current mode',
+      modeFree: 'Free (no forced mode)',
+      modeGpsAuto: 'Automatic GPS',
+      modeQrCode: 'QR Code',
+      modeManual: 'Manual',
+      gpsLabel: 'GPS: ',
+      gpsEnabled: 'Enabled',
+      gpsDisabled: 'Disabled',
+      radiusLabel: 'Radius: ',
+      configurationTitle: 'Configuration',
+      modeFieldLabel: 'Check-in mode',
+      modeFreeHint: '"Free" lets the employee choose the available method.',
+      gpsToggleTitle: 'GPS geolocation',
+      gpsToggleSubtitle: 'Enable position vérification',
+      geofenceConfigTitle: 'Geofence configuration',
+      latitudeLabel: 'Latitude',
+      longitudeLabel: 'Longitude',
+      radiusFieldLabel: 'Radius (meters)',
+      radiusHint: 'Maximum allowed distance from the workplace.',
+      save: 'Save',
+      saving: 'Saving…',
+      cancel: 'Cancel',
+    },
+    developerSettingsPage: {
+      title: 'Developer Area',
+      subtitle: 'Manage your API keys and webhooks to integrate RMIH with your tools.',
+      loadTokensError: 'Unable to load API keys.',
+      loadWebhooksError: 'Unable to load webhooks.',
+      createTokenError: 'Unable to create the API key.',
+      deleteTokenError: 'Unable to revoke the API key.',
+      createWebhookError: 'Unable to create the webhook.',
+      deleteWebhookError: 'Unable to delete the webhook.',
+      updateWebhookError: 'Unable to update the webhook.',
+      revokeTokenConfirm: 'Revoke this API key? Integrations using it will stop working.',
+      deleteWebhookConfirm: 'Delete this webhook endpoint?',
+      revealedTokenNotice: 'Key "{name}" created — copy it now, it will never be shown again:',
+      revealedTokenDismiss: "I've copied the key, hide it",
+      apiKeysTitle: 'API Keys',
+      loading: 'Loading...',
+      noTokens: 'No API key created yet.',
+      createdOn: 'Created on {date}',
+      unknownDate: 'Unknown date',
+      lastUsedOn: ' · last used on {date}',
+      neverUsed: ' · never used',
+      revoke: 'Revoke',
+      tokenNamePlaceholder: 'Key name (e.g. Production)',
+      webhooksTitle: 'Webhooks',
+      noWebhooks: 'No webhook endpoint configured.',
+      eventsCount: '{count} event(s)',
+      failuresCount: '{count} failure(s)',
+      noFailures: 'no failures',
+      active: 'Active',
+      inactive: 'Inactive',
+      triggeredOn: 'Triggered on {date}',
+      neverTriggered: 'Never triggered',
+      delete: 'Delete',
+      addEndpoint: 'Add an endpoint',
+      apiDocsTitle: 'API Documentation',
+      apiDocsBody: 'Learn how to integrate our signed webhooks (Svix format) and our REST endpoints.',
+      openExplorer: 'Open the Explorer',
+      newWebhookModalTitle: 'New webhook endpoint',
+      destinationUrlLabel: 'Destination URL',
+      eventsToListenLabel: 'Events to listen for',
+      cancel: 'Cancel',
+      creating: 'Creating...',
+      create: 'Create',
+    },
+    partnerPage: {
+      loading: 'Loading your workspace...',
+      applyErrorPrefix: 'Error while applying: ',
+      notApplied: {
+        title: 'Become a Partner',
+        subtitle: 'Join the RMIH ecosystem and earn commissions on every company you refer. Up to 20% recurring commission.',
+        individual: 'Apply as an Individual',
+        agency: 'Apply as an Agency',
+      },
+      pending: {
+        title: 'Application in progress',
+        body: 'Your application is being reviewed by our sales team. You will receive an email as soon as your access is activated.',
+      },
+      dashboard: {
+        title: 'Partner Dashboard',
+        subtitle: 'Track your RMIH conversions and commissions — active partner status.',
+      },
+      metrics: {
+        conversions: 'Conversions',
+        totalEarned: 'Total earned',
+        pending: 'Pending',
+        withdrawable: 'Withdrawable balance',
+      },
+      commissions: {
+        title: 'Latest commissions',
+        empty: 'No commission recorded.',
+      },
+      table: {
+        tenantId: 'Tenant ID',
+        date: 'Date',
+        status: 'Status',
+        amount: 'Amount',
+        statusPaid: 'Paid',
+        statusPending: 'Pending',
+      },
+      payout: {
+        title: 'Payout',
+        body: 'Your commissions are paid once the threshold is reached. Make sure your bank details are up to date.',
+        request: 'Request a transfer',
+        sending: 'Sending...',
+        insufficient: 'Insufficient balance to request a transfer (minimum €100.00).',
+        success: 'Transfer request sent successfully.',
+        errorPrefix: 'Error while requesting the transfer: ',
+      },
+      referral: {
+        title: 'Referral link',
+        unavailable: 'Link unavailable',
+        copy: 'Copy my link',
+        copied: 'Copied!',
+        copyError: 'Unable to copy the link. Copy it manually.',
+      },
+    },
+    offlinePage: {
+      title: 'No internet connection',
+      body: 'You are currently offline. If a Leopardo Edge node is available on your local network, the application keeps working normally.',
+      edgeModeTitle: 'Edge mode active?',
+      edgeModeBody: 'Access the local interface via:',
+      retry: 'Retry',
+    },
+
+  billing: {
+    title: 'Billing',
+    subtitle: 'Manage your subscription, invoices and payment information.',
+    statusActive: 'Active',
+    statusCancelled: 'Cancelled',
+    statusPastDue: 'Past due',
+    statusPaid: 'Paid',
+    statusPending: 'Pending',
+    cancelConfirm: 'Cancel your subscription? You will lose access to premium modules at the end of the current period.',
+    cancelError: 'Unable to cancel the subscription.',
+    renewError: 'Unable to reactivate the subscription.',
+    noPaymentAccount: 'No payment account linked. Subscribe to a plan first.',
+    downloadError: 'Unable to download the invoice.',
+    noActivePeriod: 'No active period',
+    periodRange: 'Period: {start} to {end}',
+    cancelLabel: 'Cancel subscription',
+    loadError: 'Unable to load billing information.',
+  },
+  contracts: {
+    title: 'Contracts',
+    subtitle: 'Manage your team contracts',
+    statusAll: 'All statuses',
+    statusActive: 'Active',
+    statusSuspended: 'Suspended',
+    statusActives: 'Active',
+    statusSuspendeds: 'Suspended',
+    statusTerminated: 'Terminated',
+    statusDraft: 'Draft',
+  },
+  absencesPage: {
+    loadError: 'Unable to load absences.',
+    approve: 'Approve',
+    reject: 'Reject',
+    rejectTitle: 'Reject request',
+    rejectReasonPlaceholder: 'Reason for rejection (required)',
+    reasonRequired: 'A rejection reason is required.',
+    cancel: 'Cancel',
+    confirmReject: 'Confirm rejection',
+    approveSuccess: 'Request approved.',
+    rejectSuccess: 'Request rejected.',
+    actionError: 'Unable to perform this action.',
+  },
+  attendancePage: { loadError: 'Unable to load attendance.' },
+  socialPage: {
+    title: 'Social media',
+    subtitle: 'Publish and schedule your content',
+    loadError: 'Unable to load posts.',
+    createError: 'Unable to create the post.',
+  },
+  socialMarketingPage: {
+    title: 'Marketing',
+    subtitle: 'Connect your social account and manage your posts',
+    loadAccountError: 'Unable to load the social account.',
+    loadPostsError: 'Unable to load posts.',
+    connectError: 'Unable to connect the social account.',
+    disconnectError: 'Unable to disconnect the social account.',
+    createError: 'Unable to create the post.',
+    publishError: 'Unable to publish the post.',
+    deleteError: 'Unable to delete the post.',
+    statusActive: 'Active',
+  },
+  trainingPage: {
+    loadError: 'Unable to load trainings.',
+    createError: 'Unable to create the training.',
+  },
+  notificationsPage: {
+    statusEnabled: 'Enabled',
+    statusDisabled: 'Disabled',
+  },
+  travelPortal: {
+    title: "Traveler space",
+    subtitle: "Track your booking, download your e-tickets and manage your trip.",
+    referenceLabel: "Booking reference",
+    referencePlaceholder: "E.g. GV-2026-0001",
+    codeLabel: "Validation code",
+    codePlaceholder: "Code received by email",
+    track: "Track my booking",
+    tracking: "Tracking…",
+    status: "Status",
+    trip: "Trip",
+    tickets: "Tickets",
+    passengers: "Passengers",
+    total: "Total",
+    downloadTicket: "Download e-ticket",
+    cancel: "Cancel booking",
+    cancelConfirm: "Confirm cancellation",
+    cancelling: "Cancelling…",
+    cancelReasonPlaceholder: "Cancellation reason",
+    cancelled: "Cancelled",
+    statusPending: "Pending",
+    statusConfirmed: "Confirmed",
+    statusRefunded: "Refunded",
+    statusCompleted: "Completed",
+    notFound: "Booking not found. Check the reference and code.",
+    invalidCode: "Invalid validation code.",
+    departurePast: "Cancellation is no longer possible: departure has passed.",
+    error: "Something went wrong. Try again.",
+  },
+
+  },
+  en: {
+    login: {
+      title: 'Sign in to RMIH',
+      subtitle: 'Access your HR workspace, follow your teams, and manage the modules enabled for your company.',
+      clientSpace: 'Client workspace',
+      heroTitle: 'A clear HR access point for every manager, country, and team.',
+      heroCopy: 'Your client portal stays connected to the RMIH API with tenant context, language, and permissions applied after sign-in.',
+      secureBadge: 'Secure sign-in',
+      trustPoints: [
+        'Session bound to your tenant',
+        'Permissions applied by role',
+        'Ready for managers, HR and employees',
+      ],
+      back: 'Back to site',
+      email: 'Email address',
+      password: 'Password',
+      showPassword: 'Show password',
+      hidePassword: 'Hide password',
+      remember: 'Remember me',
+      forgot: 'Forgot password?',
+      submit: 'Sign in',
+      loading: 'Signing in...',
+      demoAccess: 'Try a demo account',
+      demoUnavailable: 'Demo access is temporarily unavailable (API unreachable).',
+    accountCreatedFree: 'Account created! Sign in to access your free workspace.',
+    accountCreatedPaid: 'Registration received! Sign in to continue.',
+      demoTitle: 'Choose a demo account',
+      demoSubtitle: 'Select a role to prefill the form, then sign in.',
+      close: 'Close',
+      supportCopy: 'Need help recovering access?',
+      supportLink: 'Contact support',
+      errors: {
+        generic: 'Something went wrong.',
+        missingToken: 'The login token is missing from the API response.',
+        missingUser: 'The authenticated user profile is missing from the API response.',
+        google: 'Google sign-in failed. Please try again.',
+        googleNetwork: 'Could not reach Google. Check your connection and try again.',
+        googleAuthFailed: 'Google refused the sign-in. Please try again.',
+        googleNoAccount: 'No RMIH account is linked to this Google email. Ask your administrator for an invitation.',
+        googleNoAccountCta: 'Start a trial without an invitation',
+        googleUnavailable: 'Google sign-in is not available yet. Use your email and password instead.',
+      },
+    },
+    dashboard: {
+      heading: 'Dashboard',
+      employees: 'Active employees',
+      present: 'present',
+      live: 'Live',
+      late: 'Late arrivals',
+      activity: 'Recent activity',
+      team: 'Employees',
+      attendance: 'Attendance',
+      payroll: 'Payroll',
+      settings: 'Settings',
+      logout: 'Sign out',
+      userMenuAccount: 'My account',
+      userMenuPassword: 'Change my password',
+      userMenuSecurity: 'Security (2FA)',
+      language: 'Language',
+      presentBadge: 'Present',
+      employeeLabel: 'Employee',
+      checkInAt: 'Check-in at',
+      featureLockedRole: "Your current role does not allow access to this module.",
+      featureLockedPlan: "This module is not included in your current plan.",
+      featureLockedBadge: 'Module not included',
+      featureLockedExplanation: "RMIH keeps the interface explicit to avoid confusing 404s and unnecessary API errors.",
+      featureLockedAdminHint: "Ask the platform super administrator to enable it, or switch to a plan that includes this module.",
+      featureLockedPlanRoleTitle: 'Plan & role',
+      featureLockedPlanRoleBody: 'The modules visible in this space are computed from permissions, the company plan and the user role.',
+      featureLockedCta: 'Request activation',
+      activate: 'Activate',
+      activating: 'Activating…',
+      activateError: 'Activation failed. Please try again.',
+      recent_activity: 'Recent activity',
+      noNotifications: 'No recent notifications.',
+      managePreferences: 'Manage my preferences',
+      resumeOnboarding: '▶ Resume setup',
+      businessSection: 'Your business',
+      hrMenu: 'HR',
+      modules: {
+        dashboard: 'Dashboard',
+        employees: 'Employees',
+        attendance: 'Attendance',
+        attendance_geo: 'GPS sessions',
+        absences: 'Leave',
+        contracts: 'Contracts',
+        payroll: 'Payroll',
+        training: 'Training',
+        reports: 'Reports',
+        partner: 'Partner program',
+        billing: 'Billing',
+        integrations: 'Integrations',
+        marketing: 'Marketing',
+        accounting: 'Accounting',
+        crm: 'Client CRM',
+        restaurant: 'Restaurant',
+        restaurant_kitchen: 'Kitchen',
+        edu_manager: 'School management',
+        travel: 'Travel agency',
+        fuel: 'Fuel station',
+        showcase: 'Showcase site',
+      },
+      sectionEnterprise: 'Company',
+      sectionModules: 'Modules & plan',
+      sectionDiscoverBusiness: 'Discover business modules',
+      sectionLocked: 'To activate',
+    },
+    passwordReset: {
+      title: 'Forgot your password?',
+      subtitle: 'Enter the email address of your account and we will send you a secure reset link.',
+      emailLabel: 'Email address',
+      emailPlaceholder: 'you@company.com',
+      submit: 'Send the link',
+      submitting: 'Sending...',
+      successTitle: 'Email sent',
+      successBody: "If an account exists with this address, a reset link has just been sent. Don't forget to check your spam folder.",
+      backToLogin: 'Back to login',
+      newPasswordLabel: 'New password',
+      newPasswordPlaceholder: 'At least 8 characters',
+      confirmPasswordLabel: 'Confirm password',
+      confirmPasswordPlaceholder: 'Repeat your password',
+      submitReset: 'Reset password',
+      submittingReset: 'Resetting...',
+      resetSuccessTitle: 'Password reset',
+      resetSuccessBody: 'You can now sign in with your new password.',
+      invalidEmail: 'Invalid email address.',
+      invalidPassword: 'Password must be at least 8 characters.',
+      passwordMismatch: 'The two passwords do not match.',
+      missingTokenTitle: 'Invalid or expired link',
+      missingTokenBody: 'This reset link is invalid or has expired. Please request a new one.',
+      genericError: 'Something went wrong. Please try again in a few moments.',
+      showPassword: 'Show password',
+      hidePassword: 'Hide password',
+    },
+    accountActivation: {
+      title: 'Activate your account',
+      subtitle: 'Set a password to activate your RMIH account.',
+      passwordLabel: 'Password',
+      passwordPlaceholder: '8 characters minimum',
+      confirmPasswordLabel: 'Confirm password',
+      confirmPasswordPlaceholder: 'Repeat your password',
+      submit: 'Activate my account',
+      submitting: 'Activating…',
+      successTitle: 'Account activated!',
+      successBody: 'Your account is now active. You can sign in.',
+      backToLogin: 'Go to sign in',
+      invalidPassword: 'Password must be at least 8 characters.',
+      passwordMismatch: 'The two passwords do not match.',
+      missingTokenTitle: 'Invalid or expired link',
+      missingTokenBody: 'This activation link is invalid or has expired. Contact your manager to get a new invitation.',
+      alreadyAccepted: 'This link has already been used. Sign in directly.',
+      expired: 'This link has expired. Request a new invitation.',
+      genericError: 'Something went wrong. Please try again in a moment.',
+      companySuspended: 'Your company access is suspended. Contact your administrator.',
+      validating: 'Checking your link…',
+      showPassword: 'Show password',
+      hidePassword: 'Hide password',
+    },
+    onboarding: {
+      stepBadge: 'Step {current} of {total}',
+      next: 'Next',
+      finish: 'Finish',
+      validating: 'Validating...',
+      skip: 'Skip this step',
+      close: 'Close the setup assistant',
+      retry: 'Retry',
+      errorGeneric: 'Unable to load the setup steps.',
+      actionCreateDepartment: 'Create a department',
+      actionAddEmployee: 'Add an employee',
+      actionResumeHint: "The wizard resumes automatically once it is done.",
+      allStepsDone: 'Setup complete!',
+      quickStart: 'Quick Start',
+      later: 'Recommended later',
+      firstCheckinHint: "Run a first check-in from the mobile app or the kiosk, then mark this step as done.",
+      qrShow: "Show the company QR code",
+      qrHide: 'Hide the QR code',
+      qrHint: "Scan this QR code with the Leopardo mobile app to join the company.",
+      qrError: 'Unable to load the QR code.',
+      qrLoading: 'Loading QR code...',
+      inviteManagerHint: 'An invitation email will be sent via the job queue. If it does not arrive within 5 minutes, make sure the queue workers are running on Render.',
+      estimatedMinutes: '~{n} min',
+      csvColumnsHint: 'Required CSV columns: first_name, last_name, email, base_salary. Export from Excel as CSV UTF-8.',
+      steps: {
+        company_info: {
+          title: 'Company information',
+          desc: 'Enter your company name, country, currency and time zone.',
+        },
+        first_department: {
+          title: 'First department',
+          desc: 'Create your first department (e.g. Production, HR).',
+        },
+        first_employee: {
+          title: 'First employee',
+          desc: 'Add your employees. CSV import recommended for more than 3 people.',
+        },
+        first_attendance: {
+          title: 'First check-in',
+          desc: 'Run a check-in from the mobile app or kiosk.',
+        },
+        invite_manager: {
+          title: 'Invite a manager',
+          desc: 'Invite a colleague as co-manager (optional).',
+        },
+        configure_schedules: {
+          title: 'Configure schedules',
+          desc: 'Create your schedules and attendance rules.',
+        },
+        first_report: {
+          title: 'First report',
+          desc: 'Generate your first monthly attendance report (optional).',
+        },
+        configure_payroll: {
+          title: 'Set up payroll',
+          desc: 'Fill in your salary structure and payroll settings.',
+        },
+        install_kiosk: {
+          title: 'Install a kiosk',
+          desc: 'Connect your ZKTeco kiosk for on-site clock-in (optional).',
+        },
+        activate_geofence: {
+          title: 'Activate geolocation',
+          desc: 'Define authorized check-in areas (optional).',
+        },
+      },
+    },
+    absences: {
+      title: 'Absences',
+      subtitle: 'Requests, balances and HR decisions',
+      listTitle: 'My requests',
+      request: 'Request',
+      loading: 'Loading absences',
+      approve: 'Approve',
+      reject: 'Reject',
+      cancel: 'Cancel',
+      rejectTitle: 'Reject request',
+      rejectBody: 'Please provide the rejection reason (required). The employee will be notified.',
+      reasonLabel: 'Rejection reason',
+      reasonPlaceholder: 'Required reason…',
+      reasonRequired: 'A reason is required to reject.',
+      rejectConfirm: 'Confirm rejection',
+      rejectInProgress: 'Rejecting...',
+      statusPending: 'Pending',
+      statusApproved: 'Approved',
+      statusRejected: 'Rejected',
+      statusCancelled: 'Cancelled',
+      loadError: 'Unable to load absences.',
+      empty: 'No absences.',
+      newAbsence: 'New absence',
+      newAbsenceHint: 'Choose the balance type and the period to send to HR.',
+      type: 'Type',
+      typeRequired: 'Absence type is required',
+      typeFallback: 'Absence',
+      start: 'Start',
+      end: 'End',
+      reason: 'Reason',
+      reasonHint: 'e.g. medical appointment, family leave...',
+      dateMissing: 'Start and end dates are required (end after or on start).',
+      submitToHr: 'Submit to HR',
+      submittedSnack: 'Absence request sent to HR.',
+      noTypeAvailable: 'No absence type available. Contact HR to configure balances.',
+      failure: 'Error: ',
+    },
+    payrollPage: {
+      title: 'Payroll',
+      subtitle: 'Pay slips and payroll runs, with direct PDF export, connected to the HR API for each tenant.',
+      statTotalGross: 'Total Gross',
+      statTotalNet: 'Total Net',
+      statPayslips: 'Pay slips',
+      tabSlips: 'Pay slips',
+      tabRuns: 'Payroll runs',
+      searchPlaceholder: 'Search by name or period...',
+      columnEmployee: 'Employee',
+      columnPeriod: 'Period',
+      columnGross: 'Gross',
+      columnNet: 'Net',
+      columnStatus: 'Status',
+      columnCompliance: 'Compliance',
+      columnActions: 'Actions',
+      columnEmployees: 'Employees',
+      columnTotalGross: 'Total Gross',
+      columnTotalNet: 'Total Net',
+      loading: 'Loading...',
+      noPayslips: 'No pay slip found.',
+      noRuns: 'No payroll run found.',
+      statusValidated: 'Validated',
+      statusDraft: 'Draft',
+      statusCompleted: 'Completed',
+      runDraft: 'Draft',
+      runCalculated: 'Calculated',
+      runValidated: 'Validated',
+      runLocked: 'Locked',
+      runCalculate: 'Calculate',
+      runValidate: 'Validate (HR)',
+      runLock: 'Lock',
+      runUnlock: 'Unlock',
+      runConfirmLock: 'Lock this payroll run closure?',
+      runConfirmUnlock: 'Unlock this payroll run closure?',
+      runConfirmValidate: 'Validate a payroll with indicative brackets?',
+      runConfirmValidateCta: 'Validate anyway',
+      runPlaceholderBadge: 'Indicative brackets',
+      runPlaceholderWarning: 'Payroll brackets for this country are not legally validated: payslips may contain incorrect amounts. Check with a local certified accountant.',
+      runActionError: 'Unable to perform this action on the payroll run.',
+      runCancel: 'Cancel',
+      downloadPdf: 'Download PDF',
+      viewDetail: 'View detail',
+      resultsCount: 'results',
+      detailTitle: 'Pay slip details',
+      detailClose: 'Close',
+      detailLoading: 'Loading details...',
+      detailError: 'Details temporarily unavailable — showing list data.',
+      detailDeductions: 'Deductions',
+      detailEmployerContributions: 'Employer contributions',
+      detailTotalCost: 'Total employer cost',
+      detailWorkingDays: 'Working days',
+      detailDaysWorked: 'Actual days worked',
+      detailOvertimeHours: 'Overtime hours',
+      detailSalaryBreakdown: 'Salary breakdown',
+      salaryDecompTitle: 'Salary breakdown',
+      salaryMonthly: 'Monthly salary',
+      salaryDailyRate: 'Daily rate',
+      salaryHourlyRate: 'Hourly rate',
+      salaryCompositionDays: 'This month: {days} days × {rate} = {total}',
+      salaryCompositionHours: 'This month: {hours} h × {rate} = {total}',
+    },
+    smartAttendancePage: {
+      title: 'Smart Attendance',
+      subtitle: 'Smart geolocation-based attendance tracking — pending session validation and daily statistics.',
+      allSessions: 'All sessions →',
+      settings: 'Settings',
+      pendingSessionsTitle: 'Sessions pending validation',
+      noPendingSessions: 'No session pending validation.',
+      columnEmployee: 'Employee',
+      columnCheckIn: 'Check-in',
+      columnCheckOut: 'Check-out',
+      columnDuration: 'Duration',
+      columnStatus: 'Status',
+      columnActions: 'Actions',
+      approve: 'Approve',
+      reject: 'Reject',
+      employeeFallback: 'Employee',
+      dashboardLoadError: 'Unable to load the dashboard.',
+      approveError: 'Error while approving.',
+      rejectError: 'Error while rejecting.',
+      statusDetected: 'Detected',
+      statusPendingValidation: 'Pending',
+      statusApproved: 'Approved',
+      statusRejected: 'Rejected',
+      statusCancelled: 'Cancelled',
+      statTotal: 'Total',
+      statDetected: 'Detected',
+      statPending: 'Pending',
+      statApproved: 'Approved',
+      statRejected: 'Rejected',
+      approveModalTitle: 'Approve session',
+      approveModalBody: "You are about to approve {name}'s session. This action is final.",
+      approveModalNoteLabel: 'Note (optional)',
+      approveModalNotePlaceholder: 'Add a note…',
+      approveModalConfirm: 'Approve',
+      approveModalInProgress: 'In progress…',
+      rejectModalTitle: 'Reject session',
+      rejectModalBody: "You are about to reject {name}'s session. Please provide a reason.",
+      rejectModalReasonLabel: 'Reason for rejection',
+      rejectModalReasonPlaceholder: 'Reason is required…',
+      rejectModalReasonRequired: 'The reason is required.',
+      rejectModalConfirm: 'Reject',
+      rejectModalInProgress: 'In progress…',
+      cancel: 'Cancel',
+    },
+    smartAttendanceSessionsPage: {
+      title: 'Attendance sessions',
+      subtitle: 'Full list of Smart Attendance sessions with advanced filters and pagination.',
+      backToDashboard: '← Dashboard',
+      loadError: 'Unable to load sessions.',
+      filtersTitle: 'Filters',
+      filterStatus: 'Status',
+      filterStatusAll: 'All statuses',
+      filterEmployee: 'Employee (ID or name)',
+      filterEmployeePlaceholder: 'Search…',
+      filterDateFrom: 'Start date',
+      filterDateTo: 'End date',
+      apply: 'Apply',
+      reset: 'Reset',
+      exportCsv: '⬇ Export CSV',
+      sessionsTitle: 'Sessions',
+      sessionCountSingular: 'session',
+      sessionCountPlural: 'sessions',
+      columnEmployee: 'Employee',
+      columnCheckIn: 'Check-in',
+      columnCheckOut: 'Check-out',
+      columnDuration: 'Duration',
+      columnStatus: 'Status',
+      columnDetail: 'Detail',
+      noSessions: 'No session found for these criteria.',
+      viewDetail: 'View →',
+      employeeFallback: 'Employee',
+      pageLabel: 'Page',
+      previous: '← Previous',
+      next: 'Next →',
+      csvHeaderId: 'ID',
+      csvHeaderEmployee: 'Employee',
+      csvHeaderMatricule: 'Employee number',
+      csvHeaderCheckIn: 'Check-in',
+      csvHeaderCheckOut: 'Check-out',
+      csvHeaderDuration: 'Duration (min)',
+      csvHeaderStatus: 'Status',
+    },
+    smartAttendanceSessionDetailPage: {
+      title: 'Session detail',
+      subtitle: 'Complete information for the geolocated attendance session.',
+      backToSessions: '← Back to sessions',
+      loadError: 'Unable to load the session.',
+      notFound: 'Session not found.',
+      employeeFallback: 'Employee',
+      noteLabel: 'Note: ',
+      rejectionReasonLabel: 'Rejection reason: ',
+      timelineTitle: 'Timeline',
+      checkInDetected: 'Arrival detected',
+      departure: 'Departure',
+      durationLabel: 'Duration: ',
+      gpsCoordinatesTitle: 'GPS coordinates',
+      checkInLabel: 'Check-in',
+      checkOutLabel: 'Check-out',
+      viewOnMaps: 'View on Maps →',
+      gpsHistoryTitle: 'GPS event history',
+      columnType: 'Type',
+      columnTime: 'Time',
+      columnLatitude: 'Latitude',
+      columnLongitude: 'Longitude',
+      columnAccuracy: 'Accuracy (m)',
+      pendingValidationNotice: 'This session is pending validation.',
+      approve: 'Approve',
+      reject: 'Reject',
+      approveErrorGeneric: 'Error while approving.',
+      rejectErrorGeneric: 'Error while rejecting.',
+    },
+    smartAttendanceSettingsPage: {
+      title: 'Smart Attendance settings',
+      subtitle: 'Configuration of the check-in mode and the company geofence.',
+      backToDashboard: '← Dashboard',
+      loadError: 'Unable to load settings.',
+      saveError: 'Error while saving.',
+      saveSuccess: 'Settings saved successfully.',
+      currentModeLabel: 'Current mode',
+      modeFree: 'Free (no forced mode)',
+      modeGpsAuto: 'Automatic GPS',
+      modeQrCode: 'QR Code',
+      modeManual: 'Manual',
+      gpsLabel: 'GPS: ',
+      gpsEnabled: 'Enabled',
+      gpsDisabled: 'Disabled',
+      radiusLabel: 'Radius: ',
+      configurationTitle: 'Configuration',
+      modeFieldLabel: 'Check-in mode',
+      modeFreeHint: '"Free" lets the employee choose the available method.',
+      gpsToggleTitle: 'GPS geolocation',
+      gpsToggleSubtitle: 'Enable position vérification',
+      geofenceConfigTitle: 'Geofence configuration',
+      latitudeLabel: 'Latitude',
+      longitudeLabel: 'Longitude',
+      radiusFieldLabel: 'Radius (meters)',
+      radiusHint: 'Maximum allowed distance from the workplace.',
+      save: 'Save',
+      saving: 'Saving…',
+      cancel: 'Cancel',
+    },
+    developerSettingsPage: {
+      title: 'Developer Area',
+      subtitle: 'Manage your API keys and webhooks to integrate RMIH with your tools.',
+      loadTokensError: 'Unable to load API keys.',
+      loadWebhooksError: 'Unable to load webhooks.',
+      createTokenError: 'Unable to create the API key.',
+      deleteTokenError: 'Unable to revoke the API key.',
+      createWebhookError: 'Unable to create the webhook.',
+      deleteWebhookError: 'Unable to delete the webhook.',
+      updateWebhookError: 'Unable to update the webhook.',
+      revokeTokenConfirm: 'Revoke this API key? Integrations using it will stop working.',
+      deleteWebhookConfirm: 'Delete this webhook endpoint?',
+      revealedTokenNotice: 'Key "{name}" created — copy it now, it will never be shown again:',
+      revealedTokenDismiss: "I've copied the key, hide it",
+      apiKeysTitle: 'API Keys',
+      loading: 'Loading...',
+      noTokens: 'No API key created yet.',
+      createdOn: 'Created on {date}',
+      unknownDate: 'Unknown date',
+      lastUsedOn: ' · last used on {date}',
+      neverUsed: ' · never used',
+      revoke: 'Revoke',
+      tokenNamePlaceholder: 'Key name (e.g. Production)',
+      webhooksTitle: 'Webhooks',
+      noWebhooks: 'No webhook endpoint configured.',
+      eventsCount: '{count} event(s)',
+      failuresCount: '{count} failure(s)',
+      noFailures: 'no failures',
+      active: 'Active',
+      inactive: 'Inactive',
+      triggeredOn: 'Triggered on {date}',
+      neverTriggered: 'Never triggered',
+      delete: 'Delete',
+      addEndpoint: 'Add an endpoint',
+      apiDocsTitle: 'API Documentation',
+      apiDocsBody: 'Learn how to integrate our signed webhooks (Svix format) and our REST endpoints.',
+      openExplorer: 'Open the Explorer',
+      newWebhookModalTitle: 'New webhook endpoint',
+      destinationUrlLabel: 'Destination URL',
+      eventsToListenLabel: 'Events to listen for',
+      cancel: 'Cancel',
+      creating: 'Creating...',
+      create: 'Create',
+    },
+    partnerPage: {
+      loading: 'Loading your workspace...',
+      applyErrorPrefix: 'Error while applying: ',
+      notApplied: {
+        title: 'Become a Partner',
+        subtitle: 'Join the RMIH ecosystem and earn commissions on every company you refer. Up to 20% recurring commission.',
+        individual: 'Apply as an Individual',
+        agency: 'Apply as an Agency',
+      },
+      pending: {
+        title: 'Application in progress',
+        body: 'Your application is being reviewed by our sales team. You will receive an email as soon as your access is activated.',
+      },
+      dashboard: {
+        title: 'Partner Dashboard',
+        subtitle: 'Track your RMIH conversions and commissions — active partner status.',
+      },
+      metrics: {
+        conversions: 'Conversions',
+        totalEarned: 'Total earned',
+        pending: 'Pending',
+        withdrawable: 'Withdrawable balance',
+      },
+      commissions: {
+        title: 'Latest commissions',
+        empty: 'No commission recorded.',
+      },
+      table: {
+        tenantId: 'Tenant ID',
+        date: 'Date',
+        status: 'Status',
+        amount: 'Amount',
+        statusPaid: 'Paid',
+        statusPending: 'Pending',
+      },
+      payout: {
+        title: 'Payout',
+        body: 'Your commissions are paid once the threshold is reached. Make sure your bank details are up to date.',
+        request: 'Request a transfer',
+        sending: 'Sending...',
+        insufficient: 'Insufficient balance to request a transfer (minimum €100.00).',
+        success: 'Transfer request sent successfully.',
+        errorPrefix: 'Error while requesting the transfer: ',
+      },
+      referral: {
+        title: 'Referral link',
+        unavailable: 'Link unavailable',
+        copy: 'Copy my link',
+        copied: 'Copied!',
+        copyError: 'Unable to copy the link. Copy it manually.',
+      },
+    },
+    offlinePage: {
+      title: 'No internet connection',
+      body: 'You are currently offline. If a Leopardo Edge node is available on your local network, the application keeps working normally.',
+      edgeModeTitle: 'Edge mode active?',
+      edgeModeBody: 'Access the local interface via:',
+      retry: 'Retry',
+    },
+
+  billing: {
+    title: 'Billing',
+    subtitle: 'Manage your subscription, invoices and payment information.',
+    statusActive: 'Active',
+    statusCancelled: 'Cancelled',
+    statusPastDue: 'Past due',
+    statusPaid: 'Paid',
+    statusPending: 'Pending',
+    cancelConfirm: 'Cancel your subscription? You will lose access to premium modules at the end of the current period.',
+    cancelError: 'Unable to cancel the subscription.',
+    renewError: 'Unable to reactivate the subscription.',
+    noPaymentAccount: 'No payment account linked. Subscribe to a plan first.',
+    downloadError: 'Unable to download the invoice.',
+    noActivePeriod: 'No active period',
+    periodRange: 'Period: {start} to {end}',
+    cancelLabel: 'Cancel subscription',
+    loadError: 'Unable to load billing information.',
+  },
+  contracts: {
+    title: 'Contracts',
+    subtitle: 'Manage your team contracts',
+    statusAll: 'All statuses',
+    statusActive: 'Active',
+    statusSuspended: 'Suspended',
+    statusActives: 'Active',
+    statusSuspendeds: 'Suspended',
+    statusTerminated: 'Terminated',
+    statusDraft: 'Draft',
+  },
+  absencesPage: {
+    loadError: 'Unable to load absences.',
+    approve: 'Approve',
+    reject: 'Reject',
+    rejectTitle: 'Reject request',
+    rejectReasonPlaceholder: 'Reason for rejection (required)',
+    reasonRequired: 'A rejection reason is required.',
+    cancel: 'Cancel',
+    confirmReject: 'Confirm rejection',
+    approveSuccess: 'Request approved.',
+    rejectSuccess: 'Request rejected.',
+    actionError: 'Unable to perform this action.',
+  },
+  attendancePage: { loadError: 'Unable to load attendance.' },
+  socialPage: {
+    title: 'Social media',
+    subtitle: 'Publish and schedule your content',
+    loadError: 'Unable to load posts.',
+    createError: 'Unable to create the post.',
+  },
+  socialMarketingPage: {
+    title: 'Marketing',
+    subtitle: 'Connect your social account and manage your posts',
+    loadAccountError: 'Unable to load the social account.',
+    loadPostsError: 'Unable to load posts.',
+    connectError: 'Unable to connect the social account.',
+    disconnectError: 'Unable to disconnect the social account.',
+    createError: 'Unable to create the post.',
+    publishError: 'Unable to publish the post.',
+    deleteError: 'Unable to delete the post.',
+    statusActive: 'Active',
+  },
+  trainingPage: {
+    loadError: 'Unable to load trainings.',
+    createError: 'Unable to create the training.',
+  },
+  notificationsPage: {
+    statusEnabled: 'Enabled',
+    statusDisabled: 'Disabled',
+  },
+  travelPortal: {
+    title: "Traveler space",
+    subtitle: "Track your booking, download your e-tickets and manage your trip.",
+    referenceLabel: "Booking reference",
+    referencePlaceholder: "E.g. GV-2026-0001",
+    codeLabel: "Validation code",
+    codePlaceholder: "Code received by email",
+    track: "Track my booking",
+    tracking: "Tracking…",
+    status: "Status",
+    trip: "Trip",
+    tickets: "Tickets",
+    passengers: "Passengers",
+    total: "Total",
+    downloadTicket: "Download e-ticket",
+    cancel: "Cancel booking",
+    cancelConfirm: "Confirm cancellation",
+    cancelling: "Cancelling…",
+    cancelReasonPlaceholder: "Cancellation reason",
+    cancelled: "Cancelled",
+    statusPending: "Pending",
+    statusConfirmed: "Confirmed",
+    statusRefunded: "Refunded",
+    statusCompleted: "Completed",
+    notFound: "Booking not found. Check the reference and code.",
+    invalidCode: "Invalid validation code.",
+    departurePast: "Cancellation is no longer possible: departure has passed.",
+    error: "Something went wrong. Try again.",
+  },
+
+  },
+};
+
+export function isSupportedLocale(value: unknown): value is AppLocale {
+  return typeof value === 'string' && SUPPORTED_LOCALES.includes(value as AppLocale);
+}
+
+export function normalizeLocale(value: unknown): AppLocale {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'id';
+  }
+
+  const normalized = value.toLowerCase().slice(0, 2);
+  return isSupportedLocale(normalized) ? normalized : 'id';
+}
+
+/**
+ * Locale SSR de la vitrine (issue #4393) : `?lang=` (liens hreflang, #4173)
+ * prime sur Accept-Language ; sinon le header est normalisé comme le root
+ * layout (#2657). Source unique pour le middleware → les ~20 layouts landing
+ * servent enfin des metadata (title/description) dans la langue réelle du
+ * visiteur au lieu de retomber sur le FR codé en dur.
+ */
+export function resolveSsrVitrineLang(
+  urlLang: string | null | undefined,
+  acceptLanguage: string | null | undefined,
+): AppLocale {
+  if (urlLang && isSupportedLocale(urlLang)) {
+    return urlLang;
+  }
+  return normalizeLocale(acceptLanguage);
+}
+
+export function getLocaleDirection(locale: AppLocale, isRtl?: boolean): 'ltr' | 'rtl' {
+  return isRtl === true || locale === 'ar' ? 'rtl' : 'ltr';
+}
+
+const INTL_LOCALE_MAP: Record<AppLocale, string> = {
+  id: 'id-ID',
+  fr: 'fr-FR',
+  // S-5 (#1665) : ar-SA force le calendrier HIJRI et les chiffres
+  // arabes orientaux pour les dates — en pratique les clients attendent
+  // le calendrier grégorien (ar-EG, défaut grégorien).
+  ar: 'ar-EG',
+  tr: 'tr-TR',
+  en: 'en-US',
+};
+
+/**
+ * Resout un code de locale applicatif (fr/ar/tr/en) vers un tag BCP-47
+ * pret pour `Intl.NumberFormat`/`Intl.DateTimeFormat` (ex: 'fr' -> 'fr-FR').
+ * Utiliser cette fonction plutot que de coder 'fr-FR' en dur dans les pages.
+ */
+export function toIntlLocale(locale: AppLocale): string {
+  return INTL_LOCALE_MAP[locale] ?? INTL_LOCALE_MAP.id;
+}
+
+export function getCopy(locale: AppLocale) {
+  return copy[locale];
+}
+
+export function getStoredUser(): StoredAuthUser | null {
+  if (typeof window === 'undefined') return null;
+
+  const raw = window.localStorage.getItem(AUTH_USER_KEY);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as StoredAuthUser;
+  } catch {
+    clearAuthSession();
+    return null;
+  }
+}
+
+export function getPreferredLocale(): AppLocale {
+  if (typeof window === 'undefined') return 'id';
+
+  const storedUser = getStoredUser();
+  if (storedUser?.language) {
+    return normalizeLocale(storedUser.language);
+  }
+
+  const raw = window.localStorage.getItem(PREFERRED_LOCALE_KEY);
+  if (raw) {
+    return normalizeLocale(raw);
+  }
+
+  return normalizeLocale(window.navigator.language);
+}
+
+export function storePreferredLocale(locale: AppLocale): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(PREFERRED_LOCALE_KEY, locale);
+}
+
+// Audit #1699 : le token n'est plus stocké côté JS (cookie httpOnly
+// `leopardo_token` géré par les route handlers). Le paramètre token est
+// conservé pour la compatibilité d'appel mais jamais écrit au repos.
+export function storeAuthSession(_token: string | null | undefined, user: StoredAuthUser): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  storePreferredLocale(normalizeLocale(user.language));
+}
+
+export function clearAuthSession(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_USER_KEY);
+  window.localStorage.removeItem(PREFERRED_LOCALE_KEY);
+}
+
+export function applyDocumentLocale(locale: AppLocale, isRtl?: boolean): void {
+  if (typeof document === 'undefined') return;
+  document.documentElement.lang = locale;
+  document.documentElement.dir = getLocaleDirection(locale, isRtl);
+}
+
+export function getDisplayName(user?: StoredAuthUser | null): string {
+  if (!user) return 'RMIH';
+
+  const fullName = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim();
+  return fullName || user.name || user.email || 'RMIH';
+}
+
+export function getApiErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+
+  const data = payload as Record<string, unknown>;
+
+  if (typeof data.localized_message === 'string' && data.localized_message.trim() !== '') {
+    return data.localized_message;
+  }
+
+  if (typeof data.message === 'string' && data.message.trim() !== '') {
+    return data.message;
+  }
+
+  if (typeof data.error === 'string' && data.error.trim() !== '') {
+    return data.error;
+  }
+
+  return fallback;
+}

@@ -1,0 +1,212 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Shared\Models\Language;
+use Illuminate\Support\Facades\Hash;
+use Tests\Support\CreatesMvpSchema;
+use Tests\TestCase;
+
+class AuthMeLogoutTest extends TestCase
+{
+    use CreatesMvpSchema;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->setUpMvpSchema();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->tearDownMvpSchema();
+        parent::tearDown();
+    }
+
+    public function test_me_returns_authenticated_employee(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/v1/auth/me');
+        $response->assertOk();
+        $response->assertJsonPath('data.email', 'employee@company.test');
+    }
+
+    public function test_me_returns_language_and_rtl_metadata(): void
+    {
+        Language::query()->create([
+            'code' => 'fr',
+            'name_fr' => 'Français',
+            'name_native' => 'Français',
+            'is_rtl' => false,
+            'is_active' => true,
+        ]);
+
+        Language::query()->create([
+            'code' => 'ar',
+            'name_fr' => 'Arabe',
+            'name_native' => 'العربية',
+            'is_rtl' => true,
+            'is_active' => true,
+        ]);
+
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'language' => 'fr',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+            'preferred_language' => 'ar',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/v1/auth/me');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.language', 'ar');
+        $response->assertJsonPath('data.is_rtl', true);
+    }
+
+    public function test_logout_revokes_current_token(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $plain = $employee->createToken('tests')->plainTextToken;
+        $this->assertSame(1, $employee->tokens()->count());
+
+        $response = $this->withHeader('Authorization', "Bearer {$plain}")
+            ->postJson('/api/v1/auth/logout');
+        $response->assertOk();
+
+        $this->assertSame(0, $employee->tokens()->count());
+    }
+
+    public function test_archived_employee_token_is_blocked_by_tenant_middleware(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'archived@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'archived',
+        ])->save();
+
+        $plain = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$plain}")
+            ->getJson('/api/v1/auth/me');
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('error', 'EMPLOYEE_ARCHIVED');
+    }
+
+    public function test_company_suspension_revokes_employee_tokens(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $employee->createToken('tests');
+        $this->assertSame(1, $employee->tokens()->count());
+
+        $company->status = 'suspended';
+        $company->save();
+
+        $this->assertSame(0, $employee->fresh()->tokens()->count());
+    }
+}
+

@@ -1,0 +1,64 @@
+# Baseline des imports croisés acceptés (issue #5584, audit 2026-08-26).
+# Toute ligne ici représente une violation EXISTANTE et tolérée.
+# Ajouter de nouvelles violations ICI bloque la PR — corriger le code à la place.
+# Format : <source> -> <cible>
+
+Core/Auth -> Modules/Attendance
+Core/Auth -> Modules/Cabinet
+Core/Auth -> Modules/HR
+Core/Auth -> Modules/Notification
+Core/Auth -> Modules/Planning
+Core/Feature -> Modules/Billing
+Core/Tenant -> Modules/Attendance
+Modules/Absence -> Modules/Planning
+Modules/Accounting -> Modules/Marketing
+Modules/Accounting -> Modules/Notification
+Modules/Attendance -> Modules/Fleet
+Modules/Attendance -> Modules/HR
+Modules/Attendance -> Modules/Notification
+Modules/Attendance -> Modules/Planning
+Modules/Billing -> Modules/Payroll
+Modules/Billing -> Modules/Platform
+Modules/Cabinet -> Modules/HR
+Modules/Expense -> Modules/Planning
+Modules/Fleet -> Modules/Attendance
+Modules/Growth -> Modules/Billing
+Modules/Growth -> Modules/Payroll
+Modules/HR -> Modules/Attendance
+Modules/HR -> Modules/Payroll
+Modules/HR -> Modules/Planning
+Modules/HR -> Modules/Recruitment
+Modules/Marketing -> Modules/Accounting
+Modules/Marketing -> Modules/Platform
+Modules/Notification -> Modules/Attendance
+Modules/Notification -> Modules/HR
+Modules/Notification -> Modules/Payroll
+Modules/Notification -> Modules/Planning
+Modules/Notification -> Modules/Platform
+Modules/Onboarding -> Modules/Attendance
+Modules/Onboarding -> Modules/HR
+Modules/Payroll -> Modules/Attendance
+Modules/Payroll -> Modules/Billing
+Modules/Payroll -> Modules/Cabinet
+Modules/Payroll -> Modules/Notification
+Modules/Payroll -> Modules/Planning
+Modules/Planning -> Modules/Attendance
+Modules/Planning -> Modules/Payroll
+Modules/Platform -> Modules/Attendance
+Modules/Platform -> Modules/Billing
+Modules/Platform -> Modules/HR
+Modules/Platform -> Modules/Notification
+Modules/Platform -> Modules/Onboarding
+Modules/Platform -> Modules/Payroll
+Modules/Platform -> Modules/Planning
+Modules/Recruitment -> Modules/HR
+
+# Consolidation 2026-09-04 (PR #6816) — modules intégrés depuis les branches
+# BC (absents de main avant la consolidation). Couplage au hub de notifications
+# partagé (même pattern que les modules historiques Accounting/Attendance/HR/
+# Platform/RestaurantManager -> Notification, cf. PR #6659 BC-25) et aux services
+# HR (imports/exports référentiel). Décision documentée de la session de
+# consolidation ; dette suivie par l'EPIC #6528 / issue #6588 (résorption à 0).
+# À revisiter si le hub expose un contrat découplé plus large que
+# App\Contracts\Communication\...Interface.
+Modules/EduManager -> Modules/Notification

@@ -1,0 +1,383 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { resolveBackendBaseUrl } from '@/lib/backend-url';
+import { z } from 'zod';
+import { areFormsEnabled, captureMarketingLead, formsDisabledResponse, getClientIp } from '../_lib/lead-capture';
+import { RateLimiter, sanitizeEmail, sanitizeInput } from '@/modules/vitrine/lib/validation';
+
+const rateLimiter = new RateLimiter(5, 15 * 60 * 1000);
+
+const signupSchema = z.object({
+  email: z.string().email().max(255),
+  company: z.string().min(2).max(120),
+  first_name: z.string().max(80).optional().or(z.literal('')),
+  last_name: z.string().max(80).optional().or(z.literal('')),
+  role: z.enum(['founder', 'manager', 'hr', 'operations', 'other']).optional(),
+  employees: z.enum(['1-10', '11-50', '51-200', '201-500', '500+']).optional(),
+  phone: z.string().max(40).optional().or(z.literal('')),
+  country: z.string().max(2).optional().or(z.literal('')),
+  plan: z.string().max(80).optional(),
+  module: z.string().max(80).optional(),
+  // #7235 — profil d'activité (`company` | `solo`), outils horizontaux choisis
+  // et métier vertical. Ils étaient purement et simplement ABSENTS du schéma :
+  // même envoyés par le formulaire, ils étaient retirés ici avant l'appel API.
+  company_type: z.enum(['company', 'solo']).optional(),
+  modules: z.array(z.string().max(40)).max(20).optional(),
+  solutions: z.array(z.string().max(40)).max(20).optional(),
+  locale: z.enum(['fr', 'en', 'ar', 'tr']).optional(),
+  page: z.string().max(300).optional(),
+  source: z.string().max(120).optional(),
+  timestamp: z.string().optional(),
+});
+
+const LEOPARDO_API_URL = process.env.LEOPARDO_API_URL ||
+  resolveBackendBaseUrl().replace(/\/api\/v1$/, '');
+
+export async function POST(request: NextRequest) {
+  if (!areFormsEnabled()) {
+    return formsDisabledResponse();
+  }
+
+  try {
+    const ip = getClientIp(request);
+
+    if (!rateLimiter.isAllowed(ip)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Trop de tentatives. Veuillez réessayer plus tard.',
+          error: 'RATE_LIMIT_EXCEEDED',
+        },
+        { status: 429 }
+      );
+    }
+
+    const validatedData = signupSchema.parse(await request.json());
+    const email = sanitizeEmail(validatedData.email);
+    const company = sanitizeInput(validatedData.company);
+    const phone = validatedData.phone ? sanitizeInput(validatedData.phone) : undefined;
+
+    // Issue #6680 : le champ `country` est OBLIGATOIRE côté backend (#1867 —
+    // plus de fallback silencieux DZ). Le formulaire rapide du hero ne le
+    // collecte pas → détection géo côté serveur (Vercel `request.geo`), sinon
+    // la demande sera rejetée en 422 et le prospect verra une erreur honnête
+    // (jamais un faux succès).
+    //
+    // ⚠️ `request.geo` N'EXISTE PLUS : Next 16 a retiré les extensions
+    // `geo`/`ip` de `NextRequest` (et `next/headers` n'expose ni
+    // `geolocation()` ni `ipAddress()`). Le repli historique était donc
+    // TOUJOURS `undefined` → le pays n'était jamais détecté et le sélecteur de
+    // repli s'affichait pour 100 % des visiteurs (constaté en live le
+    // 2026-09-13 : `POST /api/forms/signup` → 422 COUNTRY_REQUIRED sur le
+    // déploiement Vercel).
+    //
+    // La source de vérité est l'EN-TÊTE injecté par la plateforme d'hébergement
+    // — `x-vercel-ip-country` sur Vercel (équivalent documenté de l'ancien
+    // `request.geo`), `cf-ipcountry` sur Cloudflare Pages. On lit les deux :
+    // l'application est servie depuis Vercel aujourd'hui, l'admin depuis
+    // Cloudflare, et le code ne doit pas dépendre d'un hébergeur précis.
+    const platformCountry = (
+      request.headers.get('x-vercel-ip-country') ??
+      request.headers.get('cf-ipcountry') ??
+      ''
+    ).trim().toUpperCase();
+
+    // Repli de compatibilité si un runtime fournit encore `request.geo`.
+    const legacyGeo = (request as unknown as { geo?: { country?: string } }).geo;
+    const legacyGeoCountry = legacyGeo?.country?.trim().toUpperCase() ?? '';
+
+    // Un code pays ISO 3166-1 alpha-2 est requis par le backend (2 lettres).
+    const isCountryCode = (value: string) => /^[A-Z]{2}$/.test(value);
+    const detectedCountry = [platformCountry, legacyGeoCountry].find(isCountryCode) ?? '';
+
+    const effectiveCountry = validatedData.country?.trim().toUpperCase() || detectedCountry || undefined;
+
+    if (!effectiveCountry) {
+      // Le formulaire simplifié ne demande plus le pays : il vient de la
+      // géolocalisation. Si celle-ci est indisponible (dev local, proxy, IP
+      // inconnue), on répond un code DÉDIÉ plutôt qu'un 422 générique, pour
+      // que l'UI n'affiche le sélecteur de pays que dans ce cas précis.
+      // Code machine uniquement : le texte affiché est localisé côté UI
+      // (clé i18n `signup.countryDetectionFailed`, ×4 langues) — garde CI I18N
+      // : aucun littéral utilisateur dans une route API.
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'COUNTRY_REQUIRED',
+        },
+        { status: 422 }
+      );
+    }
+
+    // Step 1: Capture the marketing lead (CRM tracking)
+    const lead = await captureMarketingLead(request, {
+      type: 'signup',
+      email,
+      locale: validatedData.locale,
+      page: validatedData.page || '/signup',
+      source: validatedData.source || 'signup_form',
+      timestamp: validatedData.timestamp,
+      data: {
+        email,
+        company,
+        role: validatedData.role,
+        employees: validatedData.employees,
+        phone,
+        plan: validatedData.plan,
+        module: validatedData.module,
+        company_type: validatedData.company_type,
+        modules: validatedData.modules,
+        requestedWorkflow: 'self_service',
+        passwordCaptured: false,
+      },
+    });
+
+    // Step 2: Call the backend to initiate OTP verification
+    let signupResult = null;
+    let signupError = null;
+    let signupErrorMessage: string | null = null;
+    let signupValidationDetails: unknown = null;
+
+    // #7251 — un seul point d'appel, paramétré par le workflow, pour pouvoir
+    // relancer en parcours guidé si la vérification par e-mail est impossible.
+    // Audit 2026-09-13 — une session DÉJÀ ouverte doit être transmise au
+    // backend : sans ce Bearer, l'API (garde `SESSION_ALREADY_ACTIVE`) ne
+    // pouvait pas savoir que l'appel venait d'un navigateur connecté, et un
+    // second espace était provisionné. `Accept-Language` est transmis pour que
+    // le message d'erreur de l'API soit dans la langue du visiteur.
+    // Le cookie est lu sur la REQUÊTE (`request.cookies`) et non via
+    // `next/headers` : hors contexte de requête (tests unitaires Node), le
+    // helper asynchrone `cookies()` jette et la route répondait 500.
+    const sessionToken = request.cookies.get('leopardo_token')?.value;
+    const acceptLanguage = request.headers.get('accept-language');
+
+    const postTrialSignup = async (workflow: 'self_service' | 'guided_trial') => {
+      const trialResponse = await fetch(`${LEOPARDO_API_URL}/api/v1/trial/signup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+          ...(acceptLanguage ? { 'Accept-Language': acceptLanguage } : {}),
+        },
+        body: JSON.stringify({
+          email,
+          company,
+          first_name: validatedData.first_name || undefined,
+          last_name: validatedData.last_name || undefined,
+          role: validatedData.role,
+          employees: validatedData.employees,
+          country: effectiveCountry,
+          phone,
+          plan: validatedData.plan,
+          source: validatedData.source || 'signup_form',
+          requestedWorkflow: workflow,
+          company_type: validatedData.company_type,
+          modules: validatedData.modules,
+          solutions: validatedData.solutions,
+          // La langue de l'e-mail OTP doit être celle CHOISIE par l'utilisateur
+          // (langue de l'interface), pas la langue par défaut de son pays :
+          // un utilisateur turcophone au Maroc recevait un e-mail... en
+          // arabe/français selon le pays détecté. `locale` est collecté par le
+          // formulaire (`getBrowserLocale()`) et validé plus haut.
+          locale: validatedData.locale,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const trialData = await trialResponse.json();
+
+      return { ok: Boolean(trialResponse.ok && trialData.success), trialData };
+    };
+
+    try {
+      let attempt = await postTrialSignup('self_service');
+
+      // #7251 — le parcours `self_service` exige l'envoi d'un code par e-mail.
+      // Quand le transport e-mail est indisponible (mailer non configuré,
+      // domaine sandbox, panne fournisseur), le prospect perdait son essai :
+      // l'API répond `TRIAL_OTP_SEND_FAILED` et la vitrine retombait sur une
+      // promesse de rappel « sous 24 h » alors qu'aucun espace n'était créé.
+      // On bascule alors sur le parcours **guidé**, qui provisionne un espace
+      // sans dépendre du mailer et renvoie un `provisioning_token` (chemin
+      // supporté de bout en bout : suivi de statut + définition du mot de
+      // passe). La vérification par e-mail reste la voie préférée — elle n'est
+      // abandonnée qu'en cas d'échec d'envoi réel.
+      if (!attempt.ok && attempt.trialData?.error === 'TRIAL_OTP_SEND_FAILED') {
+        console.warn(
+          JSON.stringify({
+            event: 'marketing.signup.email_verification_unavailable',
+            service: 'leopardo-web',
+            fallback: 'guided_trial',
+          })
+        );
+
+        const fallback = await postTrialSignup('guided_trial');
+        if (fallback.ok) {
+          attempt = fallback;
+        }
+      }
+
+      if (attempt.ok) {
+        signupResult = attempt.trialData.data;
+      } else {
+        // Anti-énumération (#3945) : /trial/signup renvoie désormais une
+        // réponse uniforme — la détection « email déjà enregistré » se fait à
+        // l'étape verify (OTP), qui remonte EMAIL_ALREADY_REGISTERED (409).
+        signupError = attempt.trialData.error || 'SIGNUP_FAILED';
+        signupErrorMessage =
+          typeof attempt.trialData.message === 'string' ? attempt.trialData.message : null;
+        // Issue #6680 : conserver les détails de validation (ex. country
+        // requis) pour une réponse d'erreur exploitable côté client.
+        if (attempt.trialData.error === 'VALIDATION_ERROR' && attempt.trialData.errors) {
+          signupValidationDetails = attempt.trialData.errors;
+        }
+      }
+    } catch (error) {
+      signupError = error instanceof Error ? error.name : 'NETWORK_ERROR';
+      console.error(
+        JSON.stringify({
+          event: 'marketing.signup.otp_send_failed',
+          service: 'leopardo-web',
+          email,
+          error: signupError,
+        })
+      );
+    }
+
+    // Step 3: Return response
+    if (signupResult) {
+      // #7249 — le formulaire web utilise désormais le workflow VÉRIFIÉ
+      // (`self_service`) : le backend envoie un code à 6 chiffres par e-mail
+      // (valable 30 min) et renvoie `status=pending_verification` ; le compte
+      // n'est provisionné qu'après vérification du code. C'est la réponse au
+      // retour propriétaire « éviter que des gens créent des comptes avec des
+      // mails inexistants ». Le contrat de réponse reste piloté par le statut
+      // réellement renvoyé (`#6959`) : `provisioned:true` + `nextStep:'verify'`
+      // pour le flux vérifié, `provisioned:false` + `nextStep:'tracking'` si le
+      // backend a provisionné un sandbox sans OTP.
+      const otpFlow = signupResult.status === 'pending_verification';
+
+      return NextResponse.json(
+        {
+          success: true,
+          provisioned: otpFlow,
+          // #6959 : aucun nouveau littéral affiché côté client — l'UI choisit
+          // ses textes localisés (catalogue i18n vitrine) selon `nextStep`
+          // (`tracking` = suivi du provisioning, `verify` = OTP). Le message
+          // ci-dessous n'est conservé que pour la compatibilité du flux OTP.
+          message: otpFlow ? 'Code de vérification envoyé.' : undefined,
+          data: {
+            id: lead.id,
+            email: signupResult.email,
+            status: signupResult.status,
+            nextStep: otpFlow ? 'verify' : 'tracking',
+            // #2469 : le provisioning_token permet au prospect de suivre
+            // l'état du sandbox (GET /api/forms/trial-status) sans email OTP.
+            provisioning_token:
+              typeof signupResult.provisioning_token === 'string'
+                ? signupResult.provisioning_token
+                : undefined,
+            confirmationSent: lead.emailForwarded,
+            crmForwarded: lead.crmForwarded,
+            // #7301 — état RÉEL de la persistance durable du lead
+            // (`persisted` | `pending` | `failed`). Exposé pour que l'appelant
+            // ne suppose jamais un succès muet : `pending` = écriture en cours
+            // après la réponse, `failed` = perte signalée par alerte.
+            leadPersisted: lead.persisted,
+          },
+        },
+        { status: 200 }
+      );
+    } else {
+      // Issue #6680 : ne JAMAIS renvoyer success:true quand le backend a
+      // rejeté la demande de trial (ex. 422 country manquant, hors détection
+      // géo) — le prospect croirait son essai lancé alors que rien n'est
+      // provisionné. Une erreur de validation remonte telle quelle (avec
+      // redirection vers le formulaire complet) ; le fallback marketing
+      // « contact sous 24h » ne s'applique qu'aux pannes réseau/backlog
+      // (OTP/back indisponible), pas aux rejets de contrat.
+      const backendError = signupError || 'SIGNUP_FAILED';
+
+      // Audit 2026-09-13 — une session active ne peut pas créer un second
+      // espace : on remonte le refus tel quel (409 + message déjà localisé par
+      // l'API via `Accept-Language`), sans le déguiser en « contact sous 24h ».
+      if (backendError === 'SESSION_ALREADY_ACTIVE') {
+        return NextResponse.json(
+          {
+            success: false,
+            error: backendError,
+            message:
+              typeof signupErrorMessage === 'string' && signupErrorMessage !== ''
+                ? signupErrorMessage
+                : undefined,
+          },
+          { status: 409 }
+        );
+      }
+
+      if (backendError === 'VALIDATION_ERROR' || backendError === 'SIGNUP_FAILED') {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Impossible de lancer l'essai automatique (pays requis). Utilisez le formulaire complet pour choisir votre pays.",
+            error: backendError,
+            data: {
+              id: lead.id,
+              email,
+              company,
+              nextStep: 'complete_signup',
+              confirmationSent: lead.emailForwarded,
+              crmForwarded: lead.crmForwarded,
+              leadPersisted: lead.persisted,
+            },
+            ...(signupValidationDetails ? { details: signupValidationDetails } : {}),
+          },
+          { status: 422 }
+        );
+      }
+
+      // FALLBACK (panne réseau/back uniquement) : lead recue, contact sous 24h.
+      return NextResponse.json(
+        {
+          success: true,
+          provisioned: false,
+          message:
+            "Demande d'essai recue. Notre equipe vous contacte sous 24h ouvrables avec l'acces le plus adapte.",
+          data: {
+            id: lead.id,
+            email,
+            company,
+            nextStep: 'contact_under_24h',
+            confirmationSent: lead.emailForwarded,
+            crmForwarded: lead.crmForwarded,
+            leadPersisted: lead.persisted,
+            signupError,
+          },
+        },
+        { status: 201 }
+      );
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Donnees invalides',
+          error: 'VALIDATION_ERROR',
+          details: error.issues,
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        message: "Erreur lors de la demande d'essai",
+        error: 'INTERNAL_SERVER_ERROR',
+      },
+      { status: 500 }
+    );
+  }
+}

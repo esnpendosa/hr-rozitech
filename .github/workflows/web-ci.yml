@@ -1,0 +1,163 @@
+name: Web CI - Leopardo Admin
+# NOTE (issue #2757) : ce workflow « web » est en réalité la CI du SUPER-ADMIN
+# front/admin-dashboard (lint + build + Playwright). La CI de la VITRINE
+# (front/web) vit dans web-marketing-ci.yml. Ne pas confondre.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'front/admin-dashboard/**'
+      - '.github/workflows/web-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'front/admin-dashboard/**'
+      - '.github/workflows/web-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-ci-${{ github.workflow }}-${{ github.ref }}
+  # Même logique que tests.yml : les runs push sur main ne doivent pas être
+  # annulés (le gate de déploiement attend leur conclusion), seule l'annulation
+  # des runs PR est conservée.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PLAYWRIGHT_HTML_REPORT: playwright-report
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  web-lint:
+    timeout-minutes: 30
+    name: Web Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/admin-dashboard/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/admin-dashboard
+        run: npm ci
+
+      # ESLint parsers (vue-eslint-parser, @babel/eslint-parser) désormais
+      # verrouillés dans devDependencies (#1567) — couverts par npm ci.
+      - name: Run ESLint
+        working-directory: front/admin-dashboard
+        run: npm run lint
+
+  web-build:
+    timeout-minutes: 30
+    name: Web Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/admin-dashboard/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/admin-dashboard
+        run: npm ci
+
+      - name: Build admin dashboard
+        working-directory: front/admin-dashboard
+        env:
+          # #4715 : la garde vite.config.js lève une erreur si VITE_API_URL
+          # est absent. DEV_API_BASE_URL = URL du tier dev/continu Render
+          # (instance publique de référence — registre docs/ops/DOMAINS.md).
+          VITE_API_URL: ${{ vars.DEV_API_BASE_URL }}
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: admin-dashboard-dist
+          path: front/admin-dashboard/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  web-e2e-playwright:
+    timeout-minutes: 45
+    name: Web E2E Playwright
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: 'front/admin-dashboard/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: front/admin-dashboard
+        run: npm ci
+
+      # @playwright/test est verrouillé dans devDependencies — couvert par npm ci.
+      - name: Install Chromium
+        working-directory: front/admin-dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        working-directory: front/admin-dashboard
+        env:
+          CI: true
+        run: npx playwright test
+
+      - name: Build web E2E summary
+        if: always()
+        working-directory: front/admin-dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          cat > test-results/web-e2e-summary.md <<'EOF'
+          - Scenario base: docs/GESTION_PROJET/SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md
+          - Primary smoke focus: auth, routing, protected access, basic admin rendering
+          - Artifacts:
+            - playwright-report/
+            - test-results/
+            - videos retained on failure
+            - traces retained on first retry
+            - junit.xml for machine-readable CI parsing
+          EOF
+
+      - name: Upload Playwright report
+        # #4415 : les traces Playwright contiennent le localStorage (tokens de
+        # session) — upload uniquement depuis main, jamais depuis les PRs.
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: playwright-report
+          path: |
+            front/admin-dashboard/playwright-report/
+            front/admin-dashboard/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

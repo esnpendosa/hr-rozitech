@@ -1,0 +1,232 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Planning\Interfaces\Api\V1\Controllers;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Http\Controllers\Controller;
+use App\Http\Resources\Api\V1\TaskCommentResource;
+use App\Http\Resources\Api\V1\TaskResource;
+use App\Modules\Planning\Application\Actions\CreateTask;
+use App\Modules\Planning\Application\Actions\CreateTaskComment;
+use App\Modules\Planning\Application\Actions\DeleteTask;
+use App\Modules\Planning\Application\Actions\UpdateTask;
+use App\Modules\Planning\Domain\Models\Task;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Validation\Rule;
+
+class TaskController extends Controller
+{
+    public function __construct(
+        private readonly CreateTask $createTask,
+        private readonly UpdateTask $updateTask,
+        private readonly DeleteTask $deleteTask,
+        private readonly CreateTaskComment $createTaskComment,
+    ) {}
+
+    public function index(Request $request): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        $request->validate(['project_id' => ['nullable', 'integer', 'min:1'], 'status' => ['nullable', 'in:todo,inprogress,review,done,rejected,cancelled'], 'priority' => ['nullable', 'in:low,normal,high,urgent'], 'assigned_to' => ['nullable', 'integer', 'min:1'], 'per_page' => ['nullable', 'integer', 'min:1', 'max:100']]);
+
+        $query = Task::query()->where('company_id', $actor->company_id);
+
+        if (! $actor->isManager()) {
+            $query->where(fn ($q) => $q->whereJsonContains('assigned_to', $actor->id)->orWhere('created_by', $actor->id));
+        } elseif ($request->filled('assigned_to')) {
+            $query->whereJsonContains('assigned_to', $request->integer('assigned_to'));
+        }
+
+        if ($request->filled('project_id')) {
+            $query->where('project_id', $request->integer('project_id'));
+        }
+        if ($request->filled('status')) {
+            $query->where('status', $request->input('status'));
+        }
+        if ($request->filled('priority')) {
+            $query->where('priority', $request->input('priority'));
+        }
+
+        $perPage = max(1, min(100, $request->integer('per_page', 15)));
+
+        return TaskResource::collection($query->orderBy('due_date')->orderByDesc('created_at')->paginate($perPage))
+            ->response();
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        $data = $request->validate([
+            'title' => ['required', 'string', 'max:200'],
+            'description' => ['nullable', 'string'],
+            'assigned_to' => ['nullable', 'array'],
+            'assigned_to.*' => ['integer', 'min:1', Rule::exists('employees', 'id')->where(fn ($query) => $query->where('company_id', $actor->company_id))],
+            'project_id' => ['nullable', 'integer', 'min:1'],
+            'due_date' => ['required', 'date'],
+            'priority' => ['nullable', 'in:low,normal,high,urgent'],
+            'estimated_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'recurrence_rule' => ['nullable', 'string', 'max:120'],
+            'template_key' => ['nullable', 'string', 'max:100'],
+            'category' => ['nullable', 'string', 'max:100'],
+            'visibility' => ['nullable', 'in:private,visible'],
+            'checklist' => ['nullable', 'array'],
+        ]);
+
+        // Un employé ne crée que des tâches auto-affectées : l'Action reçoit
+        // un payload aplati (assigned_to = [actor]) dans ce cas.
+        if (! $actor->isManager()) {
+            $assignedTo = $data['assigned_to'] ?? [$actor->id];
+            if ($assignedTo !== [$actor->id]) {
+                abort(403);
+            }
+            $data['assigned_to'] = [$actor->id];
+        }
+
+        $task = $this->createTask->execute($actor, $data);
+
+        return (new TaskResource($task))
+            ->response()
+            ->setStatusCode(201);
+    }
+
+    public function show(Request $request, Task $task): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        if ($task->company_id !== $actor->company_id) {
+            abort(404);
+        }
+        if (! $actor->isManager() && ! in_array($actor->id, $task->assigned_to ?? []) && (string) $task->created_by !== (string) $actor->id) {
+            abort(403);
+        }
+
+        return (new TaskResource($task->load('comments.author')))->response();
+    }
+
+    public function update(Request $request, Task $task): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        if ($task->company_id !== $actor->company_id) {
+            abort(404);
+        }
+
+        $canUpdate = $actor->isManager() || (string) $task->created_by === (string) $actor->id || in_array($actor->id, $task->assigned_to ?? []);
+        if (! $canUpdate) {
+            abort(403);
+        }
+
+        $data = $request->validate([
+            'title' => ['sometimes', 'string', 'max:200'],
+            'description' => ['nullable', 'string'],
+            'assigned_to' => ['sometimes', 'array'],
+            'assigned_to.*' => ['integer', 'min:1', Rule::exists('employees', 'id')->where(fn ($query) => $query->where('company_id', $actor->company_id))],
+            'project_id' => ['nullable', 'integer', 'min:1'],
+            'due_date' => ['sometimes', 'date'],
+            'priority' => ['sometimes', 'in:low,normal,high,urgent'],
+            'estimated_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'completed_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'completion_note' => ['nullable', 'string', 'max:1000'],
+            'recurrence_rule' => ['nullable', 'string', 'max:120'],
+            'template_key' => ['nullable', 'string', 'max:100'],
+            'status' => ['sometimes', 'in:todo,inprogress,review,done,rejected,cancelled'],
+            'category' => ['nullable', 'string', 'max:100'],
+            'visibility' => ['sometimes', 'in:private,visible'],
+            'checklist' => ['nullable', 'array'],
+        ]);
+
+        $task = $this->updateTask->execute($actor, $task, $data);
+
+        return (new TaskResource($task))->response();
+    }
+
+    public function destroy(Request $request, Task $task): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        if ($task->company_id !== $actor->company_id) {
+            abort(404);
+        }
+        if (! $actor->isManager() && (string) $task->created_by !== (string) $actor->id) {
+            abort(403);
+        }
+
+        $this->deleteTask->execute($task);
+
+        return response()->json(['message' => __('errors.TASK_DELETED')]);
+    }
+
+    public function listComments(Request $request, Task $task): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        if ($task->company_id !== $actor->company_id) {
+            abort(404);
+        }
+        if (! $this->canAccessTask($actor, $task)) {
+            abort(403);
+        }
+
+        $comments = $task->comments()
+            ->with('author')
+            ->orderBy('created_at')
+            ->get();
+
+        return TaskCommentResource::collection($comments)->response();
+    }
+
+    public function addComment(Request $request, Task $task): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        if ($task->company_id !== $actor->company_id) {
+            abort(404);
+        }
+        if (! $this->canAccessTask($actor, $task)) {
+            abort(403);
+        }
+
+        $data = $request->validate(['content' => ['required', 'string', 'max:5000']]);
+        $comment = $this->createTaskComment->execute($actor, $task, $data['content']);
+
+        return (new TaskCommentResource($comment->load('author')))
+            ->response()
+            ->setStatusCode(201);
+    }
+
+    private function canAccessTask(Employee $actor, Task $task): bool
+    {
+        return $actor->isManager()
+            || in_array($actor->id, $task->assigned_to ?? [], true)
+            || (string) $task->created_by === (string) $actor->id;
+    }
+
+    public function today(Request $request): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        $timezone = currentCompany()->timezone;
+        $today = Carbon::now($timezone)->toDateString();
+
+        $query = Task::query()
+            ->where('company_id', $actor->company_id)
+            ->whereDate('due_date', $today);
+
+        if (! $actor->isManager()) {
+            $query->whereJsonContains('assigned_to', $actor->id);
+        } elseif ($request->filled('assigned_to')) {
+            $query->whereJsonContains('assigned_to', $request->integer('assigned_to'));
+        }
+
+        return TaskResource::collection(
+            $query->orderByRaw("CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END")
+                ->orderBy('due_date')
+                ->get()
+        )->response();
+    }
+}

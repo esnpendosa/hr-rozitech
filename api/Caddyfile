@@ -1,0 +1,21 @@
+{
+    frankenphp
+
+    # #6558 (audit ops M-2) : désactiver l'API admin Caddy (localhost:2019).
+    # Sans authentification, elle permet de reconfigurer le serveur (RCE) si
+    # le port venait à être exposé/publié. La supervision passe par le
+    # healthcheck HTTP, pas par l'API admin.
+    admin off
+}
+
+{$SERVER_NAME:localhost} {
+    root * /app/public
+    encode zstd br gzip
+    php_server
+
+    # Issue #3601 : ne pas divulguer la version exacte de PHP/FrankenPHP
+    # (x-powered-by: PHP/8.4.x + x-render-origin-server) — facilite le
+    # ciblage de CVE. Les headers Serveur/X-Powered-By sont retirés.
+    header -Server
+    header -X-Powered-By
+}

@@ -1,0 +1,9 @@
+<?php
+
+use App\Modules\Planning\Interfaces\Api\V1\Controllers\PlanningController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['throttle:api', 'auth:sanctum', 'token.refresh', 'tenant', 'throttle:api-plan', 'api.manager'])->prefix('planning')->group(function (): void {
+    Route::get('/weekly-optimization', [PlanningController::class, 'weeklyOptimization']);
+    Route::get('/shift-rebalancing', [PlanningController::class, 'shiftRebalancing']);
+});

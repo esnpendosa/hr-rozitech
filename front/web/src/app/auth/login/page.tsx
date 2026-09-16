@@ -1,0 +1,664 @@
+'use client';
+import { RmihLogo } from '@/components/RmihLogo';
+
+import { Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  ArrowRight,
+  CheckCircle,
+  Eye,
+  EyeOff,
+  Globe2,
+  Loader2,
+  LockKeyhole,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { ApiError, apiFetch } from '@/lib/api-client';
+import { t as i18nT } from '@/lib/i18n/locale-catalog';
+import { GoogleGlyph } from '@/components/GoogleGlyph';
+import { Button } from '@/components/ui/Button';
+import { trackClientEvent } from '@/lib/client-analytics';
+import {
+  applyDocumentLocale,
+  getCopy,
+  getPreferredLocale,
+  normalizeLocale,
+  storeAuthSession,
+  storePreferredLocale,
+  type AppLocale,
+  type CopyTree,
+  type StoredAuthUser,
+} from '@/lib/i18n';
+
+const emptySubscribe = () => () => {};
+
+const ADMIN_FALLBACK_PATH = '/dashboard';
+
+type DemoPersona = {
+  email: string;
+  name: string;
+  role: string;
+  managerRole: string | null;
+  password: string;
+};
+
+type DemoCompany = {
+  name: string;
+  slug: string;
+  country: string;
+  users: DemoPersona[];
+};
+
+type DemoUsersPayload = {
+  data?: {
+    companies?: Array<{
+      name?: string;
+      slug?: string;
+      country?: string;
+      users?: Array<{
+        email?: string;
+        name?: string;
+        role?: string;
+        manager_role?: string | null;
+        managerRole?: string | null;
+        password?: string;
+      }>;
+    }>;
+  };
+};
+
+function resolvePostLoginTarget(user: StoredAuthUser): string {
+  if (user.role === 'super_admin') {
+    return process.env.NEXT_PUBLIC_ADMIN_URL || ADMIN_FALLBACK_PATH;
+  }
+
+  return '/dashboard';
+}
+
+function goToPostLoginTarget(target: string, router: ReturnType<typeof useRouter>): void {
+  if (/^https?:\/\//.test(target)) {
+    window.location.assign(target);
+    return;
+  }
+
+  router.push(target);
+}
+
+
+function normalizeDemoCompanies(payload: DemoUsersPayload): DemoCompany[] {
+  return (payload.data?.companies ?? [])
+    .map((company) => ({
+      name: company.name ?? 'Demo company',
+      slug: company.slug ?? company.name ?? 'demo-company',
+      country: company.country ?? 'GLOBAL',
+      users: (company.users ?? [])
+        .filter((user) => typeof user.email === 'string' && typeof user.password === 'string')
+        .map((user) => ({
+          email: user.email as string,
+          name: user.name ?? (user.email as string),
+          role: user.role ?? 'employee',
+          managerRole: user.manager_role ?? user.managerRole ?? null,
+          password: user.password as string,
+        })),
+    }))
+    .filter((company) => company.users.length > 0);
+}
+
+function googleAuthHref(): string {
+  // QA #2277 : passer par le proxy Next.js (même origine) pour que le
+  // cookie de session soit posé sur le domaine vitrine, pas sur l'API.
+  return '/api/v1/auth/google';
+}
+
+/**
+ * Issue #5173 — les échecs Google sont propagés par le callback vitrine via
+ * `/auth/login?error=<code>` (voir `src/app/api/v1/auth/google/callback/route.ts`).
+ * Mappe le code vers un message localisé ; retourne null pour tout code
+ * inconnu (on ne masque pas une erreur réelle par un faux message).
+ */
+function resolveGoogleError(code: string, labels: CopyTree): string | null {
+  switch (code) {
+    case 'google_network':
+      return labels.login.errors.googleNetwork;
+    case 'google_auth_failed':
+      return labels.login.errors.googleAuthFailed;
+    case 'google_no_account':
+      return labels.login.errors.googleNoAccount;
+    // Audit onboarding 2026-09-14 : OAuth Google pas encore configuré côté API
+    // (503 GOOGLE_OAUTH_NOT_CONFIGURED). Sans ce cas, l'utilisateur voyait le
+    // JSON brut de l'API — on affiche désormais un message actionnable.
+    case 'google_unavailable':
+      return labels.login.errors.googleUnavailable;
+    case 'google':
+      return labels.login.errors.google;
+    default:
+      return null;
+  }
+}
+
+function LoginInner() {
+  const router = useRouter();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const storedLocale = useSyncExternalStore<AppLocale>(emptySubscribe, getPreferredLocale, () => 'id');
+  const [localeOverride, setLocaleOverride] = useState<AppLocale | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showDemoModal, setShowDemoModal] = useState(false);
+  const [demoCompanies, setDemoCompanies] = useState<DemoCompany[]>([]);
+  // Vrai uniquement si l'API ne répond pas (5xx/réseau) — PAS si elle répond
+  // 404 (mode démo désactivé, donc toujours en production) : dans ce cas on
+  // reste silencieux (issues #2730/#4511).
+  const [demoUnavailable, setDemoUnavailable] = useState(false);
+  const locale: AppLocale = localeOverride ?? storedLocale;
+  const labels = useMemo(() => getCopy(locale), [locale]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    applyDocumentLocale(locale);
+  }, [locale]);
+
+  useEffect(() => {
+    let active = true;
+
+    apiFetch('/demo-users', { method: 'GET' }, { maxRetries: 1 })
+      .then((response) => {
+        // 404 = mode démo volontairement désactivé (production) → silence total.
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`demo-users HTTP ${response.status}`);
+        return response.json() as Promise<DemoUsersPayload>;
+      })
+      .then((payload) => {
+        if (!active || payload === null) return;
+        setDemoCompanies(normalizeDemoCompanies(payload));
+      })
+      .catch(() => {
+        // Issue #2730 — pas de repli sur des comptes codés en dur
+        // (password123) : si /demo-users ne répond pas, on ne propose aucun
+        // compte. Mais on le DIT (au lieu du silence) : l'absence du bouton
+        // démo en dev était indiscernable d'une panne d'API.
+        if (active) {
+          setDemoCompanies([]);
+          setDemoUnavailable(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleLocaleChange = (value: string) => {
+    const nextLocale = normalizeLocale(value);
+    setLocaleOverride(nextLocale);
+    storePreferredLocale(nextLocale);
+    applyDocumentLocale(nextLocale);
+  };
+
+  const [coldStartHint, setColdStartHint] = useState(false);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
+  const performLogin = useCallback(async (loginEmail: string, loginPassword: string, deviceName = 'Web App') => {
+    setSubmitting(true);
+    setError(null);
+    setUrlError(null);
+    setShowGoogleSignupCta(false);
+    setRetryAttempt(0);
+    const startedAt = performance.now();
+
+    const coldStartTimer = setTimeout(() => setColdStartHint(true), 5000);
+
+    try {
+      const loginResponse = await apiFetch('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword,
+          device_name: deviceName,
+        }),
+      }, {
+        maxRetries: 3,
+        onRetry: (attempt) => {
+          setColdStartHint(true);
+          setRetryAttempt(attempt);
+          setError(
+            locale === 'fr'
+              ? `Le serveur demarre, tentative ${attempt + 1}/4...`
+              : locale === 'tr'
+                ? `Sunucu baslatiliyor, deneme ${attempt + 1}/4...`
+                : locale === 'ar'
+                  ? `...${attempt + 1}/4 الخادم يستيقظ، المحاولة`
+                  : `Server is waking up, attempt ${attempt + 1}/4...`,
+          );
+        },
+      });
+
+      const loginPayload = await loginResponse.json() as {
+        data?: StoredAuthUser | { token?: string };
+        token?: string;
+        // Issue #5612 — 2FA challenge (backend #5436)
+        mfa_challenge?: boolean;
+        mfa_challenge_token?: string;
+      };
+
+      // Issue #5612 : si le backend exige un challenge TOTP, rediriger vers
+      // la page /auth/2fa/challenge avant d'appeler /auth/me (pas de session
+      // encore — le cookie n'est posé qu'après la vérification du code).
+      if (loginPayload.mfa_challenge === true && loginPayload.mfa_challenge_token) {
+        router.push(
+          `/auth/2fa/challenge?token=${encodeURIComponent(loginPayload.mfa_challenge_token)}`,
+        );
+        return;
+      }
+
+      // Audit #1699 : le token vit dans le cookie httpOnly `leopardo_token`
+      // posé par le route handler /api/v1/auth/login — il n'est jamais
+      // renvoyé au navigateur et ne doit pas être stocké en localStorage.
+      void loginPayload;
+
+      const meResponse = await apiFetch('/auth/me');
+      const mePayload = await meResponse.json() as { data?: StoredAuthUser };
+      const user = mePayload.data;
+
+      if (!user) {
+        throw new Error(labels.login.errors.missingUser);
+      }
+
+      storeAuthSession(null, user);
+      applyDocumentLocale(normalizeLocale(user.language), user.is_rtl);
+      const target = resolvePostLoginTarget(user);
+      trackClientEvent('login_success', {
+        duration_ms: Math.round(performance.now() - startedAt),
+        role: user.role,
+        manager_role: user.manager_role ?? null,
+        locale: normalizeLocale(user.language),
+        target,
+        company_id: user.company?.id ?? null,
+      });
+      goToPostLoginTarget(target, router);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        trackClientEvent('login_failed', {
+          duration_ms: Math.round(performance.now() - startedAt),
+          status: err.status,
+          code: err.code ?? null,
+        });
+      } else if (err instanceof Error) {
+        setError(err.message);
+        trackClientEvent('login_failed', {
+          duration_ms: Math.round(performance.now() - startedAt),
+          status: null,
+          code: err.name,
+        });
+      } else {
+        setError(labels.login.errors.generic);
+        trackClientEvent('login_failed', {
+          duration_ms: Math.round(performance.now() - startedAt),
+          status: null,
+          code: 'unknown',
+        });
+      }
+    } finally {
+      clearTimeout(coldStartTimer);
+      setColdStartHint(false);
+      setRetryAttempt(0);
+      setSubmitting(false);
+    }
+  }, [labels.login.errors.generic, labels.login.errors.missingUser, locale, router]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performLogin(email, password);
+  };
+
+  const selectDemoUser = useCallback((demoEmail: string, demoPassword: string, role?: string | null, country?: string | null) => {
+    setEmail(demoEmail);
+    setPassword(demoPassword);
+    setError(null);
+    setShowDemoModal(false);
+    trackClientEvent('demo_user_selected', {
+      role: role ?? null,
+      country: country ?? null,
+      email_domain: demoEmail.split('@')[1] ?? null,
+    });
+    void performLogin(demoEmail, demoPassword, 'Web Demo');
+  }, [performLogin]);
+
+  const searchParams = useSearchParams();
+  const registered = searchParams.get('registered') === 'true';
+  const registeredPlan = searchParams.get('plan');
+  const googleErrorCode = searchParams.get('error');
+
+  // Issue #5173 — un échec Google (réseau, refus OAuth, compte inconnu)
+  // arrivait sur le formulaire SANS explication : l'utilisateur croit à une
+  // panne au lieu d'une action possible (ex. demander une invitation).
+  const [urlError, setUrlError] = useState<string | null>(null);
+  // Issue #5617 (Option A) : le 401 UNKNOWN_ACCOUNT doit proposer un chemin
+  // d'action — lien vers /signup (demande d'essai) en complément du message.
+  const [showGoogleSignupCta, setShowGoogleSignupCta] = useState(false);
+
+  useEffect(() => {
+    if (!googleErrorCode) {
+      return;
+    }
+    const message = resolveGoogleError(googleErrorCode, labels);
+    if (message) {
+      setUrlError(message);
+      setShowGoogleSignupCta(googleErrorCode === 'google_no_account');
+    }
+  }, [googleErrorCode, labels]);
+
+  if (!mounted) return null;
+
+  return (
+    <main className="min-h-screen bg-transparent dark:bg-slate-950 px-4 py-6 text-slate-950 dark:text-white sm:px-6 lg:px-8 relative overflow-hidden">
+      {/* Animated Background */}
+      <div className="absolute inset-0 z-0">
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-blue-500/10 rounded-full blur-[120px] animate-pulse-slow"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-indigo-500/10 rounded-full blur-[120px] animate-pulse-slow" style={{ animationDelay: '1.5s' }}></div>
+      </div>
+
+      {/* Grid Pattern overlay */}
+      <div className="absolute inset-0 z-0 opacity-10" style={{ backgroundImage: 'radial-gradient(#3b82f6 0.5px, transparent 0.5px)', backgroundSize: '24px 24px' }}></div>
+
+      <div className="mx-auto grid min-h-[calc(100vh-3rem)] w-full max-w-6xl overflow-hidden rounded-[28px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 backdrop-blur-xl shadow-2xl shadow-slate-200/70 dark:shadow-black/50 lg:grid-cols-[0.95fr_1.05fr] relative z-10 animate-fade-in">
+        <section className="relative hidden flex-col justify-between bg-slate-950 p-10 text-white lg:flex overflow-hidden">
+          <div className="absolute inset-0 opacity-70 [background:radial-gradient(circle_at_18%_12%,rgba(59,130,246,0.25),transparent_32%),radial-gradient(circle_at_84%_20%,rgba(99,102,241,0.20),transparent_30%)]" />
+
+          {/* Internal section decoration */}
+          <div className="absolute -right-20 -bottom-20 w-64 h-64 bg-blue-500/20 rounded-full blur-3xl"></div>
+
+          <div className="relative">
+            <div className="flex items-center justify-between gap-4">
+              <RmihLogo size="md" href="/" forceDark={true} />
+              <Link href="/" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300 transition hover:text-white bg-slate-800/60 px-3 py-1.5 rounded-full border border-slate-700/50">
+                <ArrowRight className="h-3.5 w-3.5 rotate-180" aria-hidden="true" />
+                {labels.login.back}
+              </Link>
+            </div>
+            <div className="mt-16 space-y-5">
+              <span className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-blue-300/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-blue-100">
+                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                {labels.login.secureBadge}
+              </span>
+              <h1 className="max-w-md text-4xl font-bold leading-tight tracking-normal">
+                {labels.login.heroTitle}
+              </h1>
+            </div>
+          </div>
+        </section>
+
+        <section className="flex items-center justify-center px-5 py-8 sm:px-10 lg:px-14">
+          <div className="w-full max-w-md">
+            <div className="mb-8 flex items-center justify-between gap-4">
+              <div className="lg:hidden">
+                <RmihLogo size="sm" href="/" />
+              </div>
+              <label className="ml-auto inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
+                <Globe2 className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                <span className="sr-only">{labels.dashboard.language}</span>
+                <select
+                  aria-label={labels.dashboard.language}
+                  className="bg-transparent text-sm font-semibold outline-none"
+                  value={locale}
+                  onChange={(e) => handleLocaleChange(e.target.value)}
+                >
+                  <option value="id">Bahasa Indonesia</option>
+                  <option value="en">English</option>
+                  <option value="fr">Français</option>
+                  <option value="ar">Arabic</option>
+                  <option value="tr">Türkçe</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">{labels.login.clientSpace}</p>
+              <h2 className="text-3xl font-black tracking-tight text-slate-950 dark:text-white uppercase italic">
+                {labels.login.title.split(' ')[0]} <span className="text-blue-600 not-italic font-black">{labels.login.title.split(' ').slice(1).join(' ')}</span>
+              </h2>
+              <p className="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">{labels.login.subtitle}</p>
+            </div>
+
+            <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+              {registered && (
+                <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                  {registeredPlan === 'free'
+                    ? labels.login.accountCreatedFree
+                    : labels.login.accountCreatedPaid}
+                </div>
+              )}
+              {(error ?? urlError) ? (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800"
+                >
+                  <p>{error ?? urlError}</p>
+                  {showGoogleSignupCta && !error ? (
+                    <p className="mt-2">
+                      <Link
+                        href="/signup"
+                        className="font-black text-emerald-700 underline underline-offset-2 transition hover:text-emerald-900"
+                      >
+                        {labels.login.errors.googleNoAccountCta} <span aria-hidden="true">→</span>
+                        <span className="sr-only">/signup</span>
+                      </Link>
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="space-y-4">
+                <label htmlFor="email-address" className="block text-sm font-semibold text-slate-800">
+                  {labels.login.email}
+                </label>
+                <input
+                  id="email-address"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  className="block h-12 w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-transparent/50 dark:bg-slate-800/50 px-4 text-slate-950 dark:text-white shadow-sm outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm"
+                  placeholder="manager@company.com"
+                  value={email}
+                  onChange={(e) => { setEmail(e.target.value); setUrlError(null); setShowGoogleSignupCta(false); }}
+                />
+              </div>
+
+              <div className="space-y-4">
+                <label htmlFor="password" className="block text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">
+                  {labels.login.password}
+                </label>
+                <div className="relative">
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    className="block h-12 w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-transparent/50 dark:bg-slate-800/50 px-4 pr-12 text-slate-950 dark:text-white shadow-sm outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm"
+                    placeholder={labels.login.password}
+                    value={password}
+                    onChange={(e) => { setPassword(e.target.value); setUrlError(null); setShowGoogleSignupCta(false); }}
+                  />
+                  <button
+                    type="button"
+                    aria-label={showPassword ? labels.login.hidePassword : labels.login.showPassword}
+                    className="absolute inset-y-0 right-2 my-auto flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                    onClick={() => setShowPassword((value) => !value)}
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" aria-hidden="true" /> : <Eye className="h-5 w-5" aria-hidden="true" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    id="remember-me"
+                    name="remember-me"
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  {labels.login.remember}
+                </label>
+
+                <Link href="/auth/forgot-password" className="text-sm font-semibold text-blue-600 transition hover:text-blue-800">
+                  {labels.login.forgot}
+                </Link>
+              </div>
+
+              <Button
+                type="submit"
+                loading={submitting}
+                fullWidth
+                className="h-12 rounded-2xl bg-blue-600 px-4 text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-blue-500/25 hover:bg-blue-500 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                {submitting ? labels.login.loading : labels.login.submit}
+              </Button>
+
+              <a
+                href={googleAuthHref()}
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 shadow-sm transition hover:border-slate-300 hover:bg-transparent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+              >
+                <GoogleGlyph />
+                {i18nT(locale, 'auth.continue_with_google')}
+              </a>
+
+              {/* Entrée permanente vers la création de compte : elle n’existait
+                  qu’en cas d’erreur Google (« aucun compte ») — impossible de
+                  démarrer un essai depuis l’écran de connexion (#7231). */}
+              <p className="text-center text-sm text-slate-600">
+                <Link
+                  href="/signup"
+                  className="font-black text-blue-600 underline-offset-4 transition hover:text-blue-800 hover:underline"
+                >
+                  {i18nT(locale, 'user_auth.no_account')}
+                </Link>
+              </p>
+
+              {coldStartHint && submitting ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 space-y-2">
+                  <p className="font-medium">
+                    {locale === 'fr'
+                      ? 'Le serveur de demo se reveille, cela peut prendre jusqu\'a 60 secondes...'
+                      : locale === 'tr'
+                        ? 'Demo sunucusu uyaniyor, 60 saniye kadar surebilir...'
+                        : locale === 'ar'
+                          ? '...خادم العرض يستيقظ، قد يستغرق حتى 60 ثانية'
+                          : 'Demo server is waking up, this may take up to 60 seconds...'}
+                  </p>
+                  {retryAttempt > 0 && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-amber-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.min((retryAttempt / 3) * 100, 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-mono text-amber-600">{retryAttempt}/3</span>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {demoCompanies.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowDemoModal(true)}
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 text-xs font-black uppercase tracking-widest text-emerald-600 transition hover:bg-emerald-500/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                >
+                  <Sparkles className="h-4 w-4" aria-hidden="true" />
+                  {labels.login.demoAccess}
+                </button>
+              ) : null}
+
+              {demoUnavailable ? (
+                <p role="status" className="text-center text-xs font-semibold text-amber-600">
+                  {labels.login.demoUnavailable}
+                </p>
+              ) : null}
+
+              <p className="text-center text-xs leading-5 text-slate-500">
+                {labels.login.supportCopy}{' '}
+                <Link href="/contact" className="font-semibold text-slate-800 underline-offset-4 hover:underline">
+                  {labels.login.supportLink}
+                </Link>
+              </p>
+            </form>
+
+            {showDemoModal ? (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"
+                onClick={(e) => { if (e.target === e.currentTarget) setShowDemoModal(false); }}
+              >
+                <div className="max-h-[84vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                  <div className="sticky top-0 flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-950">{labels.login.demoTitle}</h3>
+                      <p className="mt-1 text-sm text-slate-500">{labels.login.demoSubtitle}</p>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={labels.login.close}
+                      className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                      onClick={() => setShowDemoModal(false)}
+                    >
+                      <X className="h-5 w-5" aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="space-y-5 p-6">
+                    {demoCompanies.map((company) => (
+                      <div key={company.slug}>
+                        <h4 className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
+                          {company.name} ({company.country})
+                        </h4>
+                        <div className="grid gap-2">
+                          {company.users.map((user) => (
+                            <button
+                              key={user.email}
+                              type="button"
+                              className="w-full rounded-xl border border-slate-200 p-4 text-left transition hover:border-teal-300 hover:bg-teal-50/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                              onClick={() => selectDemoUser(user.email, user.password, user.managerRole ?? user.role, company.country)}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="font-semibold text-slate-950">{user.name}</span>
+                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
+                                  {user.managerRole ?? user.role}
+                                </span>
+                              </div>
+                              <span className="mt-1 block text-sm text-slate-500">{user.email}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+

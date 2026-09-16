@@ -1,0 +1,128 @@
+version: "3.9"
+
+# ============================================================
+# Leopardo Edge — Local Docker Stack
+# Installé chez le client pour fonctionnement offline-first
+#
+# Issue #3972 — reproductibilité des installs : les images Leopardo sont
+# taggées par version (${EDGE_VERSION:-1.0.0}, aligné sur edge/publish.sh),
+# jamais `latest` flottant. Caddy est pinné par digest multi-arch. Une
+# install identique livre donc le même logiciel, quelle que soit la date.
+# ⚠️ Depuis #6604, le compose construit localement (clés `build:`) :
+#    edge-api/edge-sync via edge/Dockerfile.edge, edge-ui via
+#    front/web-offline/Dockerfile (l'image publiée leopardo/edge-ui n'existait
+#    pas — fantôme). Les tags image: restent pour le pinning de version.
+# ============================================================
+
+services:
+
+  # ── Edge API (Laravel slim) ──────────────────────────────
+  edge-api:
+    image: leopardo/edge-api:${EDGE_VERSION:-1.0.0}
+    build:
+      context: ..
+      dockerfile: Dockerfile.edge
+    container_name: leopardo-edge-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: edge
+      APP_KEY: "${EDGE_APP_KEY}"
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/leopardo/edge.sqlite
+      EDGE_NODE_ID: "${EDGE_NODE_ID}"
+      EDGE_TOKEN: "${EDGE_TOKEN}"
+      CLOUD_API_URL: "${CLOUD_API_URL:-https://gestionemployerbackend.onrender.com}"
+      CLOUD_SYNC_INTERVAL_MINUTES: "${SYNC_INTERVAL:-15}"
+      LICENSE_PUBLIC_KEY_PATH: /var/leopardo/license.pub
+    volumes:
+      - edge_data:/var/leopardo
+      # #6604 : une seule copie de la clé publique dans le repo
+      # (edge/keys/edge_license_public.pem — servie aussi par l'API cloud).
+      - ./keys/edge_license_public.pem:/var/leopardo/license.pub:ro
+      # Issue #2751 — chemins relatifs au fichier compose (edge/) :
+      # ./edge/license.pub résolvait edge/edge/license.pub (inexistant).
+      # #6700 : clé canonique edge/keys/edge_license_public.pem (le doublon
+      # edge/license.pub a été supprimé). Le chemin conteneur reste stable.
+      - ./keys/edge_license_public.pem:/var/leopardo/license.pub:ro
+    ports:
+      - "7878:80"       # http://leopardo.local:7878
+    networks:
+      - leopardo-local
+    healthcheck:
+      # #3908 : /api/edge/health n'existe pas — le health endpoint réel de
+      # l'Edge API est versionné : GET /api/v1/edge/health (EdgeController).
+      test: ["CMD", "curl", "-f", "http://localhost/api/v1/edge/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Edge Web UI (Next.js static export) ─────────────────
+  edge-ui:
+    image: leopardo/edge-ui:${EDGE_VERSION:-1.0.0}
+    build:
+      context: ../front/web-offline
+      dockerfile: Dockerfile
+    container_name: leopardo-edge-ui
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_EDGE_API: "http://edge-api/api"   # lue par web-offline (next.config.js) — audit Vague 2 #6595
+    ports:
+      - "7879:3000"     # http://leopardo.local:7879
+    depends_on:
+      - edge-api
+    networks:
+      - leopardo-local
+
+  # ── Sync Daemon ─────────────────────────────────────────
+  edge-sync:
+    image: leopardo/edge-api:${EDGE_VERSION:-1.0.0}
+    build:
+      context: ..
+      dockerfile: Dockerfile.edge
+    container_name: leopardo-edge-sync
+    restart: unless-stopped
+    # #4411 : migration SQLite idempotente avant le daemon (l'API migre au
+    # démarrage via supervisord, mais ce service est un conteneur séparé).
+    command: ["sh", "-c", "php artisan migrate --path=database/migrations/tenant/2026_06_29_000001_create_edge_sync_tables.php --database=sqlite --force --no-interaction && php artisan edge:sync-daemon"]
+    environment:
+      APP_ENV: edge
+      APP_KEY: "${EDGE_APP_KEY}"
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/leopardo/edge.sqlite
+      EDGE_NODE_ID: "${EDGE_NODE_ID}"
+      EDGE_TOKEN: "${EDGE_TOKEN}"
+      CLOUD_API_URL: "${CLOUD_API_URL:-https://gestionemployerbackend.onrender.com}"
+      CLOUD_SYNC_INTERVAL_MINUTES: "${SYNC_INTERVAL:-15}"
+    volumes:
+      - edge_data:/var/leopardo
+    depends_on:
+      - edge-api
+    networks:
+      - leopardo-local
+
+  # ── Caddy Reverse Proxy (http://leopardo.local) ──────────
+  edge-proxy:
+    # #3972 : digest multi-arch de caddy:2-alpine (vérifié 2026-08-15).
+    image: caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    container_name: leopardo-edge-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      # Issue #2751 — ./edge/Caddyfile.edge résolvait edge/edge/…
+      - ./Caddyfile.edge:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - edge-api
+      - edge-ui
+    networks:
+      - leopardo-local
+
+volumes:
+  edge_data:
+  caddy_data:
+
+networks:
+  leopardo-local:
+    driver: bridge

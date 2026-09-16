@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" role="img" aria-label="RMIH">
+  <defs>
+    <linearGradient id="grd" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <!-- icon box -->
+  <rect x="0" y="4" width="40" height="40" rx="9" fill="url(#grd)"/>
+  <text x="20" y="30" font-family="system-ui,sans-serif" font-size="18" font-weight="800" fill="white" text-anchor="middle">RM</text>
+  <!-- wordmark -->
+  <text x="50" y="22" font-family="system-ui,sans-serif" font-size="16" font-weight="800" fill="#1e3a8a">RMIH</text>
+  <text x="50" y="38" font-family="system-ui,sans-serif" font-size="8" font-weight="400" fill="#6366f1" letter-spacing="0.5">Resources Management Integrated Human</text>
+</svg>

@@ -1,0 +1,515 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Platform\Interfaces\Api\V1\Controllers;
+
+use App\Http\Controllers\Controller;
+use App\Modules\Notification\Infrastructure\Services\ProductionDeliveryGuard;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
+use UnitEnum;
+
+/**
+ * Endpoint /api/v1/health : sonde "live + ready" consommee par :
+ *
+ * - le deploy hook Render (`DEFAULT_API_HEALTHCHECK_URL` cherche `"status":"ok"`)
+ * - les futurs scrapers de supervision (UptimeRobot, Better Uptime, etc.)
+ *
+ * La reponse inclut toujours `status`, `version` et la matrice `checks`.
+ * Le HTTP code est 200 tant qu'au moins la base de donnees repond ; si la DB
+ * tombe on renvoie 503 pour que Render detecte immediatement une instance
+ * non disponible.
+ *
+ * Les checks secondaires (Redis, storage, queue, delivery) sont `degraded` en
+ * cas d'echec mais ne declenchent pas un 503 sur `/health` : l'API reste
+ * partiellement servable (les jobs/queues peuvent etre degrades, pas l'auth),
+ * et une sonde de deploiement ne doit pas redemarrer une instance saine parce
+ * qu'une dependance secondaire est tombee.
+ *
+ * #7255 — la sonde honnete de disponibilite est `/health/ready` : elle couvre
+ * les dependances CRITIQUES (base + Redis + queue) et renvoie 503 des que
+ * l'une d'elles est en panne. `/health/live` reste un liveness pur et n'est
+ * plus la sonde recommandee au monitoring externe. Semantique complete
+ * (ok / degraded / fail / skipped) : docs/ops/HEALTH_ENDPOINTS.md.
+ */
+class HealthController extends Controller
+{
+    /**
+     * #7385 — delai maximal du `tcp connect` de la sonde mail. Court :
+     * `/health/ready` est interroge par la supervision, il ne doit pas
+     * transformer une panne SMTP en lenteur d'endpoint.
+     */
+    private const MAIL_CONNECT_TIMEOUT_SECONDS = 2;
+
+    public function __invoke(): JsonResponse
+    {
+        $version = $this->stringConfigValue(config('app.version'));
+
+        $database = $this->checkDatabase();
+        $redis = $this->checkRedis();
+        $storage = $this->checkStorage();
+        $queue = $this->checkQueue();
+        $memory = $this->checkMemory();
+        $web = $this->checkWeb();
+        $delivery = $this->checkDeliveryConfiguration();
+        $mail = $this->checkMail();
+
+        $globalOk = $database['ok'];
+
+        $payload = [
+            'status' => $globalOk ? 'ok' : 'fail',
+            'version' => $version,
+            'environment' => app()->environment(),
+            'checks' => [
+                'database' => $database,
+                'redis' => $redis,
+                'storage' => $storage,
+                'queue' => $queue,
+                'memory' => $memory,
+                'web' => $web,
+                'delivery' => $delivery,
+                'mail' => $mail,
+            ],
+            'uptime_seconds' => defined('LARAVEL_START')
+                ? (int) round(microtime(true) - LARAVEL_START)
+                : null,
+            'timestamp' => now()->toIso8601String(),
+        ];
+
+        return response()->json($payload, $globalOk ? 200 : 503);
+    }
+
+    /**
+     * @return array{ok: bool, latency_ms?: int, error?: string}
+     */
+    private function checkDatabase(): array
+    {
+        $start = microtime(true);
+        try {
+            DB::select('SELECT 1');
+
+            return [
+                'ok' => true,
+                'latency_ms' => (int) round((microtime(true) - $start) * 1000),
+            ];
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'error' => class_basename($e),
+            ];
+        }
+    }
+
+    /**
+     * Issue #1768 : normalise la réponse de `ping()` quel que soit le client
+     * (PhpRedis : true / 'PONG' / '+PONG' ; Predis : objet Status __toString 'PONG').
+     */
+    private static function isPongResponse(mixed $response): bool
+    {
+        return $response === true
+            || in_array(strtoupper((string) $response), ['PONG', '+PONG'], true);
+    }
+
+    /**
+     * @return array{ok: bool, status?: string, latency_ms?: int, error?: string}
+     */
+    private function checkRedis(): array
+    {
+        // Redis est optionnel (cache/sessions/queues). On considere Redis
+        // "vraiment voulu" si :
+        //   (a) REDIS_URL est explicitement defini -> `config('database.redis.default.url')`
+        //       n'a PAS de default, il vaut `null` tant que REDIS_URL n'est pas pose ;
+        //   (b) ou un driver applicatif (cache/queue/session) utilise redis.
+        //
+        // On NE regarde PAS `database.redis.default.host` : son default `127.0.0.1`
+        // est indistinguable d'une config explicite, et on veut justement eviter de
+        // bloquer quelques secondes sur un `tcp connect` vers un Redis inexistant
+        // sur chaque requete `/health`. `env()` est volontairement evite : apres
+        // `php artisan config:cache` (prod), `env()` renvoie null.
+        $urlConfigured = ! empty(config('database.redis.default.url'));
+        $driverUsesRedis = config('cache.default') === 'redis'
+            || config('queue.default') === 'redis'
+            || config('session.driver') === 'redis';
+
+        if (! $urlConfigured && ! $driverUsesRedis) {
+            return ['ok' => true, 'status' => 'skipped'];
+        }
+
+        $start = microtime(true);
+        try {
+            $response = Redis::connection()->ping();
+            // Issue #1768 : Predis retourne un objet Predis\Response\Status
+            // (__toString() = 'PONG') — les comparaisons strictes échouaient
+            // toujours → « unexpected » alors que Redis est sain.
+            $ok = self::isPongResponse($response);
+
+            return [
+                'ok' => $ok,
+                'status' => $ok ? 'pong' : 'unexpected',
+                'latency_ms' => (int) round((microtime(true) - $start) * 1000),
+            ];
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'status' => 'degraded',
+                'error' => class_basename($e),
+            ];
+        }
+    }
+
+    /**
+     * @return array{ok: bool, error?: string}
+     */
+    private function checkStorage(): array
+    {
+        try {
+            $disk = Storage::disk($this->filesystemDiskName());
+            // Laravel 11 : les disques sont en `throw => false` par defaut,
+            // donc `put()` retourne `false` au lieu de lever. On verifie
+            // explicitement la valeur de retour pour vraiment detecter un
+            // disque non inscriptible.
+            $written = $disk->put('.healthcheck', (string) now()->timestamp);
+            $disk->delete('.healthcheck');
+
+            return ['ok' => (bool) $written];
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'error' => class_basename($e),
+            ];
+        }
+    }
+
+    private function filesystemDiskName(): string|UnitEnum
+    {
+        $disk = config('filesystems.default', 'local');
+
+        return is_string($disk) || $disk instanceof UnitEnum ? $disk : 'local';
+    }
+
+    /**
+     * GET /api/v1/health/live — 200 if the process is running.
+     *
+     * Liveness pur : aucune I/O, donc toujours 200 tant que PHP repond.
+     * #7255 — ce n'est PAS la sonde a brancher sur un monitoring de
+     * disponibilite : elle ne verra jamais une degradation (Redis, queue,
+     * mailer). Pour cela, utiliser `/health/ready`.
+     */
+    public function live(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'ok',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * GET /api/v1/health/ready — 200 si les dependances CRITIQUES repondent.
+     *
+     * #7255 — la readiness ne regardait que la base : Redis HS, queue bloquee
+     * et mailer muet restaient invisibles (HTTP 200 + `status: ok`) alors que
+     * l'instance n'assurait plus ses jobs, ses sessions ni ses e-mails (constat
+     * live du 2026-09-11). Les dependances critiques sont desormais la base
+     * (auth, tenants), Redis (cache/sessions/queues) et la file d'attente :
+     * des qu'une seule tombe, `status: fail`, HTTP 503 et `failed_checks`
+     * nomme la dependance — un probe Render ou un monitoring externe detecte
+     * donc reellement la panne.
+     *
+     * Une dependance volontairement absente (`status: skipped`, ex. Redis non
+     * configure) n'est jamais un echec : on ne transforme pas une absence de
+     * dependance en incident.
+     */
+    public function ready(): JsonResponse
+    {
+        $database = $this->checkDatabase();
+        $redis = $this->checkRedis();
+        $queue = $this->checkQueue();
+        $mail = $this->checkMail();
+
+        $checks = [
+            'database' => $database,
+            'redis' => $redis,
+            'queue' => $queue,
+            'mail' => $mail,
+        ];
+
+        $critical = [
+            'database' => $database['ok'],
+            'redis' => $redis['ok'],
+            'queue' => $queue['ok'],
+        ];
+
+        $failed = array_keys(array_filter($critical, static fn (bool $ok): bool => ! $ok));
+
+        // #7385 — le mail est un check NON critique : sans SMTP l'API reste
+        // servable (connexion, donnees, pointage), donc pas de 503. Mais il
+        // doit sortir du silence : « mailer muet » rendait la reinitialisation
+        // de mot de passe morte pendant que la sonde repondait `ok`.
+        $degraded = $mail['ok'] ? [] : ['mail'];
+
+        $ok = $failed === [];
+
+        return response()->json([
+            'status' => ! $ok ? 'fail' : ($degraded === [] ? 'ok' : 'degraded'),
+            'checks' => $checks,
+            'failed_checks' => $failed,
+            'degraded_checks' => $degraded,
+            'timestamp' => now()->toIso8601String(),
+        ], $ok ? 200 : 503);
+    }
+
+    /**
+     * #6957 : sonde « couche web » sans I/O — permet à l'observabilité de
+     * détecter un environnement dont toutes les routes web (session/cookies)
+     * répondent 500 alors que l'API (stateless) reste verte. Deux causes
+     * fréquentes, détectées ici sans effet de bord :
+     *  - `APP_KEY` absente → `EncryptCookies`/`StartSession` lèvent sur chaque
+     *    requête web ;
+     *  - clé présente mais invalide pour le cipher → aller-retour
+     *    encrypt/decrypt impossible.
+     * Check non bloquant (dégradé, jamais de 503) : l'API peut rester servable
+     * même si la surface web est cassée.
+     *
+     * @return array{ok: bool, driver: string, app_key_set: bool, reason?: string}
+     */
+    private function checkWeb(): array
+    {
+        $driver = (string) config('session.driver', 'file');
+        $appKey = config('app.key');
+
+        if (! is_string($appKey) || $appKey === '') {
+            return [
+                'ok' => false,
+                'driver' => $driver,
+                'app_key_set' => false,
+                'reason' => 'app_key_missing',
+            ];
+        }
+
+        $roundTrip = null;
+
+        try {
+            $probe = Crypt::encryptString('leopardo-health-web-probe');
+            $roundTrip = Crypt::decryptString($probe);
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'driver' => $driver,
+                'app_key_set' => true,
+                'reason' => class_basename($e),
+            ];
+        }
+
+        if ($roundTrip !== 'leopardo-health-web-probe') {
+            return [
+                'ok' => false,
+                'driver' => $driver,
+                'app_key_set' => true,
+                'reason' => 'encryption_roundtrip_mismatch',
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'driver' => $driver,
+            'app_key_set' => true,
+        ];
+    }
+
+    /**
+     * #7014 (part of #6919) : garde de configuration « livraison » pour la
+     * production — un mailer `log`/`array`, un hôte SMTP ou un domaine
+     * Mailgun sandbox, ou un provider WhatsApp configuré sans secrets Meta
+     * (fallback audit silencieux, PA2-COMM-008) rendent les envois
+     * transactionnels factices tout en les rapportant comme envoyés.
+     * Check non bloquant et sans effet de bord : hors production il est
+     * `skipped` ; en production il est `ok` quand la configuration est
+     * saine, `degraded` + `issues[]` (slugs machine) sinon. Le 503 du
+     * health reste piloté par le check base de données uniquement, donc
+     * les deploy gates existants ne sont pas affectés.
+     *
+     * @return array{ok: bool, status: string, issues?: list<string>}
+     */
+    private function checkDeliveryConfiguration(): array
+    {
+        $guard = new ProductionDeliveryGuard;
+
+        if (! $guard->isApplicable()) {
+            return ['ok' => true, 'status' => 'skipped'];
+        }
+
+        $issues = $guard->issues();
+
+        if ($issues === []) {
+            return ['ok' => true, 'status' => 'ok'];
+        }
+
+        return [
+            'ok' => false,
+            'status' => 'degraded',
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @return array{ok: bool, driver?: string, size?: int, queues?: array<string, int>}
+     */
+    private function checkQueue(): array
+    {
+        $driver = (string) config('queue.default', 'sync');
+
+        if ($driver === 'sync') {
+            return ['ok' => true, 'driver' => 'sync'];
+        }
+
+        try {
+            $connection = app('queue')->connection();
+            $queues = [];
+
+            foreach (['default', 'documents', 'pdf', 'payroll', 'notifications', 'webhooks'] as $queue) {
+                $queues[$queue] = (int) $connection->size($queue);
+            }
+
+            return [
+                'ok' => true,
+                'driver' => $driver,
+                'size' => array_sum($queues),
+                'queues' => $queues,
+                'failed_jobs' => $this->failedJobsCount(),
+            ];
+        } catch (Throwable) {
+            return ['ok' => false, 'driver' => $driver];
+        }
+    }
+
+    /**
+     * #7385 — « mailer muet » : le trou que #7255 avait identifie sans le
+     * combler. `/health/ready` couvrait la base, Redis et la queue, mais pas
+     * le transport mail. Une instance dont le SMTP ne repond plus renvoyait
+     * donc `status: ok` alors que la reinitialisation de mot de passe etait
+     * DEJA MORTE — le controleur avale l'echec d'envoi par anti-enumeration
+     * (cf. #6751), donc aucun utilisateur ni aucune sonde ne le voyait.
+     *
+     * On ne teste que les transports RESEAU : `log` et `array` n'ont aucune
+     * dependance externe, les sonder n'aurait pas de sens (meme logique que
+     * `checkRedis()` qui renvoie `skipped` quand Redis n'est pas voulu).
+     *
+     * Le test est un `tcp connect` court, PAS un envoi : il attrape l'hote
+     * injoignable et le port ferme — la panne de transport, celle qui a
+     * effectivement bloque la production. Il n'attrape PAS un mot de passe
+     * SMTP invalide, d'ou `status: reachable` et non `sent`.
+     *
+     * L'hote n'est volontairement pas expose : `/health` est public, et un
+     * nom d'hote SMTP interne est une information d'infrastructure.
+     *
+     * @return array{ok: bool, status: string, mailer?: string, port?: int, latency_ms?: int, error?: string}
+     */
+    private function checkMail(): array
+    {
+        $mailer = $this->stringConfigValue(config('mail.default'));
+
+        if ($mailer !== 'smtp') {
+            return ['ok' => true, 'status' => 'skipped', 'mailer' => $mailer];
+        }
+
+        $host = $this->stringConfigValue(config('mail.mailers.smtp.host'));
+
+        if ($host === '') {
+            return ['ok' => false, 'status' => 'misconfigured', 'mailer' => $mailer, 'error' => 'MAIL_HOST_MISSING'];
+        }
+
+        $port = (int) config('mail.mailers.smtp.port', 587);
+        $start = microtime(true);
+
+        $errno = 0;
+        $errstr = '';
+        $socket = @fsockopen($host, $port, $errno, $errstr, self::MAIL_CONNECT_TIMEOUT_SECONDS);
+
+        if ($socket === false) {
+            return [
+                'ok' => false,
+                'status' => 'unreachable',
+                'mailer' => $mailer,
+                'port' => $port,
+                'error' => $errno !== 0 ? (string) $errno : 'CONNECT_FAILED',
+                'latency_ms' => (int) round((microtime(true) - $start) * 1000),
+            ];
+        }
+
+        fclose($socket);
+
+        return [
+            'ok' => true,
+            'status' => 'reachable',
+            'mailer' => $mailer,
+            'port' => $port,
+            'latency_ms' => (int) round((microtime(true) - $start) * 1000),
+        ];
+    }
+
+    /**
+     * Issue #5282 : expose le nombre de jobs en échec sur /health pour les
+     * scrapers d'uptime et la supervision manuelle.
+     */
+    private function failedJobsCount(): ?int
+    {
+        try {
+            return DB::table((string) config('queue.failed.table', 'failed_jobs'))->count();
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array{ok: bool, usage_mb: int, peak_mb: int, limit_mb: int|null}
+     */
+    private function checkMemory(): array
+    {
+        $usage = memory_get_usage(true);
+        $peak = memory_get_peak_usage(true);
+        $limit = $this->parseMemoryLimit(ini_get('memory_limit') ?: '-1');
+
+        return [
+            'ok' => $limit < 0 || $usage < $limit * 0.9,
+            'usage_mb' => (int) round($usage / 1048576),
+            'peak_mb' => (int) round($peak / 1048576),
+            'limit_mb' => $limit > 0 ? (int) round($limit / 1048576) : null,
+        ];
+    }
+
+    private function parseMemoryLimit(string $limit): int
+    {
+        $limit = trim($limit);
+        if ($limit === '-1') {
+            return -1;
+        }
+
+        $value = (int) $limit;
+        $unit = strtolower(substr($limit, -1));
+
+        return match ($unit) {
+            'g' => $value * 1073741824,
+            'm' => $value * 1048576,
+            'k' => $value * 1024,
+            default => $value,
+        };
+    }
+
+    private function stringConfigValue(mixed $value): string
+    {
+        if (is_string($value)) {
+            return $value;
+        }
+
+        if (is_scalar($value)) {
+            return (string) $value;
+        }
+
+        return '';
+    }
+}

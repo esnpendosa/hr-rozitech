@@ -1,0 +1,291 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Routes RH — modules 1-7 complets.
+ * APV L.08 — Un module = un route group Laravel.
+ *
+ * Namespaces migrés vers App\Modules\* (nouvelle architecture modulaire).
+ */
+
+// ── Modules migrés ─────────────────────────────────────────────────────────────
+use App\Modules\Attendance\Interfaces\Api\V1\Controllers\AttendanceController;
+use App\Modules\Attendance\Interfaces\Api\V1\Controllers\BiometricEnrollmentController;
+use App\Modules\Attendance\Interfaces\Api\V1\Controllers\KioskController;
+use App\Modules\Attendance\Interfaces\Api\V1\KioskEnrollmentController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\CareerEventController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\DepartmentController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\DepartureController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\DepartureNoticeController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\EmployeeController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\EmployeeImportController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\EvaluationController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\InvitationController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\MeController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\OnboardingQrController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\PositionController;
+use App\Modules\HR\Interfaces\Api\V1\Controllers\SiteController;
+use App\Modules\Notification\Interfaces\Api\V1\Controllers\AnnouncementController;
+use App\Modules\Notification\Interfaces\Api\V1\Controllers\ConversationController;
+use App\Modules\Notification\Interfaces\Api\V1\Controllers\NotificationController;
+use App\Modules\Notification\Interfaces\Api\V1\Controllers\NotificationStreamController;
+use App\Modules\Notification\Interfaces\Api\V1\Controllers\SseTokenController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\EndOfContractController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\EstimationController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\LedgerController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\PayrollController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\PayrollCycleController;
+use App\Modules\Payroll\Interfaces\Api\V1\Controllers\SalaryAdvanceController;
+use App\Modules\Planning\Interfaces\Api\V1\Controllers\ProjectController;
+use App\Modules\Planning\Interfaces\Api\V1\Controllers\ScheduleController;
+use App\Modules\Planning\Interfaces\Api\V1\Controllers\TaskController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['throttle:api', 'auth:sanctum', 'token.refresh', 'tenant', 'throttle:api-plan'])->group(function (): void {
+
+    // ── Employees ─────────────────────────────────────────────────────────────
+    Route::get('/employees', [EmployeeController::class, 'index']);
+    // MULTI-PAYS (#1867) : création/modification d'employé refusées si le pays
+    // légal du tenant est absent ou non supporté.
+    Route::post('/employees', [EmployeeController::class, 'store'])->middleware(['api.manager', 'tenant.country']);
+    Route::get('/employees/{employee}', [EmployeeController::class, 'show'])->whereNumber('employee');
+    Route::put('/employees/{employee}', [EmployeeController::class, 'update'])->whereNumber('employee')->middleware('tenant.country');
+    Route::patch('/employees/{employee}', [EmployeeController::class, 'update'])->whereNumber('employee')->middleware('tenant.country');
+    Route::post('/employees/{employee}/archive', [EmployeeController::class, 'archive'])->whereNumber('employee');
+
+    // ── Départ (offboarding, issue #5324) ─────────────────────────────────
+    // Enregistrement HR (statut `departed` + révocation d'accès) ; le solde
+    // de tout compte et l'attestation restent Payroll (endpoints ci-dessus).
+    Route::post('/employees/{employee}/departure', [DepartureController::class, 'store'])->whereNumber('employee');
+    Route::get('/employees/{employee}/departure', [DepartureController::class, 'show'])->whereNumber('employee');
+    Route::get('/me/departure', [DepartureController::class, 'myDeparture']);
+    Route::get('/employees/{employee}/end-of-contract', [EndOfContractController::class, 'settlement'])->whereNumber('employee');
+    Route::get('/employees/{employee}/certificate-of-employment', [EndOfContractController::class, 'certificate'])->whereNumber('employee');
+    // G2 (#5325) — récapitulatif du préavis légal par pays/ancienneté (lecture, règle Payroll consommée)
+    Route::get('/employees/{employee}/departure/notice', [DepartureNoticeController::class, 'show'])->whereNumber('employee');
+    // MULTI-PAYS (#1952) : l'import d'employés crée des écritures RH — même
+    // garde pays que store/update (#1867).
+    Route::post('/employees/import', [EmployeeImportController::class, 'import'])->middleware(['api.manager', 'tenant.country']);
+    Route::get('/employees/import-template', [EmployeeImportController::class, 'template']);
+    Route::get('/me/qr-profile', [OnboardingQrController::class, 'employeeProfile']);
+    Route::get('/company/qr-onboarding', [OnboardingQrController::class, 'companyOnboarding']);
+    Route::post('/company/qr-onboarding/scan-employee', [OnboardingQrController::class, 'scanEmployee']);
+    // MULTI-PAYS (#1952) : le QR onboarding crée un employé — même garde pays.
+    Route::post('/company/qr-onboarding/create-employee', [OnboardingQrController::class, 'createEmployeeFromQr'])->middleware('tenant.country');
+    Route::post('/me/company-qr/scan', [OnboardingQrController::class, 'scanCompany']);
+
+    // ── Estimations ───────────────────────────────────────────────────────────
+    Route::get('/employees/{employee}/balance', [PayrollCycleController::class, 'employeeBalance'])->whereNumber('employee'); // Plan 61
+    Route::get('/employees/{employee}/ledger', [LedgerController::class, 'employeeLedger'])->whereNumber('employee'); // PA2-PAY-007
+    Route::get('/employees/{employee}/daily-summary', [EstimationController::class, 'dailySummary'])->whereNumber('employee');
+    Route::get('/employees/{employee}/quick-estimate', [EstimationController::class, 'quickEstimate'])->whereNumber('employee');
+    Route::get('/employees/{employee}/receipt', [EstimationController::class, 'receipt'])->whereNumber('employee');
+
+    // ── Self-service ──────────────────────────────────────────────────────────
+    Route::get('/me/daily-summary', [MeController::class, 'dailySummary']);
+    Route::get('/me/quick-estimate', [MeController::class, 'quickEstimate']);
+    Route::get('/me/monthly-summary', [MeController::class, 'monthlySummary']);
+    Route::get('/me/attendance-anomalies', [MeController::class, 'attendanceAnomalies']); // PA2-ATT-004
+    Route::get('/me/balance', [PayrollCycleController::class, 'myBalance']);
+    Route::get('/me/ledger', [LedgerController::class, 'myLedger']); // PA2-PAY-007
+
+    // ── Attendance ────────────────────────────────────────────────────────────
+    Route::post('/attendance/check-in', [AttendanceController::class, 'checkIn']);
+    Route::post('/attendance/check-out', [AttendanceController::class, 'checkOut']);
+    Route::get('/attendance/today', [AttendanceController::class, 'today']);
+    Route::get('/attendance/anomalies', [AttendanceController::class, 'anomalies']);
+    Route::get('/attendance/regularity', [AttendanceController::class, 'regularity']);
+    Route::get('/attendance/monthly-report', [AttendanceController::class, 'report']);
+    Route::get('/attendance', [AttendanceController::class, 'index']);
+    Route::post('/attendance/corrections', [AttendanceController::class, 'requestCorrection']);
+    Route::get('/attendance/corrections', [AttendanceController::class, 'corrections']);
+    Route::post('/attendance/corrections/{correction}/approve', [AttendanceController::class, 'approveCorrection'])->whereNumber('correction')->middleware('api.manager');
+    Route::put('/attendance/corrections/{correction}/approve', [AttendanceController::class, 'approveCorrection'])->whereNumber('correction')->middleware('api.manager'); // déprécié #4930
+    Route::post('/attendance/corrections/{correction}/reject', [AttendanceController::class, 'rejectCorrection'])->whereNumber('correction')->middleware('api.manager');
+    Route::put('/attendance/corrections/{correction}/reject', [AttendanceController::class, 'rejectCorrection'])->whereNumber('correction')->middleware('api.manager'); // déprécié #4930
+    Route::get('/attendance/corrections/{correction}/proof', [AttendanceController::class, 'downloadProofCorrection'])->whereNumber('correction')->name('attendance.corrections.proof');
+    Route::put('/attendance/{attendanceLog}', [AttendanceController::class, 'update'])->whereNumber('attendanceLog')->middleware('api.manager');
+    // #5538 — URL canonique (désambiguïsée redocly, #5525).
+    Route::get('/attendance/attendance-logs/{attendanceLog}/punch-photo', [AttendanceController::class, 'punchPhoto'])->whereNumber('attendanceLog')->name('attendance.punch-photo');
+
+    // #5538 — alias DÉPRÉCIÉ de l'ancien chemin /attendance/{attendanceLog}/punch-photo
+    // (clients en circulation). À supprimer après la fenêtre de compat.
+    Route::get('/attendance/{attendanceLog}/punch-photo', [AttendanceController::class, 'punchPhoto'])->whereNumber('attendanceLog');
+
+    // ── Invitations ───────────────────────────────────────────────────────────
+    Route::get('/invitations', [InvitationController::class, 'index']);
+    Route::post('/invitations/{invitation}/resend', [InvitationController::class, 'resend']);
+
+    // ── Biometrics & Kiosks ───────────────────────────────────────────────────
+    Route::get('/biometric-enrollment-requests', [BiometricEnrollmentController::class, 'index']);
+    Route::post('/biometric-enrollment-requests/{id}/approve', [BiometricEnrollmentController::class, 'approve'])->middleware('api.manager');
+    Route::post('/biometric-enrollment-requests/{id}/reject', [BiometricEnrollmentController::class, 'reject'])->middleware('api.manager');
+    Route::post('/kiosks', [KioskController::class, 'register'])->middleware('api.manager');
+
+    // ── Module 1 — Absences ───────────────────────────────────────────────────
+    // PA2-ARCH-011 : les routes /absences/* sont la source unique dans
+    // routes/modules/absence.php (plus complet : inclut aussi /proof).
+    // Ce bloc dupliquait exactement les memes routes -> AbsenceController.
+    // Voir issue #1414.
+
+    // ── Module 2 — Salary Advances ────────────────────────────────────────────
+    Route::get('/salary-advances', [SalaryAdvanceController::class, 'index']);
+    Route::post('/salary-advances', [SalaryAdvanceController::class, 'store']);
+    Route::get('/salary-advances/{salaryAdvance}', [SalaryAdvanceController::class, 'show'])->whereNumber('salaryAdvance');
+    // PA2-MOB-006: download the supporting document attached to a request.
+    Route::get('/salary-advances/{salaryAdvance}/proof', [SalaryAdvanceController::class, 'downloadProof'])->whereNumber('salaryAdvance');
+    Route::post('/salary-advances/{salaryAdvance}/approve', [SalaryAdvanceController::class, 'approve'])->whereNumber('salaryAdvance');
+    Route::put('/salary-advances/{salaryAdvance}/approve', [SalaryAdvanceController::class, 'approve'])->whereNumber('salaryAdvance'); // déprécié #4930
+    Route::post('/salary-advances/{salaryAdvance}/reject', [SalaryAdvanceController::class, 'reject'])->whereNumber('salaryAdvance');
+    Route::put('/salary-advances/{salaryAdvance}/reject', [SalaryAdvanceController::class, 'reject'])->whereNumber('salaryAdvance'); // déprécié #4930
+    Route::delete('/salary-advances/{salaryAdvance}', [SalaryAdvanceController::class, 'destroy'])->whereNumber('salaryAdvance');
+    // Plan 60 — double validation workflow
+    Route::post('/salary-advances/{salaryAdvance}/manager-approve', [SalaryAdvanceController::class, 'managerApprove'])->whereNumber('salaryAdvance');
+    Route::put('/salary-advances/{salaryAdvance}/manager-approve', [SalaryAdvanceController::class, 'managerApprove'])->whereNumber('salaryAdvance'); // déprécié #4930
+    Route::put('/salary-advances/{salaryAdvance}/mark-paid', [SalaryAdvanceController::class, 'markPaid'])->whereNumber('salaryAdvance');
+    Route::put('/salary-advances/{salaryAdvance}/confirm-received', [SalaryAdvanceController::class, 'confirmReceived'])->whereNumber('salaryAdvance');
+    // PA2-PAY-015 — employee dispute ("reclamation") instead of confirming reception
+    Route::put('/salary-advances/{salaryAdvance}/dispute', [SalaryAdvanceController::class, 'dispute'])->whereNumber('salaryAdvance');
+    Route::put('/salary-advances/{salaryAdvance}/resolve-dispute', [SalaryAdvanceController::class, 'resolveDispute'])->whereNumber('salaryAdvance');
+
+    // ── Module 3 — Payrolls ───────────────────────────────────────────────────
+    Route::get('/payrolls', [PayrollController::class, 'index']);
+    Route::post('/payrolls', [PayrollController::class, 'store'])->middleware('api.manager');
+    Route::get('/payrolls/{payroll}', [PayrollController::class, 'show'])->whereNumber('payroll');
+    Route::put('/payrolls/{payroll}', [PayrollController::class, 'update'])->whereNumber('payroll');
+    Route::patch('/payrolls/{payroll}', [PayrollController::class, 'update'])->whereNumber('payroll');
+    Route::post('/payrolls/{payroll}/validate', [PayrollController::class, 'validatePayroll'])->whereNumber('payroll');
+    Route::put('/payrolls/{payroll}/validate', [PayrollController::class, 'validatePayroll'])->whereNumber('payroll'); // déprécié #4930
+    Route::delete('/payrolls/{payroll}', [PayrollController::class, 'destroy'])->whereNumber('payroll');
+
+    // ── Module 4 — HR Referentials ────────────────────────────────────────────
+    Route::get('/departments', [DepartmentController::class, 'index']);
+    Route::post('/departments', [DepartmentController::class, 'store'])->middleware('api.manager');
+    Route::get('/departments/{department}/hierarchy', [DepartmentController::class, 'hierarchy'])->whereNumber('department');
+    Route::get('/departments/{department}', [DepartmentController::class, 'show'])->whereNumber('department');
+    Route::put('/departments/{department}', [DepartmentController::class, 'update'])->whereNumber('department');
+    Route::patch('/departments/{department}', [DepartmentController::class, 'update'])->whereNumber('department');
+    Route::delete('/departments/{department}', [DepartmentController::class, 'destroy'])->whereNumber('department');
+
+    Route::get('/positions', [PositionController::class, 'index']);
+    Route::post('/positions', [PositionController::class, 'store'])->middleware('api.manager');
+    Route::get('/positions/{position}', [PositionController::class, 'show'])->whereNumber('position');
+    Route::put('/positions/{position}', [PositionController::class, 'update'])->whereNumber('position');
+    Route::patch('/positions/{position}', [PositionController::class, 'update'])->whereNumber('position');
+    Route::delete('/positions/{position}', [PositionController::class, 'destroy'])->whereNumber('position');
+
+    Route::get('/sites', [SiteController::class, 'index']);
+    Route::post('/sites', [SiteController::class, 'store'])->middleware('api.manager');
+    Route::get('/sites/{site}', [SiteController::class, 'show'])->whereNumber('site');
+    Route::put('/sites/{site}', [SiteController::class, 'update'])->whereNumber('site');
+    Route::patch('/sites/{site}', [SiteController::class, 'update'])->whereNumber('site');
+    Route::delete('/sites/{site}', [SiteController::class, 'destroy'])->whereNumber('site');
+
+    Route::get('/schedules', [ScheduleController::class, 'index']);
+    Route::post('/schedules', [ScheduleController::class, 'store'])->middleware('api.manager');
+    Route::get('/schedules/{schedule}', [ScheduleController::class, 'show'])->whereNumber('schedule');
+    Route::put('/schedules/{schedule}', [ScheduleController::class, 'update'])->whereNumber('schedule');
+    Route::patch('/schedules/{schedule}', [ScheduleController::class, 'update'])->whereNumber('schedule');
+    Route::post('/schedules/{schedule}/assign-employees', [ScheduleController::class, 'assignEmployees'])->whereNumber('schedule');
+    Route::delete('/schedules/{schedule}', [ScheduleController::class, 'destroy'])->whereNumber('schedule');
+
+    // ── Module 5 — Notifications ──────────────────────────────────────────────
+    // PA2-ARCH-011 : GET /notifications est deja source unique dans
+    // routes/modules/dashboard.php (meme controller NotificationController::index).
+    // Voir issue #1414.
+    // Issue #2674 — verbes canoniques alignés sur dashboard.php :
+    // POST mark-all-read / PATCH {id}/read. Ces chemins alias restent pour
+    // rétro-compat (anciens clients mobile), mêmes verbes que le canonique.
+    // (Un PR antérieur a tenté PUT et a été rejeté — ne pas réintroduire PUT.)
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+    Route::patch('/notifications/{notification}/read', [NotificationController::class, 'markRead'])->whereNumber('notification');
+    Route::delete('/notifications/{notification}', [NotificationController::class, 'destroy'])->whereNumber('notification');
+    Route::get('/notifications/stream', [NotificationStreamController::class, 'stream']);
+    Route::post('/notifications/sse-token', [SseTokenController::class, 'issue']);
+
+    // ── Module 5 (complement) — Conversations employé/manager (PA2-COMM-002) ──
+    Route::get('/conversations', [ConversationController::class, 'index']);
+    Route::post('/conversations', [ConversationController::class, 'store']);
+    Route::get('/conversations/{thread}', [ConversationController::class, 'show'])->whereNumber('thread');
+    Route::post('/conversations/{thread}/messages', [ConversationController::class, 'storeMessage'])->whereNumber('thread');
+    Route::get('/conversations/{thread}/messages/{message}/attachment', [ConversationController::class, 'downloadAttachment'])
+        ->whereNumber('thread')->whereNumber('message')->name('conversations.messages.attachment');
+
+    // ── Module 5 (complement) — Company announcements (PA2-COMM-004) ──────────
+    // PA2-COMM-011 — Moderation: publish/cancel a draft or scheduled announcement.
+    Route::get('/announcements', [AnnouncementController::class, 'index']);
+    Route::post('/announcements', [AnnouncementController::class, 'store'])->middleware('api.manager');
+    Route::post('/announcements/{announcement}/publish', [AnnouncementController::class, 'publish'])->whereNumber('announcement');
+    Route::post('/announcements/{announcement}/cancel', [AnnouncementController::class, 'cancel'])->whereNumber('announcement');
+    Route::delete('/announcements/{announcement}', [AnnouncementController::class, 'destroy'])->whereNumber('announcement');
+
+    // ── Module 7 — Projects & Tasks ───────────────────────────────────────────
+    Route::get('/projects', [ProjectController::class, 'index']);
+    Route::post('/projects', [ProjectController::class, 'store']);
+    Route::get('/projects/{project}', [ProjectController::class, 'show'])->whereNumber('project');
+    Route::put('/projects/{project}', [ProjectController::class, 'update'])->whereNumber('project');
+    Route::patch('/projects/{project}', [ProjectController::class, 'update'])->whereNumber('project');
+    Route::delete('/projects/{project}', [ProjectController::class, 'destroy'])->whereNumber('project');
+
+    Route::get('/tasks', [TaskController::class, 'index']);
+    Route::post('/tasks', [TaskController::class, 'store']);
+    Route::get('/tasks/today', [TaskController::class, 'today']);
+    Route::get('/tasks/{task}', [TaskController::class, 'show'])->whereNumber('task');
+    Route::put('/tasks/{task}', [TaskController::class, 'update'])->whereNumber('task');
+    Route::patch('/tasks/{task}', [TaskController::class, 'update'])->whereNumber('task');
+    Route::delete('/tasks/{task}', [TaskController::class, 'destroy'])->whereNumber('task');
+    Route::get('/tasks/{task}/comments', [TaskController::class, 'listComments'])->whereNumber('task');
+    Route::post('/tasks/{task}/comments', [TaskController::class, 'addComment'])->whereNumber('task');
+
+    // ── Module 7 (complément) — Evaluations ──────────────────────────────────
+    Route::get('/evaluations', [EvaluationController::class, 'index']);
+    Route::post('/evaluations', [EvaluationController::class, 'store'])->middleware('api.manager');
+    Route::get('/evaluations/{evaluation}', [EvaluationController::class, 'show'])->whereNumber('evaluation');
+    Route::put('/evaluations/{evaluation}', [EvaluationController::class, 'update'])->whereNumber('evaluation');
+    Route::patch('/evaluations/{evaluation}', [EvaluationController::class, 'update'])->whereNumber('evaluation');
+    Route::put('/evaluations/{evaluation}/submit', [EvaluationController::class, 'submit'])->whereNumber('evaluation');
+    Route::put('/evaluations/{evaluation}/acknowledge', [EvaluationController::class, 'acknowledge'])->whereNumber('evaluation');
+    Route::delete('/evaluations/{evaluation}', [EvaluationController::class, 'destroy'])->whereNumber('evaluation');
+
+    // ── Module 7 (complément) — Plans de carrière (issue #5259) ─────────────
+    // Événements de carrière : promotion, augmentation, transfert, changement
+    // de poste. Workflow pending → approved → applied (ou rejected). `apply`
+    // met à jour l'employé (position/département/salaire de base) — impact
+    // paie sans intervention manuelle (spec ISSUE_5259_CAREER_PLANS.md).
+    Route::get('/career-events', [CareerEventController::class, 'index']);
+    Route::post('/career-events', [CareerEventController::class, 'store'])->middleware('api.manager');
+    Route::get('/career-events/{careerEvent}', [CareerEventController::class, 'show'])->whereNumber('careerEvent');
+    Route::put('/career-events/{careerEvent}', [CareerEventController::class, 'update'])->whereNumber('careerEvent');
+    Route::patch('/career-events/{careerEvent}', [CareerEventController::class, 'update'])->whereNumber('careerEvent');
+    Route::put('/career-events/{careerEvent}/approve', [CareerEventController::class, 'approve'])->whereNumber('careerEvent');
+    Route::put('/career-events/{careerEvent}/reject', [CareerEventController::class, 'reject'])->whereNumber('careerEvent');
+    Route::put('/career-events/{careerEvent}/apply', [CareerEventController::class, 'apply'])->whereNumber('careerEvent');
+    Route::delete('/career-events/{careerEvent}', [CareerEventController::class, 'destroy'])->whereNumber('careerEvent');
+});
+
+// ── Kiosk — auth par X-Kiosk-Token ────────────────────────────────────────────
+// #3367 : bucket dédié par device_code (kiosk-punch).
+Route::middleware(['throttle:kiosk-punch', 'kiosk.search_path'])->group(function (): void {
+    Route::get('/kiosks/{deviceCode}/roster', [KioskController::class, 'roster']);
+    Route::post('/kiosks/{deviceCode}/punch', [KioskController::class, 'punch']);
+    Route::post('/kiosks/{deviceCode}/sync', [KioskController::class, 'sync']);
+
+    // ── ATT-004 (#6769) : surface kiosque versionnée ─────────────────────────
+    // `kiosk.device` authentifie l'appareil (X-Kiosk-Token) et pose
+    // `kiosk_device` ; `kiosk.idempotency` exige l'Idempotency-Key sur les
+    // écritures d'enrôlement (rejeu 24 h à l'identique).
+    Route::middleware(['kiosk.device'])->group(function (): void {
+        // BIO-007 (#6772) : état de synchronisation visible (compteur
+        // acquitté, heure serveur, politique offline).
+        Route::get('/kiosks/{deviceCode}/sync-status', [KioskController::class, 'syncStatus']);
+
+        Route::middleware(['kiosk.idempotency'])->group(function (): void {
+            Route::post('/kiosks/{deviceCode}/enrollments', [KioskEnrollmentController::class, 'start']);
+            Route::post('/kiosks/{deviceCode}/enrollments/{enrollment}/activate', [KioskEnrollmentController::class, 'activate'])->whereNumber('enrollment');
+            Route::post('/kiosks/{deviceCode}/enrollments/{enrollment}/revoke', [KioskEnrollmentController::class, 'revoke'])->whereNumber('enrollment');
+        });
+
+        Route::get('/kiosks/{deviceCode}/enrollments/status', [KioskEnrollmentController::class, 'status']);
+    });
+});

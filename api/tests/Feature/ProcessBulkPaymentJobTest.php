@@ -1,0 +1,435 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use App\Core\Auth\Domain\Models\AuditLog;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Jobs\GeneratePaymentDocumentJob;
+use App\Jobs\GeneratePaySlipPdfJob;
+use App\Jobs\ProcessBulkPaymentJob;
+use App\Modules\Notification\Domain\Models\Notification;
+use App\Modules\Payroll\Domain\Models\PayrollRun;
+use App\Modules\Payroll\Domain\Models\PaySlip;
+use Illuminate\Redis\Connections\PhpRedisConnection;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Redis;
+use Mockery;
+use Mockery\Expectation;
+use RuntimeException;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+/**
+ * PA2-PAY-013 — "Batch resultats partiels notification audit": a bulk
+ * payment run must process every pay slip independently (one employee's
+ * failure must never abort the others), persist an audit trail of the
+ * batch results, and notify the manager who triggered it with the
+ * succeeded/failed counts — even when the batch only partially succeeds.
+ */
+class ProcessBulkPaymentJobTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // QA #2997 — les claims Redis `bulk_pay:*` (TTL 6 h) et les IDs de
+        // payroll_run/slips réutilisés entre tests : purge avant chaque test
+        // (flushdb fiable : suite séquentielle, préfixe predis ignoré).
+        try {
+            Redis::connection('default')->flushdb();
+        } catch (\Throwable) {
+            // Redis indisponible : garde non bloquante.
+        }
+    }
+
+    public function test_bulk_payment_processes_all_slips_marks_run_paid_and_notifies_trigger_on_full_success(): void
+    {
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        $employeeA = Employee::factory()->create(['company_id' => $company->id]);
+        $employeeB = Employee::factory()->create(['company_id' => $company->id]);
+        $this->paySlip($run, $employeeA);
+        $this->paySlip($run, $employeeB);
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id))->handle();
+
+        $run->refresh();
+        $this->assertSame('paid', $run->status);
+        $this->assertNotNull($run->paid_at);
+
+        Queue::assertPushed(GeneratePaySlipPdfJob::class, 2);
+        Queue::assertPushed(GeneratePaymentDocumentJob::class, 2);
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit, 'Expected an audit_logs entry for the bulk payment batch.');
+        $this->assertSame(2, $audit->new_values['succeeded']);
+        $this->assertSame(0, $audit->new_values['failed']);
+        $this->assertSame('completed', $audit->new_values['status']);
+
+        $notification = Notification::query()
+            ->where('employee_id', $manager->id)
+            ->where('type', 'payroll')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($notification, 'Expected the triggering manager to be notified of batch completion.');
+    }
+
+    public function test_bulk_payment_continues_processing_after_one_slip_fails_and_reports_partial_results(): void
+    {
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        $goodEmployee = Employee::factory()->create(['company_id' => $company->id]);
+        $badEmployee = Employee::factory()->create(['company_id' => $company->id]);
+
+        $goodSlip = $this->paySlip($run, $goodEmployee);
+        $badSlip = $this->paySlip($run, $badEmployee);
+
+        // Force a real failure for exactly one slip via a thin test double
+        // that throws only for $badSlip's id, so we exercise the actual
+        // per-slip try/catch + reporting contract without touching
+        // database constraints or mocking framework internals.
+        $job = new class($run->id, $manager->id, $badSlip->id) extends ProcessBulkPaymentJob
+        {
+            public function __construct(int $payrollRunId, int $triggeredById, private readonly int $failingSlipId)
+            {
+                parent::__construct($payrollRunId, $triggeredById);
+            }
+
+            protected function processSlip(PayrollRun $run, PaySlip $slip): void
+            {
+                if ($slip->id === $this->failingSlipId) {
+                    throw new RuntimeException('Simulated failure for slip #'.$slip->id);
+                }
+
+                parent::processSlip($run, $slip);
+            }
+        };
+
+        $job->handle();
+
+        $run->refresh();
+        // Even with a partial failure, slips that succeeded were genuinely
+        // paid and the run must not be left dangling in a non-terminal state.
+        $this->assertSame('paid', $run->status);
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $this->assertSame(2, $audit->new_values['total_slips']);
+        $this->assertSame(1, $audit->new_values['succeeded']);
+        $this->assertSame(1, $audit->new_values['failed']);
+        $this->assertSame('completed_with_errors', $audit->new_values['status']);
+        $this->assertCount(1, $audit->metadata['failures']);
+        $this->assertSame($badSlip->id, $audit->metadata['failures'][0]['pay_slip_id']);
+
+        // The good slip must always have been processed regardless of the
+        // other slip's outcome — this is the "no full-batch abort" contract.
+        Queue::assertPushed(
+            GeneratePaymentDocumentJob::class,
+            fn (GeneratePaymentDocumentJob $job): bool => $job->paymentDocumentId !== null
+        );
+
+        $notification = Notification::query()
+            ->where('employee_id', $manager->id)
+            ->where('type', 'payroll')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($notification, 'Manager must still be notified even when the batch has partial failures.');
+    }
+
+    /**
+     * PA2-PAY-005 — a manager can select a specific subset of pay slips to
+     * pay in a batch, instead of always paying every eligible slip in the
+     * run. Only the selected slips are processed and paid; the run itself
+     * must stay non-'paid' while other eligible slips are still pending,
+     * so a later batch (or the default "pay everyone" call) can still
+     * pick them up.
+     */
+    public function test_bulk_payment_with_pay_slip_ids_only_processes_the_selected_subset(): void
+    {
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        $selectedEmployee = Employee::factory()->create(['company_id' => $company->id]);
+        $otherEmployee = Employee::factory()->create(['company_id' => $company->id]);
+
+        $selectedSlip = $this->paySlip($run, $selectedEmployee);
+        $otherSlip = $this->paySlip($run, $otherEmployee);
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id, [$selectedSlip->id]))->handle();
+
+        // The run must NOT be marked paid: $otherSlip is still eligible and
+        // was intentionally excluded from this batch.
+        $run->refresh();
+        $this->assertNotSame('paid', $run->status);
+
+        Queue::assertPushed(
+            GeneratePaymentDocumentJob::class,
+            fn (GeneratePaymentDocumentJob $job): bool => true
+        );
+        Queue::assertPushed(GeneratePaySlipPdfJob::class, 1);
+        Queue::assertPushed(GeneratePaymentDocumentJob::class, 1);
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $this->assertSame(1, $audit->new_values['total_slips']);
+        $this->assertSame(1, $audit->new_values['succeeded']);
+    }
+
+    /**
+     * When the selected subset covers every eligible slip in the run, the
+     * run must still end up 'paid' — selecting "all of them one by one"
+     * behaves the same as the default "pay everyone" call.
+     */
+    public function test_bulk_payment_marks_run_paid_when_selected_subset_covers_all_eligible_slips(): void
+    {
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        $employeeA = Employee::factory()->create(['company_id' => $company->id]);
+        $employeeB = Employee::factory()->create(['company_id' => $company->id]);
+        $slipA = $this->paySlip($run, $employeeA);
+        $slipB = $this->paySlip($run, $employeeB);
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id, [$slipA->id, $slipB->id]))->handle();
+
+        $run->refresh();
+        $this->assertSame('paid', $run->status);
+    }
+
+    public function test_job_aborts_fail_closed_when_redis_claims_are_unavailable(): void
+    {
+        // #3857 : FAIL-CLOSED. Sans claim NX, un job concurrent (retry queue,
+        // second dispatch) re-traiterait des slips déjà payés → double
+        // déclaration de paiement. Quand Redis est indisponible pendant le
+        // traitement, le lot entier est avorté : aucune avance marquée payée,
+        // le run reste 'validated', le claim du run est libéré et le job
+        // échoue (RuntimeException) pour retry propre.
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        $employeeA = Employee::factory()->create(['company_id' => $company->id]);
+        $employeeB = Employee::factory()->create(['company_id' => $company->id]);
+        $this->paySlip($run, $employeeA);
+        $this->paySlip($run, $employeeB);
+
+        $client = Mockery::mock(PhpRedisConnection::class);
+        /** @var Expectation $setExpectation */
+        $setExpectation = $client->shouldReceive('set');
+        $setExpectation->andThrow(new RuntimeException('Redis connection refused'));
+        /** @var Expectation $delExpectation */
+        $delExpectation = $client->shouldReceive('del');
+        $delExpectation->andReturn(1);
+        Redis::shouldReceive('connection')->with('default')->andReturn($client);
+
+        try {
+            (new ProcessBulkPaymentJob($run->id, $manager->id))->handle();
+            $this->fail('Le job doit échouer (fail-closed) quand Redis est indisponible.');
+        } catch (RuntimeException) {
+            // attendu — le lot est avorté
+        }
+
+        $run->refresh();
+        $this->assertSame('validated', $run->status, 'Le run ne doit pas être marqué paid après un abort fail-closed.');
+        $this->assertSame(0, AuditLog::query()
+            ->where('action', 'bulk_payment_processed')
+            ->where('company_id', $company->id)
+            ->count(), 'Aucun audit de batch terminé ne doit être écrit.');
+    }
+
+    public function test_orphaned_claim_older_than_job_timeout_is_replayed_not_counted_as_paid(): void
+    {
+        // #6548 — un worker mort entre le claim NX et le traitement laisse un
+        // claim orphelin SANS artefact de paiement. Un claim plus vieux que le
+        // timeout du job (300 s) est volé par la tentative en cours : le slip
+        // est rejoué (jamais compté payé à tort).
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create(['company_id' => $company->id]);
+        $slip = $this->paySlip($run, $employee);
+
+        // Claim posé par la tentative morte il y a ~6 h (TTL restant court).
+        $claimKey = "bulk_pay:slip:{$run->id}:{$slip->id}";
+        Redis::connection('default')->setex($claimKey, 30, '1');
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id))->handle();
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $this->assertSame(1, $audit->new_values['succeeded']);
+        $this->assertSame(0, $audit->new_values['failed']);
+        $this->assertSame('completed', $audit->new_values['status']);
+        Queue::assertPushed(GeneratePaymentDocumentJob::class, 1);
+        Queue::assertPushed(GeneratePaySlipPdfJob::class, 1);
+        $this->assertSame('paid', $run->refresh()->status);
+    }
+
+    public function test_fresh_claim_without_payment_artifact_is_signaled_not_silently_counted_as_paid(): void
+    {
+        // #6548 — un claim RÉCENT sans artefact (double dispatch concurrent ou
+        // crash < timeout) ne doit JAMAIS être compté réussi en silence : le
+        // slip apparaît dans les failures (batch `completed_with_errors`),
+        // l'audit et la notification au manager le signalent.
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create(['company_id' => $company->id]);
+        $slip = $this->paySlip($run, $employee);
+
+        // Claim « frais » (TTL complet restant) posé par un autre worker.
+        $claimKey = "bulk_pay:slip:{$run->id}:{$slip->id}";
+        Redis::connection('default')->setex($claimKey, ProcessBulkPaymentJob::CLAIM_TTL_SECONDS, '1');
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id))->handle();
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $this->assertSame(0, $audit->new_values['succeeded']);
+        $this->assertSame(1, $audit->new_values['failed']);
+        $this->assertSame('completed_with_errors', $audit->new_values['status']);
+        $this->assertCount(1, $audit->metadata['failures']);
+        $this->assertSame($slip->id, $audit->metadata['failures'][0]['pay_slip_id']);
+        // Le slip n'est pas payé : le job de document de paiement n'a PAS été
+        // dispatché pour ce slip.
+        Queue::assertNotPushed(GeneratePaymentDocumentJob::class);
+        Queue::assertNotPushed(GeneratePaySlipPdfJob::class);
+    }
+
+    /**
+     * @return array{0: Company, 1: Employee}
+     */
+    /**
+     * #6548 — un worker mort entre le claim Redis et le traitement laisse un
+     * claim orphelin : au retry, le slip ne doit NI être compté payé à tort
+     * (skip silencieux + run `paid`) NI disparaître — il doit remonter comme
+     * échec visible et empêcher le run de passer `paid`.
+     */
+    public function test_bulk_payment_reports_orphaned_slip_claim_as_failure_and_never_marks_run_paid(): void
+    {
+        Queue::fake();
+
+        [$company, $manager] = $this->companyAndManager();
+        $run = $this->payrollRun($company);
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create(['company_id' => $company->id]);
+        $slip = $this->paySlip($run, $employee);
+
+        // Simule le worker mort : le claim du slip existe déjà (jamais libéré),
+        // le slip est toujours éligible et n'a aucun document de paiement.
+        $claimed = (bool) Redis::connection('default')->set("bulk_pay:slip:{$run->id}:{$slip->id}", '1', 'EX', 21600, 'NX'); // @phpstan-ignore argument.type, arguments.count
+        $this->assertTrue((bool) $claimed, 'Pre-claim Redis doit réussir pour simuler le worker mort.');
+
+        (new ProcessBulkPaymentJob($run->id, $manager->id))->handle();
+
+        $run->refresh();
+        $this->assertNotSame('paid', $run->status, 'Un slip jamais payé ne doit pas faire passer le run `paid`.');
+
+        // Aucun document de paiement / bulletin PDF ne doit être généré pour
+        // le slip orphelin (seule la notification du manager peut partir).
+        Queue::assertNotPushed(GeneratePaySlipPdfJob::class);
+        Queue::assertNotPushed(GeneratePaymentDocumentJob::class);
+
+        $audit = AuditLog::query()
+            ->where('auditable_type', PayrollRun::class)
+            ->where('auditable_id', $run->id)
+            ->where('action', 'bulk_payment_processed')
+            ->first();
+
+        $this->assertNotNull($audit);
+        $this->assertSame(1, $audit->new_values['total_slips']);
+        $this->assertSame(0, $audit->new_values['succeeded']);
+        $this->assertSame(1, $audit->new_values['failed']);
+        $this->assertSame('completed_with_errors', $audit->new_values['status']);
+        $this->assertSame('slip_claim_unavailable_but_unprocessed', $audit->metadata['failures'][0]['error']);
+        $this->assertSame($slip->id, $audit->metadata['failures'][0]['pay_slip_id']);
+    }
+
+    /**
+     * @return array{0: Company, 1: Employee}
+     */
+    private function companyAndManager(): array
+    {
+        $company = Company::factory()->create();
+        $manager = Employee::factory()->manager()->create(['company_id' => $company->id]);
+
+        return [$company, $manager];
+    }
+
+    private function payrollRun(Company $company): PayrollRun
+    {
+        return PayrollRun::query()->create([
+            'company_id' => $company->id,
+            'country_code' => 'DZ',
+            'period_start' => '2026-06-01',
+            'period_end' => '2026-06-30',
+            'status' => 'validated',
+            'employee_count' => 2,
+            'total_gross' => 240000,
+            'total_deductions' => 44000,
+            'total_net' => 196000,
+        ]);
+    }
+
+    private function paySlip(PayrollRun $run, Employee $employee): PaySlip
+    {
+        return PaySlip::query()->create([
+            'payroll_run_id' => $run->id,
+            'company_id' => $run->company_id,
+            'employee_id' => $employee->id,
+            'period_start' => $run->period_start,
+            'period_end' => $run->period_end,
+            'gross_salary' => 120000,
+            'total_deductions' => 22000,
+            'net_salary' => 98000,
+            'employer_contributions' => 31200,
+            'total_cost' => 151200,
+            'working_days' => 22,
+            'actual_days_worked' => 22,
+            'overtime_hours' => 0,
+            'status' => 'validated',
+        ]);
+    }
+}

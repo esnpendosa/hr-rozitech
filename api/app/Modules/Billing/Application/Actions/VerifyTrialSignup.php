@@ -1,0 +1,629 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Billing\Application\Actions;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Solutions\SolutionActivator;
+use App\Core\Solutions\SolutionCatalogue;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Tenant\Domain\Models\CompanyRequest;
+use App\Core\Tenant\TenantManager;
+use App\Events\CompanyCreated;
+use App\Jobs\SendTrialDripEmailJob;
+use App\Mail\TrialWelcomeMail;
+use App\Modules\Billing\Application\Services\HorizontalToolSelection;
+use App\Modules\Billing\Infrastructure\Services\PartnerService;
+use App\Support\CountryDefaults;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+
+/**
+ * Vérifie le code OTP d'une demande d'essai self-service et provisionne
+ * immédiatement le tenant (company + manager) si le code est valide.
+ */
+class VerifyTrialSignup
+{
+    public function __construct(
+        private readonly TenantManager $tenantManager,
+        private readonly PartnerService $partnerService,
+        private readonly RequestTrialSignup $requestTrialSignup,
+        private readonly SolutionActivator $solutionActivator,
+        private readonly SolutionCatalogue $solutionCatalogue,
+        private readonly HorizontalToolSelection $toolSelection,
+    ) {}
+
+    /**
+     * @return array{success: true, company: Company, manager: Employee, manager_email: string, first_name: string, last_name: string, temp_password: string}|array{success: false, error: string, message: string, status: int}
+     */
+    public function execute(string $email, string $code): array
+    {
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('SET search_path TO public');
+        }
+
+        // #6547 (audit) : verrouillage anti-brute-force — après 5 mauvais
+        // codes, l'email est bloqué 15 minutes (le throttle IP ne protège
+        // pas contre la rotation d'IP).
+        $pendingRequest = CompanyRequest::query()
+            ->where('email', $email)
+            ->where('status', 'pending')
+            ->first();
+
+        if ($pendingRequest !== null && $pendingRequest->otp_locked_until !== null && $pendingRequest->otp_locked_until->isFuture()) {
+            return [
+                'success' => false,
+                'error' => 'OTP_TOO_MANY_ATTEMPTS',
+                'message' => __('errors.OTP_TOO_MANY_ATTEMPTS'),
+                'status' => 429,
+            ];
+        }
+
+        // QA #2996 — verrou atomique anti double-provisioning : deux POST
+        // /trial/verify simultanés avec le même OTP valide créaient 2 tenants
+        // + 2 managers pour le même email (lecture pending → provisioning →
+        // approved sans verrou). La CompanyRequest est maintenant CLAIMÉE en
+        // `processing` sous transaction (lockForUpdate) : le 2e appel voit un
+        // statut non-pending et refuse, sans jamais provisionner deux fois.
+        $claimed = DB::transaction(function () use ($email, $code): ?CompanyRequest {
+            $request = CompanyRequest::query()
+                ->where('email', $email)
+                ->where('status', 'pending')
+                ->where('verification_token', $code)
+                ->where('verification_expires_at', '>=', now())
+                ->lockForUpdate()
+                ->first();
+
+            if ($request === null) {
+                return null;
+            }
+
+            $request->update(['status' => 'processing']);
+
+            return $request;
+        });
+
+        if ($claimed === null) {
+            // Distinguer « code invalide/expiré » de « déjà traité » : un
+            // code valide déjà consommé ne doit pas dire INVALID au client.
+            $existing = CompanyRequest::query()
+                ->where('email', $email)
+                ->where('verification_token', $code)
+                ->first();
+
+            if ($existing !== null && $existing->status !== 'pending') {
+                return [
+                    'success' => false,
+                    'error' => 'ALREADY_PROCESSED',
+                    'message' => __('errors.ALREADY_PROCESSED'),
+                    'status' => 409,
+                ];
+            }
+
+            // #6547 (audit) : compteur d'échecs par EMAIL (pas par IP) — la
+            // demande en attente est incrémentée, verrouillée après 5 échecs.
+            $pending = CompanyRequest::query()
+                ->where('email', $email)
+                ->where('status', 'pending')
+                ->first();
+
+            if ($pending !== null) {
+                $pending->increment('otp_attempts');
+
+                if ((int) $pending->otp_attempts >= 5) {
+                    $pending->update(['otp_locked_until' => now()->addMinutes(15)]);
+                    Log::warning('trial.verify_otp_locked', ['email' => $email]);
+
+                    return [
+                        'success' => false,
+                        'error' => 'OTP_TOO_MANY_ATTEMPTS',
+                        'message' => __('errors.OTP_TOO_MANY_ATTEMPTS'),
+                        'status' => 429,
+                    ];
+                }
+            }
+
+            return [
+                'success' => false,
+                'error' => 'INVALID_OR_EXPIRED_CODE',
+                'message' => __('errors.INVALID_OR_EXPIRED_CODE'),
+                'status' => 400,
+            ];
+        }
+
+        $companyRequest = $claimed;
+        /** @var array<string, mixed> $payload */
+        $payload = $companyRequest->signup_payload ?? [];
+        $companyName = (string) ($companyRequest->company_name ?? '');
+
+        // Anti-énumération (#3945) : la détection « email déjà enregistré »
+        // vit ici — l'OTP valide prouve la possession de la boîte mail, donc
+        // la réponse ne peut plus servir à énumérer des comptes sur
+        // l'endpoint public /trial/signup.
+        $existingManager = $this->requestTrialSignup->findExistingManager($email);
+        if ($existingManager !== null) {
+            // Terminer proprement la demande (état terminal, pas de reprocessing).
+            $companyRequest->update(['status' => 'rejected']);
+            Log::info('trial.verify_duplicate_manager', ['email' => $email]);
+
+            return [
+                'success' => false,
+                'error' => 'EMAIL_ALREADY_REGISTERED',
+                'message' => __('errors.EMAIL_ALREADY_REGISTERED'),
+                'status' => 409,
+            ];
+        }
+
+        // MULTI-PAYS (#1867/#1950) : le pays vient du signup validé (règle
+        // SupportedCountry) — résolution STRICTE, aucun fallback silencieux
+        // vers DZ (invariant 10). Un payload hérité sans pays valide → 422.
+        $rawCountry = $payload['country'] ?? '';
+        $country = strtoupper(trim(\is_string($rawCountry) ? $rawCountry : ''));
+        $countryDefaults = CountryDefaults::find($country);
+        if ($countryDefaults === null) {
+            return [
+                'success' => false,
+                'error' => 'INVALID_COUNTRY',
+                'message' => __('errors.INVALID_COUNTRY'),
+                'status' => 422,
+            ];
+        }
+
+        // #7238 — le compte est créé pour l'offre CHOISIE à l'inscription
+        // (le choix est obligatoire côté UI) ; repli sur l'offre par défaut
+        // uniquement si aucun plan exploitable n'est transmis.
+        $trialPlan = $this->resolveTrialPlan(
+            is_string($payload['plan'] ?? null) ? $payload['plan'] : null
+        );
+        if (! $trialPlan) {
+            Log::error('SelfServiceTrial: No active plan found for trial provisioning.');
+
+            return [
+                'success' => false,
+                'error' => 'NO_PLAN_AVAILABLE',
+                'message' => __('errors.NO_PLAN_AVAILABLE'),
+                'status' => 503,
+            ];
+        }
+
+        [$firstName, $lastName] = $this->requestTrialSignup->managerNameParts($payload, $email);
+        $tempPassword = $this->generateReadablePassword();
+
+        $rawRole = $payload['role'] ?? null;
+
+        // Langue du tenant = langue d'interface choisie à l'inscription, sinon
+        // langue par défaut du pays (comportement historique). Sans cela, la
+        // société d'un utilisateur turcophone était créée en arabe/français.
+        $requestedLocale = strtolower(trim((string) ($payload['locale'] ?? '')));
+        $companyLanguage = in_array($requestedLocale, ['fr', 'en', 'ar', 'tr'], true)
+            ? $requestedLocale
+            : strtolower((string) $countryDefaults['language']);
+
+        // #7235 — outils horizontaux choisis à l'inscription + profil
+        // d'activité. `solo` force les outils d'ÉQUIPE à false (règle
+        // serveur). Sélection vide = comportement historique préservé.
+        $modules = [];
+        foreach ((array) ($payload['modules'] ?? []) as $moduleCode) {
+            if (\is_string($moduleCode)) {
+                $modules[] = $moduleCode;
+            }
+        }
+        $modules = array_values(array_unique($modules));
+
+        $companyType = \is_string($payload['company_type'] ?? null)
+            ? (string) $payload['company_type']
+            : Company::TYPE_COMPANY;
+
+        try {
+            /** @var object{id: mixed} $trialPlan */
+            $result = $this->provisionTrialCompany([
+                'name' => $companyName,
+                'slug' => Str::slug($companyName),
+                'sector' => $this->mapRoleToSector(\is_string($rawRole) ? $rawRole : null),
+                'country' => $country,
+                'city' => 'Non précisé',
+                'email' => $email,
+                'phone' => $payload['phone'] ?? null,
+                'plan_id' => $trialPlan->id,
+                'language' => $companyLanguage,
+                'currency' => strtoupper($countryDefaults['currency']),
+                'timezone' => $countryDefaults['timezone'],
+                'manager_first_name' => $firstName,
+                'manager_last_name' => $lastName,
+                'manager_email' => $email,
+                'manager_phone' => $payload['phone'] ?? null,
+                'temp_password' => $tempPassword,
+                'employees_range' => $payload['employees'] ?? null,
+                'referral_code' => $payload['referral_code'] ?? null,
+                // #7235 — le chemin self-service applique désormais la même
+                // règle que le chemin guidé : les outils horizontaux cochés à
+                // l'inscription et le profil d'activité (`solo`) étaient
+                // acceptés, validés, stockés dans `signup_payload`… puis
+                // jamais appliqués au tenant (constat 2026-09-14).
+                'modules' => $modules,
+                'company_type' => $companyType,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('SelfServiceTrial: Provisioning failed', [
+                'email' => $email,
+                'company' => $companyName,
+                'error' => $e->getMessage(),
+            ]);
+
+            // QA #2996 — libérer la demande pour permettre un retry (le claim
+            // `processing` ne doit pas bloquer définitivement le parcours).
+            try {
+                $companyRequest->update(['status' => 'pending']);
+            } catch (\Throwable $revertError) {
+                Log::error('SelfServiceTrial: Failed to revert claim after provisioning failure', [
+                    'email' => $email,
+                    'error' => $revertError->getMessage(),
+                ]);
+            }
+
+            return [
+                'success' => false,
+                'error' => 'PROVISIONING_FAILED',
+                'message' => __('errors.PROVISIONING_FAILED'),
+                'status' => 500,
+            ];
+        }
+
+        event(new CompanyCreated($result['company']));
+
+        // BC-25 (#6693) : activation des solutions sectorielles demandées au
+        // signup (fail-closed — un code inconnu ou une dépendance manquante
+        // annule la demande, status reverté pour retry propre).
+        $solutions = [];
+        foreach ((array) ($payload['solutions'] ?? []) as $solutionCode) {
+            if (\is_string($solutionCode)) {
+                $solutions[] = strtolower(trim($solutionCode));
+            }
+        }
+        $solutions = array_values(array_unique($solutions));
+
+        // L'activation écrit dans audit_logs (table tenant) → contexte tenant.
+        $this->tenantManager->setTenant($result['company']);
+        try {
+            foreach ($solutions as $solutionCode) {
+                if (! $this->solutionCatalogue->has($solutionCode)) {
+                    Log::warning('SelfServiceTrial: unknown solution requested at verify', [
+                        'email' => $email,
+                        'solution' => $solutionCode,
+                    ]);
+                    $companyRequest->update(['status' => 'pending']);
+
+                    return [
+                        'success' => false,
+                        'error' => 'INVALID_SOLUTION',
+                        'message' => __('errors.INVALID_SOLUTION', ['solution' => $solutionCode]),
+                        'status' => 422,
+                    ];
+                }
+                $this->solutionActivator->activateWithDependencies($result['company'], $solutionCode);
+            }
+        } finally {
+            $this->tenantManager->resetToPrevious();
+        }
+
+        $companyRequest->update([
+            'status' => 'approved',
+            'approved_company_id' => $result['company']->id,
+            'verification_token' => null,
+            'otp_attempts' => 0,
+            'otp_locked_until' => null,
+        ]);
+
+        // Issue #2437 (parité guidé) : la ligne de suivi créée au signup passe
+        // à `ready`, ce qui rend opérationnels `GET /trial/status` et
+        // `POST /trial/set-password` pour un prospect self-service (le client
+        // web les utilise déjà). Best-effort : l'absence de ligne ne doit
+        // jamais faire échouer un provisioning réussi.
+        try {
+            DB::table('trial_provisionings')
+                ->where('email', $email)
+                ->where('status', 'pending')
+                ->update([
+                    'status' => 'ready',
+                    'company_id' => $result['company']->id,
+                    'company_name' => $companyName,
+                    'login_url' => '/auth/login',
+                    'provisioned_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('trial.self_service.provisioning_row_ready_failed', [
+                'email' => $email,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        Log::info('SelfServiceTrial: Company provisioned after verification', [
+            'company_id' => $result['company']->id,
+            'company_name' => $companyName,
+            'manager_email' => $email,
+            'source' => $payload['source'] ?? 'self_service_trial',
+        ]);
+
+        try {
+            Mail::to($email)->send(
+                new TrialWelcomeMail($result['company'], $result['manager'], $tempPassword)
+            );
+        } catch (\Throwable $e) {
+            Log::error('SelfServiceTrial: Failed to send welcome email', [
+                'email' => $email,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        SendTrialDripEmailJob::dispatch($result['company'], 1)->delay(now()->addDay());
+        SendTrialDripEmailJob::dispatch($result['company'], 3)->delay(now()->addDays(3));
+        SendTrialDripEmailJob::dispatch($result['company'], 7)->delay(now()->addDays(7));
+
+        return [
+            'success' => true,
+            'company' => $result['company'],
+            'manager' => $result['manager'],
+            'manager_email' => $email,
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+            // Mot de passe temporaire : sert UNIQUEMENT au contrôleur d'appel
+            // à ouvrir une session immédiatement (auto-connexion après
+            // vérification du code, retour fondateur 2026-09-13) via le chemin
+            // de connexion éprouvé `AuthService::login()`. Il ne doit JAMAIS
+            // être renvoyé au client.
+            'temp_password' => $tempPassword,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{company: Company, manager: Employee}
+     */
+    private function provisionTrialCompany(array $payload): array
+    {
+        // #3895 : resolveUniqueSlug() (while-exists) n'est pas sérialisé entre
+        // deux signups simultanés au même nom — la violation d'unicité
+        // companies.slug (23505) est rattrapée par un retry borné avec un
+        // nouveau candidat au lieu d'un 500 (rare mais réel sous charge).
+        $attempts = 0;
+
+        do {
+            $savepoint = 'trial_signup_slug_retry';
+            $hasOuterTransaction = DB::getDriverName() === 'pgsql' && DB::transactionLevel() > 0;
+
+            if ($hasOuterTransaction) {
+                DB::statement("SAVEPOINT {$savepoint}");
+            }
+
+            try {
+                return DB::transaction(function () use ($payload): array {
+                    $rawSlug = $payload['slug'];
+                    $slug = $this->resolveUniqueSlug(\is_string($rawSlug) ? $rawSlug : 'company');
+
+                    // #7235 — sélection normalisée des outils horizontaux.
+                    $requestedModules = [];
+                    foreach ((array) ($payload['modules'] ?? []) as $requestedModule) {
+                        if (\is_string($requestedModule)) {
+                            $requestedModules[] = $requestedModule;
+                        }
+                    }
+
+                    $moduleSelection = $this->toolSelection->resolve(
+                        array_values(array_unique($requestedModules)),
+                        (string) ($payload['company_type'] ?? Company::TYPE_COMPANY),
+                    );
+
+                    $company = Company::query()->create([
+                        'name' => $payload['name'],
+                        'slug' => $slug,
+                        'sector' => $payload['sector'],
+                        'country' => $payload['country'],
+                        'city' => $payload['city'],
+                        'email' => $payload['email'],
+                        'phone' => $payload['phone'],
+                        'plan_id' => $payload['plan_id'],
+                        'schema_name' => 'shared_tenants',
+                        'tenancy_type' => 'shared',
+                        'status' => 'trial',
+                        'subscription_start' => now()->toDateString(),
+                        'subscription_end' => now()->addDays($this->trialDays())->toDateString(),
+                        'language' => $payload['language'],
+                        'timezone' => $payload['timezone'],
+                        'currency' => $payload['currency'],
+                        // #7235 — `modules` reste ABSENT quand aucune
+                        // sélection n'a été déclarée (aucun verrouillage
+                        // rétroactif du comportement historique).
+                        'metadata' => array_filter(
+                            [
+                                'provisioned_by' => 'self_service_trial',
+                                'employees_range' => $payload['employees_range'],
+                                'company_type' => $payload['company_type'] ?? null,
+                                'modules' => $moduleSelection,
+                            ],
+                            static fn (mixed $value): bool => $value !== null,
+                        ),
+                        // Les clés qui sont aussi des feature flags plateforme
+                        // sont miroirées dans `features` (résolues par
+                        // `FeatureFlag::for()`, donc visibles dans /auth/me).
+                        'features' => $this->toolSelection->mirroredFeatures($moduleSelection),
+                    ]);
+
+                    $referralCode = $payload['referral_code'] ?? null;
+                    if (\is_string($referralCode) && $referralCode !== '') {
+                        $this->partnerService->attributeCompanyToPartner($company, $referralCode);
+                    }
+
+                    if (DB::getDriverName() === 'pgsql') {
+                        DB::statement('CREATE SCHEMA IF NOT EXISTS shared_tenants');
+                    }
+                    $this->tenantManager->setTenant($company);
+
+                    try {
+                        /** @var Employee $manager */
+                        $manager = new Employee([
+                            'first_name' => $payload['manager_first_name'],
+                            'last_name' => $payload['manager_last_name'],
+                            'email' => $payload['manager_email'],
+                            'phone' => $payload['manager_phone'],
+                            'contract_type' => 'CDI',
+                            'contract_start' => now()->toDateString(),
+                            'salary_type' => 'fixed',
+                            'biometric_face_enabled' => false,
+                            'biometric_fingerprint_enabled' => false,
+                            'extra_data' => [
+                                'job_title' => 'Manager principal',
+                                'self_service_trial' => true,
+                            ],
+                        ]);
+                        $tempPassword = $payload['temp_password'];
+                        $manager->forceFill([
+                            'company_id' => $company->id,
+                            // Issue #4496 : password_hash non mass-assignable.
+                            'password_hash' => Hash::make(\is_string($tempPassword) ? $tempPassword : Str::random(16)),
+                            'role' => 'manager',
+                            'manager_role' => 'principal',
+                            'status' => 'active',
+                            'salary_base' => 0,
+                        ])->save();
+                    } finally {
+                        $this->tenantManager->resetToPrevious();
+                    }
+
+                    return [
+                        'company' => $company,
+                        'manager' => $manager,
+                    ];
+                });
+            } catch (QueryException $e) {
+                if ($hasOuterTransaction) {
+                    DB::statement("ROLLBACK TO SAVEPOINT {$savepoint}");
+                }
+
+                if ($e->getCode() !== '23505' || ++$attempts >= 5) {
+                    throw $e;
+                }
+                Log::warning('trial.signup.slug_collision_retry', ['attempt' => $attempts, 'base_slug' => $payload['slug']]);
+            }
+        } while (true);
+    }
+
+    private function resolveTrialPlan(?string $planCode = null): ?object
+    {
+        $requested = $planCode !== null ? strtolower(trim($planCode)) : '';
+
+        if ($requested !== '') {
+            $requestedPlan = DB::table($this->publicTable('plans'))
+                ->where('is_active', true)
+                ->whereRaw('LOWER(name) = ?', [$requested])
+                ->first();
+
+            if ($requestedPlan) {
+                return $requestedPlan;
+            }
+
+            Log::warning('SelfServiceTrial: unknown plan requested at signup - falling back to the default plan', [
+                'plan' => $planCode,
+            ]);
+        }
+
+        $plan = DB::table($this->publicTable('plans'))
+            ->where('is_active', true)
+            ->orderBy('id')
+            ->first()
+            ?? DB::table($this->publicTable('plans'))
+                ->orderBy('id')
+                ->first();
+
+        if ($plan) {
+            return $plan;
+        }
+
+        return $this->createFallbackTrialPlan();
+    }
+
+    private function createFallbackTrialPlan(): ?object
+    {
+        try {
+            $id = DB::table($this->publicTable('plans'))->insertGetId([
+                'name' => 'Trial',
+                'price_monthly' => 0,
+                'price_yearly' => 0,
+                'max_employees' => 50,
+                'features' => json_encode([
+                    'rh' => true,
+                    'tasks' => true,
+                    'attendance' => true,
+                    'mobile_apps' => true,
+                ], JSON_THROW_ON_ERROR),
+                'trial_days' => $this->trialDays(),
+                'is_active' => true,
+            ]);
+
+            return DB::table($this->publicTable('plans'))->where('id', $id)->first();
+        } catch (\Throwable $e) {
+            Log::warning('SelfServiceTrial: unable to create fallback trial plan', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function publicTable(string $table): string
+    {
+        return DB::getDriverName() === 'pgsql' ? 'public.'.$table : $table;
+    }
+
+    protected function resolveUniqueSlug(string $baseSlug): string
+    {
+        $slug = Str::slug($baseSlug);
+        if (! $slug) {
+            $slug = 'company-'.Str::random(6);
+        }
+        $candidate = $slug;
+        $suffix = 1;
+
+        while (Company::query()->where('slug', $candidate)->exists()) {
+            $suffix++;
+            $candidate = "{$slug}-{$suffix}";
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * Generate a readable temporary password (12 chars, mixed case + digits).
+     */
+    private function generateReadablePassword(): string
+    {
+        $words = ['Leo', 'Rh', 'Go', 'Pro', 'Top', 'Biz', 'App', 'Hub'];
+        $word = $words[array_rand($words)];
+        $digits = str_pad((string) random_int(100, 9999), 4, '0', STR_PAD_LEFT);
+        $suffix = chr(random_int(65, 90)); // A-Z
+
+        return $word.$digits.$suffix.'!';
+    }
+
+    private function mapRoleToSector(?string $role): string
+    {
+        return match ($role) {
+            'founder' => 'Direction générale',
+            'hr' => 'Ressources humaines',
+            'operations' => 'Opérations',
+            default => 'Non précisé',
+        };
+    }
+
+    private function trialDays(): int
+    {
+        $days = config('billing.trial_days');
+
+        return \is_int($days) ? $days : 14;
+    }
+}

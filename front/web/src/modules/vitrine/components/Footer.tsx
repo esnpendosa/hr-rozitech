@@ -1,0 +1,135 @@
+'use client';
+
+import { RmihLogo } from './RmihLogo';
+
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { Globe } from 'lucide-react'
+import { useVitrineLocale } from '../lib/vitrine-locale'
+
+const SOCIAL_LINKS = [
+  // Compte X/Twitter @leopardo_hr inexistant (404 constaté 2026-08-15, session
+  // QA expert) — remplacé par GitHub pour garder un lien social vivant.
+  // #7192 : lien LinkedIn `https://linkedin.com/company/leopardo` retiré —
+  // 404 vérifié le 2026-09-10 (`www.linkedin.com/company/leopardo` → 404).
+  // Ne réintroduire une entrée LinkedIn qu'avec une page d'entreprise réelle.
+  { label: 'Gh', href: 'https://github.com/kitokoh/leopardo-hr', title: 'GitHub' },
+]
+import { NewsletterForm } from './NewsletterForm'
+import { getEnvConfig } from '../lib/env'
+import { withLocaleHref } from '../lib/locale-href'
+
+export function getFooterHref(sectionIndex: number, linkIndex: number): string | null {
+  const key = `${sectionIndex}-${linkIndex}`
+  const routes: Record<string, string> = {
+    // PA2-MKT-013: the Footer renders on every landing page (26+ routes),
+    // not just `/`. A bare `#fonctionnalites` hash only ever resolves
+    // against the *current* page's DOM, so on any page other than the
+    // homepage it pointed at a non-existent anchor. `/#fonctionnalites`
+    // navigates to the homepage first, where the Features section now
+    // carries a matching `id="fonctionnalites"` (see FeaturesSection).
+    '0-0': '/#fonctionnalites',
+    '0-1': '/pricing',
+    '0-2': '/integrations',
+    // `/integrations#api` also had no matching `id="api"` on that page;
+    // the integrations page now exposes one on its main section.
+    '0-3': '/integrations#api',
+    '0-4': '/changelog',
+    '0-5': '/download',
+    // Audit expert 2026-08-15 (issue #2609) : pages orphelines liées
+    // (étaient absentes de toute navigation, uniquement dans le sitemap).
+    '0-6': '/about',
+    '0-7': '/videos',
+    '1-0': '/docs',
+    '1-1': '/guides/rh-startup',
+    '1-2': '/blog',
+    '1-3': '/contact',
+    '1-4': '/contact?topic=community',
+    '1-5': '/branding',
+    '2-0': '/download#mobile-apps',
+    '2-1': '/mobile',
+    '2-2': '/download#mobile-apps',
+    '2-3': '/download#mobile-apps',
+    '2-4': '/download#mobile-apps',
+    '3-0': '/privacy',
+    '3-1': '/terms',
+    '3-2': '/terms',
+    '3-3': '/privacy',
+  }
+
+  return routes[key] ?? null
+}
+
+export function Footer() {
+  const { copy, locale, options } = useVitrineLocale()
+  // #3806 : préserver ?lang= dans les liens internes du footer.
+  const searchParams = useSearchParams()
+  const search = searchParams.toString()
+  const activeLocale = options.find((option) => option.value === locale)
+  // The Blog link ('1-2' -> /blog) is hidden when NEXT_PUBLIC_ENABLE_BLOG is
+  // disabled, since the route itself now 404s in that case (issue #1305).
+  const { enableBlog } = getEnvConfig()
+
+  return (
+    <footer className="relative bg-white dark:bg-slate-950 border-t border-slate-200/80 dark:border-slate-800/80">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-8 mb-12">
+          <div className="col-span-2">
+            <div className="mb-4">
+              <RmihLogo size="md" href="/" />
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs mb-6">{copy.footer.description}</p>
+            <div className="flex items-center gap-4">
+              {SOCIAL_LINKS.map((social) => (
+                <Link
+                  key={social.label}
+                  href={social.href}
+                  title={social.title}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-600 hover:bg-emerald-100 hover:text-emerald-800 dark:text-slate-400 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-400 transition-colors"
+                >
+                  {social.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {copy.footer.sections.map((section, index) => (
+            <div key={`${section.title}-${index}`}>
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-4 uppercase tracking-wider">{section.title}</h4>
+              <ul className="space-y-2.5">
+                {section.links.map((link, linkIndex) => {
+                  const href = getFooterHref(index, linkIndex)
+                  if (!href || (href === '/blog' && !enableBlog)) return null
+
+                  return (
+                    <li key={`${section.title}-link-${linkIndex}`}>
+                      <Link href={withLocaleHref(href, search)} className="text-sm text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        {link}
+                      </Link>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="mb-8 flex justify-center">
+          <NewsletterForm />
+        </div>
+
+        <div className="pt-8 border-t border-slate-200/80 dark:border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-4">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            &copy; {new Date().getFullYear()} RMIH. {copy.footer.rights}
+          </p>
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <Globe className="w-4 h-4" />
+            <span>{activeLocale?.nativeLabel ?? locale}</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  )
+}

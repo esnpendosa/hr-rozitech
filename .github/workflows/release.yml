@@ -1,0 +1,280 @@
+name: Release - Leopardo RH
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+  checks: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    timeout-minutes: 30
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          # Audit #1712 : refus des tags invalides (injection / typos).
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: ${TAG} (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${TAG}"
+
+      - name: Verify tag commit is on main
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          TAG_COMMIT=$(git rev-parse "${TAG}^{commit}")
+          echo "tag_commit=${TAG_COMMIT}" >> "$GITHUB_OUTPUT"
+
+          # Le tag doit pointer sur un commit de `main` (jamais un tag orphelin
+          # ou un tag pousse depuis un clone stale). Issue #1722.
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" "origin/main"; then
+            echo "::error::Le tag ${TAG} (commit ${TAG_COMMIT}) n'est pas un ancetre de origin/main — release refusee."
+            exit 1
+          fi
+          echo "Tag ${TAG} -> ${TAG_COMMIT} (sur main) : OK"
+
+      - name: Verify required checks on the release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.verify.outputs.tag_commit }}"
+          # Check REQUIS = les 4 contexts réellement exigés par la protection de
+          # branche de `main` (fiables). « Backend Coverage » est passé en
+          # ADVISORY : depuis #6928 il n'est plus requis au merge, et son
+          # workflow sérialisé ne produit plus aucun statut sous rafale de
+          # pushes (les runs en attente sont annulés au profit du suivant).
+          # L'exiger rendait la chaîne prod IMPOSSIBLE : aucun tag ne pouvait
+          # créer de Release ni déclencher de déploiement (incident 2026-09-10,
+          # prod figée sur 4.24.0). Un check advisory manquant/rouge est
+          # désormais signalé en ::warning:: sans bloquer.
+          REQUIRED=( \
+            "PHPStan — Strict (Core/Modules/Shared, level 8)" \
+            "Module Structure Validator" \
+            "Frontend — ESLint + TypeScript" \
+            "actionlint (+ shellcheck)" \
+          )
+          ADVISORY=( \
+            "Backend Coverage (PHP 8.4 + PostgreSQL 16)" \
+          )
+          FAILED=()
+          ADVISORY_WARN=()
+          for ctx in "${REQUIRED[@]}"; do
+            # Pagination : une release sur un vieux commit peut avoir >100
+            # check-runs (chaque merge rejoue toute la matrice). Issue #3970.
+            CONCS=()
+            PAGE=1
+            while :; do
+              BATCH=$(curl -fsSL \
+                -H "Authorization: Bearer ${{ github.token }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100&page=${PAGE}")
+              COUNT_BATCH=$(jq '.check_runs | length' <<<"$BATCH")
+              if [[ "${COUNT_BATCH}" -eq 0 ]]; then break; fi
+              mapfile -t BATCH_CONCS < <(jq -r --arg ctx "$ctx" '.check_runs[] | select(.name == $ctx) | .conclusion' <<<"$BATCH")
+              CONCS+=("${BATCH_CONCS[@]}")
+              PAGE=$((PAGE + 1))
+              if [[ "${PAGE}" -gt 10 ]]; then break; fi
+            done
+            COUNT=${#CONCS[@]}
+            if [[ "${COUNT}" -eq 0 ]]; then
+              # Issue #3970 : zero verification CI sur le commit = release
+              # non attestee → bloquant (l'ancien comportement « non bloquant »
+              # laissait partir une release sans aucun check).
+              echo "::error::Aucun check '${ctx}' trouve sur ${SHA} — release refuse (0 verification CI)"
+              FAILED+=("${ctx}")
+              continue
+            fi
+            CONC=$(printf '%s\n' "${CONCS[@]}" | sort -u | paste -sd, -)
+            if [[ "${CONC}" == *"failure"* || "${CONC}" == *"timed_out"* || "${CONC}" == *"cancelled"* ]]; then
+              echo "::error::Check requis en echec sur ${SHA} : ${ctx} (${CONC})"
+              FAILED+=("${ctx}")
+            else
+              echo "::notice::${ctx} -> ${CONC} : OK"
+            fi
+          done
+          for ctx in "${ADVISORY[@]}"; do
+            CONCS=()
+            PAGE=1
+            while :; do
+              BATCH=$(curl -fsSL \
+                -H "Authorization: Bearer ${{ github.token }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100&page=${PAGE}")
+              COUNT_BATCH=$(jq '.check_runs | length' <<<"${BATCH}")
+              if [[ "${COUNT_BATCH}" -eq 0 ]]; then break; fi
+              mapfile -t BATCH_CONCS < <(jq -r --arg ctx "$ctx" '.check_runs[] | select(.name == $ctx) | .conclusion' <<<"${BATCH}")
+              CONCS+=("${BATCH_CONCS[@]}")
+              PAGE=$((PAGE + 1))
+              if [[ "${PAGE}" -gt 10 ]]; then break; fi
+            done
+            if [[ ${#CONCS[@]} -eq 0 ]]; then
+              ADVISORY_WARN+=("${ctx} (absent)")
+            else
+              CONC=$(printf '%s\n' "${CONCS[@]}" | sort -u | paste -sd, -)
+              case "${CONC}" in
+                *failure*|*timed_out*|*cancelled*) ADVISORY_WARN+=("${ctx} (${CONC})") ;;
+                *) echo "::notice::[advisory] ${ctx} -> ${CONC} : OK" ;;
+              esac
+            fi
+          done
+          if [[ ${#ADVISORY_WARN[@]} -gt 0 ]]; then
+            echo "::warning::[advisory] checks non bloquants non verts : ${ADVISORY_WARN[*]} — deploiement autorise (incident 2026-09-10)."
+          fi
+          if [[ ${#FAILED[@]} -gt 0 ]]; then
+            echo "::error::Release bloquee — checks requis en echec ou absents : ${FAILED[*]}"
+            exit 1
+          fi
+          echo "Required checks: all green : OK"
+
+      - name: Extract changelog for this version
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          CHANGELOG_FILE="CHANGELOG.md"
+
+          if [[ ! -f "${CHANGELOG_FILE}" ]]; then
+            echo "body=No changelog found." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Extract section for this version from CHANGELOG.md
+          # Anchored match on `## [version]` (or `## version`) headers so that
+          # e.g. ver=4.17.0 cannot match inside `## [4.17.02]` (issue #1502).
+          BODY=$(awk -v ver="${VERSION}" '
+            /^## / {
+              if (found) exit
+              line=$0
+              sub(/^##[[:space:]]+/, "", line)
+              sub(/^\[/, "", line)
+              sub(/\].*/, "", line)
+              sub(/[[:space:]].*/, "", line)
+              if (line == ver) found=1
+              next
+            }
+            found { print }
+          ' "${CHANGELOG_FILE}")
+
+          if [[ -z "${BODY}" ]]; then
+            # Fallback: list commits since last tag
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [[ -n "${PREV_TAG}" ]]; then
+              BODY=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges)
+            else
+              BODY=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
+            fi
+            BODY="## Changes\n\n${BODY}"
+          fi
+
+          # Limite API GitHub : corps de release <= 125 000 caracteres. Si la
+          # section CHANGELOG depasse (ex. v4.24.0 : 344 Ko), tronquer en gardant
+          # la partie la plus recente + pointeur vers le CHANGELOG complet.
+          MAX_BODY_CHARS=118000
+          if [[ ${#BODY} -gt ${MAX_BODY_CHARS} ]]; then
+            echo "::warning::Section CHANGELOG de ${#BODY} caracteres — tronquee a ${MAX_BODY_CHARS} (limite GitHub 125 Ko)."
+            BODY="${BODY:0:${MAX_BODY_CHARS}}"
+            BODY+=$'\n\n---\n> ⚠️ Notes tronquees (limite GitHub 125 Ko). Historique complet : CHANGELOG.md (section ['"${VERSION}"']) — https://github.com/'"${GITHUB_REPOSITORY}"'/blob/main/CHANGELOG.md'
+          fi
+
+          # Write to file to avoid escaping issues
+          echo -e "${BODY}" > /tmp/release-body.md
+          echo "body_file=/tmp/release-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Determine prerelease
+        id: prerelease
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [[ "${TAG}" == *"-alpha"* || "${TAG}" == *"-beta"* || "${TAG}" == *"-rc"* || "${TAG}" == *"-staging"* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = `${{ steps.tag.outputs.tag }}`;
+            const bodyFile = `${{ steps.changelog.outputs.body_file }}`;
+            const body = fs.readFileSync(bodyFile, 'utf8');
+            const isPrerelease = `${{ steps.prerelease.outputs.is_prerelease }}` === 'true';
+
+            const { owner, repo } = context.repo;
+
+            // Check if release already exists
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.info(`Release ${tag} already exists. Updating.`);
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                body,
+                prerelease: isPrerelease,
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                core.info(`Creating new release for ${tag}.`);
+                await github.rest.repos.createRelease({
+                  owner,
+                  repo,
+                  tag_name: tag,
+                  name: `Leopardo RH ${tag}`,
+                  body,
+                  prerelease: isPrerelease,
+                  generate_release_notes: true,
+                });
+              } else {
+                throw e;
+              }
+            }
+
+  # NOTE (audit CI/CD 2026-07-19): le job legacy "build-artifacts" qui buildait
+  # front/mobile a ete retire. Ce dossier a ete supprime du repo dans #754 et
+  # remplace par les apps splittees sous front/mobile_apps/*. Chaque push d'un
+  # tag v* faisait donc echouer ce job (working-directory inexistant).
+  # Les APKs multi-app store-ready sont deja construits et distribues par
+  # mobile-distribute.yml (Firebase App Distribution) et par le job
+  # distribute-mobile de deploy-main.yml. Voir docs/audits/AUDIT_CICD_2026-07-19.md section 1.2.

@@ -1,0 +1,119 @@
+# Launch API Profile Smoke - 2026-06-06
+
+## Objectif
+
+Ajouter une recette API exploitable avant lancement marketing pour verifier les parcours critiques par profil sans exposer de secrets dans le depot.
+
+Script canonique :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dev-hub\tools\launch-api-profile-smoke.ps1
+```
+
+Workflow GitHub manuel :
+
+```text
+Launch API Profile Smoke
+```
+
+Ce workflow lit les memes variables via secrets GitHub et publie l'artefact `launch-api-profile-smoke`.
+
+## Variables d'environnement
+
+- `LEOPARDO_API_BASE_URL` : base API, par defaut `https://gestionemployerbackend.onrender.com/api/v1`.
+- `LEOPARDO_MANAGER_TOKEN` : token Bearer manager/RH.
+- `LEOPARDO_EMPLOYEE_TOKEN` : token Bearer employe.
+- `LEOPARDO_PLATFORM_ADMIN_TOKEN` : token Bearer super-admin plateforme.
+- `LEOPARDO_KIOSK_DEVICE_CODE` : code borne kiosk.
+- `LEOPARDO_KIOSK_TOKEN` : token `X-Kiosk-Token`.
+
+Quand les tokens employee, manager ou platform admin sont absents, le script utilise par defaut `/demo-users` pour resoudre un compte demo et obtenir un token temporaire. Passer `-DisableDemoLogin` ou l'input GitHub `disable_demo_login=true` pour forcer le mode `SKIP`.
+
+Les profils sans token et sans demo login sont marques `SKIP`. Le script echoue uniquement si un endpoint configure retourne une erreur.
+
+## Couverture
+
+### Public
+
+- `GET /health/live`
+- `GET /health/ready`
+- `GET /demo-users`
+
+### Employee
+
+- `GET /auth/me`
+- `GET /attendance/today`
+- `GET /me/monthly-summary`
+- `GET /me/leave-balances`
+- `GET /salary-advances?per_page=5`
+- `GET /me/pay-slips`
+- `GET /me/balance`
+- `GET /notifications?unread=true`
+
+### Manager / RH
+
+- `GET /auth/me`
+- `GET /dashboard/summary`
+- `GET /employees?per_page=5`
+- `GET /attendance/anomalies`
+- `GET /payroll/mobile-summary`
+- `GET /notifications?unread=true`
+
+### Platform admin
+
+- `GET /platform/auth/me`
+- `GET /platform/companies?per_page=5`
+- `GET /platform/plans`
+- `GET /platform/country-defaults`
+- `GET /platform/metrics/overview`
+- `GET /platform/companies/health?limit=5`
+
+### Kiosk
+
+- `GET /kiosks/{deviceCode}/roster`
+- `GET /kiosks/{deviceCode}/announcements`
+
+## Ecriture controlee
+
+Les ecritures de test sont volontairement desactivees par defaut. Elles ne s'executent que si une option explicite est fournie.
+
+### Kiosque
+
+Si `LEOPARDO_KIOSK_DEVICE_CODE` et `LEOPARDO_KIOSK_TOKEN` ne sont pas fournis, le smoke peut enregistrer un kiosque temporaire avec le token manager demo, recuperer le `device_code` et le `sync_token`, puis tester les endpoints kiosque reels :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dev-hub\tools\launch-api-profile-smoke.ps1 -IncludeKioskProvisioning
+```
+
+Cette option cree un appareil `Plan72 Kiosk Smoke <timestamp>` dans l'environnement cible. Elle doit etre reservee aux environnements demo/staging ou aux fenetres de recette controlee.
+
+### Entreprise plateforme
+
+La creation d'entreprise de test ne s'execute que si l'option suivante est fournie :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dev-hub\tools\launch-api-profile-smoke.ps1 -IncludePlatformProvisioning
+```
+
+Cette option cree une entreprise `Plan72 Smoke <timestamp>` en statut `trial`. Elle doit etre reservee aux environnements de staging/demo ou aux fenetres de recette controlee.
+
+Pour tester explicitement l'activation immediate cote platform admin :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dev-hub\tools\launch-api-profile-smoke.ps1 -IncludePlatformProvisioning -PlatformProvisioningStatus active
+```
+
+Le workflow manuel expose le meme choix via `platform_provisioning_status=trial|active`.
+
+## Statut
+
+- Garde ajoute : `dev-hub/tools/launch-api-profile-smoke.ps1`.
+- Workflow manuel ajoute : `.github/workflows/launch-api-profile-smoke.yml`.
+- Gate release mis a jour pour verifier la presence du script, du workflow et de ce rapport.
+- Correction outillage : les tokens absents doivent toujours produire `SKIP`, jamais decaler les arguments positionnels du smoke.
+- Correction outillage : les appels internes utilisent un splat hashtable afin qu'un token vide ne soit jamais avale par le parametre suivant.
+- Correction workflow : le workflow manuel doit appeler le script avec un splat hashtable, pas un array splat, afin que `BaseUrl` soit transmis par nom.
+- Auto-login demo : le smoke peut maintenant utiliser les comptes publics `/demo-users` pour couvrir manager, employee et platform admin sans secrets GitHub.
+- Provisioning controle : la creation entreprise smoke peut verifier `trial` ou `active` via `PlatformProvisioningStatus`.
+- Provisioning kiosque controle : le smoke peut enregistrer un kiosque temporaire via manager demo et couvrir `roster` + `announcements` avec le vrai `X-Kiosk-Token`.
+- Execution complete avec tokens a realiser par ops/CI protegee avant ouverture marketing large.

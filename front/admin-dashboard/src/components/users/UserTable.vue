@@ -1,0 +1,277 @@
+<template>
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-slate-200/50 dark:divide-slate-800/50">
+      <thead class="bg-slate-50/50 dark:bg-slate-900/30">
+        <tr>
+          <th scope="col" class="relative w-12 px-6 sm:w-16 sm:px-8">
+            <input
+              type="checkbox"
+              :checked="isAllSelected"
+              :indeterminate="isIndeterminate"
+              @change="$emit('select-all', $event.target.checked)"
+              class="absolute left-4 top-1/2 -mt-2 h-4 w-4 rounded-md border-slate-300 text-brand-600 focus:ring-brand-600 dark:bg-slate-800 dark:border-slate-700"
+            />
+          </th>
+          <th
+            v-for="column in columns"
+            :key="column.key"
+            scope="col"
+            :class="[
+              'px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400',
+              column.sortable ? 'cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors' : ''
+            ]"
+            @click="column.sortable && handleSort(column.key)"
+          >
+            <div class="flex items-center space-x-1.5">
+              <span>{{ column.label }}</span>
+              <div v-if="column.sortable" class="flex flex-col">
+                <ChevronUpIcon
+                  :class="[
+                    'h-3 w-3',
+                    sortBy === column.key && sortOrder === 'asc' ? 'text-brand-500' : 'text-slate-300'
+                  ]"
+                />
+                <ChevronDownIcon
+                  :class="[
+                    'h-3 w-3 -mt-1',
+                    sortBy === column.key && sortOrder === 'desc' ? 'text-brand-500' : 'text-slate-300'
+                  ]"
+                />
+              </div>
+            </div>
+          </th>
+          <th scope="col" class="relative py-3 pl-3 pr-4 sm:pr-6">
+            <span class="sr-only">Actions</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-200/50 dark:divide-slate-800/50 bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm">
+        <!-- Loading state -->
+        <tr v-if="loading">
+          <td colspan="5" class="px-6 py-16 text-center">
+            <div class="flex flex-col items-center justify-center">
+              <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600 mb-4"></div>
+              <span class="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">{{ t('users.table.loading', 'Chargement des utilisateurs...') }}</span>
+            </div>
+          </td>
+        </tr>
+
+        <!-- Empty state -->
+        <tr v-else-if="users.length === 0">
+          <td colspan="5" class="px-6 py-12 text-center">
+            <UsersIcon class="mx-auto h-12 w-12 text-gray-400" />
+            <h3 class="mt-2 text-sm font-medium text-gray-900">{{ t('users.table.empty', 'Aucun utilisateur') }}</h3>
+            <p class="mt-1 text-sm text-gray-500">
+              {{ t('users.table.emptyHint', 'Aucun utilisateur ne correspond aux critères de recherche.') }}
+            </p>
+          </td>
+        </tr>
+
+        <!-- User rows -->
+        <tr
+          v-for="user in sortedUsers"
+          :key="user.id"
+          :class="[
+            'hover:bg-slate-50/80 dark:hover:bg-slate-800/80 transition-colors',
+            selectedUsers.includes(user.id) ? 'bg-brand-50/50 dark:bg-brand-900/10' : ''
+          ]"
+        >
+          <td class="relative w-12 px-6 sm:w-16 sm:px-8">
+            <input
+              type="checkbox"
+              :checked="selectedUsers.includes(user.id)"
+              @change="$emit('select', user.id, $event.target.checked)"
+              class="absolute left-4 top-1/2 -mt-2 h-4 w-4 rounded-md border-slate-300 text-brand-600 focus:ring-brand-600"
+            />
+          </td>
+
+          <!-- Initials & Name -->
+          <td class="whitespace-nowrap px-6 py-5">
+            <div class="flex items-center">
+              <div class="h-10 w-10 flex-shrink-0 relative">
+                <div class="h-10 w-10 rounded-xl bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-xs font-black text-brand-700 dark:text-brand-300">
+                  {{ initials(user.name) }}
+                </div>
+                <div
+                  v-if="user.status === 'active'"
+                  class="absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-white dark:border-slate-900 bg-emerald-500 shadow-sm"
+                ></div>
+              </div>
+              <div class="ml-4">
+                <div class="text-sm font-bold text-slate-900 dark:text-white">{{ user.name }}</div>
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400">{{ user.email }}</div>
+              </div>
+            </div>
+          </td>
+
+          <!-- Status -->
+          <td class="whitespace-nowrap px-6 py-5">
+            <span :class="['px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-widest border', getStatusColor(user.status)]">
+              {{ getStatusLabel(user.status) }}
+            </span>
+          </td>
+
+          <!-- Company -->
+          <td class="whitespace-nowrap px-6 py-5 text-sm font-semibold text-slate-700 dark:text-slate-300">
+            {{ user.company?.name || '-' }}
+          </td>
+
+          <!-- Created At -->
+          <td class="whitespace-nowrap px-6 py-5 text-sm font-medium text-slate-500 dark:text-slate-400">
+            {{ formatDate(user.createdAt ?? user.created_at) }}
+          </td>
+
+          <!-- Actions -->
+          <td class="relative whitespace-nowrap py-5 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
+            <div class="flex items-center justify-end space-x-2">
+              <button
+                @click="$emit('view', user)"
+                class="p-1.5 rounded-lg text-slate-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-all duration-200"
+                :title="t('users.table.viewDetails', 'Voir les détails')"
+                :aria-label="t('users.table.viewDetails', 'Voir les détails')"
+              >
+                <EyeIcon class="h-4 w-4" />
+              </button>
+              <button
+                @click="$emit('delete', user)"
+                class="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all duration-200"
+                :title="t('common.delete', 'Supprimer')"
+                :aria-label="t('common.delete', 'Supprimer')"
+              >
+                <TrashIcon class="h-4 w-4" />
+              </button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed } from 'vue'
+import {
+  ChevronUpIcon,
+  ChevronDownIcon,
+  EyeIcon,
+  TrashIcon,
+  UsersIcon
+} from '@heroicons/vue/24/outline'
+import { useLocaleStore } from '@/stores/locale'
+import { toIntlLocale, translate } from '@/i18n/index.js'
+
+const localeStore = useLocaleStore()
+const t = (key, fallback = '') => translate(localeStore.current, key, fallback)
+
+const props = defineProps({
+  users: {
+    type: Array,
+    default: () => []
+  },
+  selectedUsers: {
+    type: Array,
+    default: () => []
+  },
+  loading: {
+    type: Boolean,
+    default: false
+  }
+})
+
+defineEmits(['select', 'select-all', 'view', 'delete'])
+
+// Sorting
+const sortBy = ref('name')
+const sortOrder = ref('asc')
+
+// Table columns (donnees reelles : pas de role/segment/lastLogin cote API)
+const columns = [
+  { key: 'name', label: 'Utilisateur', sortable: true },
+  { key: 'status', label: 'Statut', sortable: true },
+  { key: 'company', label: 'Entreprise', sortable: true },
+  { key: 'created_at', label: 'Inscription', sortable: true }
+]
+
+const isAllSelected = computed(() => {
+  return props.users.length > 0 && props.selectedUsers.length === props.users.length
+})
+
+const isIndeterminate = computed(() => {
+  return props.selectedUsers.length > 0 && props.selectedUsers.length < props.users.length
+})
+
+const sortedUsers = computed(() => {
+  if (!sortBy.value) return props.users
+
+  return [...props.users].sort((a, b) => {
+    let aValue = a[sortBy.value]
+    let bValue = b[sortBy.value]
+
+    if (sortBy.value === 'company') {
+      aValue = a.company?.name || ''
+      bValue = b.company?.name || ''
+    }
+
+    if (sortBy.value === 'created_at') {
+      aValue = aValue ? new Date(aValue) : new Date(0)
+      bValue = bValue ? new Date(bValue) : new Date(0)
+    }
+
+    aValue = String(aValue).toLowerCase()
+    bValue = String(bValue).toLowerCase()
+
+    if (sortOrder.value === 'asc') {
+      return aValue < bValue ? -1 : aValue > bValue ? 1 : 0
+    } else {
+      return aValue > bValue ? -1 : aValue < bValue ? 1 : 0
+    }
+  })
+})
+
+function handleSort(column) {
+  if (sortBy.value === column) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = column
+    sortOrder.value = 'asc'
+  }
+}
+
+function initials(name) {
+  return String(name || '?')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join('')
+}
+
+function getStatusColor(status) {
+  const colors = {
+    active: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800',
+    inactive: 'bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-900/30 dark:text-slate-400 dark:border-slate-800',
+    suspended: 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900/40',
+    pending: 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800'
+  }
+  return colors[status] || 'bg-slate-50 text-slate-700 border-slate-200'
+}
+
+function getStatusLabel(status) {
+  const labels = {
+    active: 'Actif',
+    inactive: 'Inactif',
+    suspended: 'Suspendu',
+    pending: 'Attente'
+  }
+  return labels[status] || status
+}
+
+function formatDate(date) {
+  if (!date) return '-'
+  return new Date(date).toLocaleDateString(toIntlLocale(localeStore.current), {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  })
+}
+</script>

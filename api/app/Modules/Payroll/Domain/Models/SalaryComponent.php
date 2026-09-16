@@ -1,0 +1,92 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Payroll\Domain\Models;
+
+use App\Shared\Traits\BelongsToCompany;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
+
+/**
+ * @property int $id
+ * @property int|null $company_id
+ * @property int|null $salary_structure_id
+ * @property string $name
+ * @property string $code
+ * @property string $type
+ * @property string|null $calculation_type
+ * @property float $amount
+ * @property float $percentage
+ * @property string|null $formula
+ * @property bool $is_taxable
+ * @property bool $is_recurring
+ * @property int $order
+ * @property bool $active
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @mixin \Illuminate\Database\Eloquent\Builder<static>
+ */
+class SalaryComponent extends Model
+{
+    use BelongsToCompany;
+
+    protected $fillable = [
+        'company_id', 'salary_structure_id', 'name', 'code', 'type',
+        'calculation_type', 'amount', 'percentage', 'formula',
+        'is_taxable', 'is_recurring', 'order', 'active',
+    ];
+
+    protected $casts = [
+        'amount' => 'float',
+        'percentage' => 'float',
+        'is_taxable' => 'boolean',
+        'is_recurring' => 'boolean',
+        'order' => 'integer',
+        'active' => 'boolean',
+    ];
+
+    /** @return BelongsTo<SalaryStructure, $this> */
+    public function salaryStructure(): BelongsTo
+    {
+        return $this->belongsTo(SalaryStructure::class, 'salary_structure_id');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('active', true);
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeEarnings(Builder $query): Builder
+    {
+        return $query->where('type', 'earning');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeDeductions(Builder $query): Builder
+    {
+        return $query->where('type', 'deduction');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeEmployerContributions(Builder $query): Builder
+    {
+        return $query->where('type', 'employer_contribution');
+    }
+}

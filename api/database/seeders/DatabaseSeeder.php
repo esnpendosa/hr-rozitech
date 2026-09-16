@@ -1,0 +1,84 @@
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+/**
+ * DatabaseSeeder — Orchestrateur principal des seeders
+ *
+ * ORDRE D'EXÉCUTION OBLIGATOIRE (respecter les dépendances FK) :
+ * 1. PlanSeeder         → plans (schéma public)
+ * 2. LanguageSeeder     → languages (schéma public)
+ * 3. HrModelSeeder      → hr_model_templates (schéma public)
+ * 4. SuperAdminSeeder   → super_admins (schéma public)
+ * 5. DemoCompanySeeder  → company de démo + employees (mode local uniquement)
+ *
+ * USAGE :
+ *   php artisan db:seed                    → Seeders de base (prod-safe)
+ *   php artisan db:seed --class=DemoCompanySeeder   → Données de démo (dev only)
+ *
+ * NOTE MULTI-TENANT :
+ *   Les seeders ci-dessous opèrent UNIQUEMENT sur le schéma public.
+ *   Les données tenant (employees, attendance, etc.) sont créées via :
+ *   - le provisionnement plateforme (ProvisionCompany / SelfServiceTrial,
+ *     onboarding) — NOTA : POST /auth/register crée volontairement un compte
+ *     « ordinary » SANS entreprise (choix produit assumé : le tenant est
+ *     provisionné via le parcours d'essai/accompagnement, pas à l'inscription)
+ *   - DemoCompanySeeder (environnement local uniquement)
+ */
+class DatabaseSeeder extends Seeder
+{
+    public function run(): void
+    {
+        // S'assurer qu'on est sur le schéma public pour les seeders de base
+        DB::statement('SET search_path TO public');
+
+        $this->command->info('');
+        $this->command->info('🐆 LEOPARDO RH — Initialisation de la base de données');
+        $this->command->info('═══════════════════════════════════════════════════');
+
+        $this->call([
+            PlanSeeder::class,      // Plans tarifaires (Starter/Business/Enterprise)
+            LanguageSeeder::class,  // Langues (fr/ar/en/tr)
+            HrModelSeeder::class,   // Modèles RH par pays (DZ/MA/TN/FR/TR/SN/CM/CI)
+            SuperAdminSeeder::class, // Premier Super Admin
+            PublicHolidaySeeder::class,   // Jours fériés fixes par pays (BUG #1895 : jamais exécutés en prod)
+            IslamicCalendarSeeder::class, // Calendrier islamique par année (BUG #1895)
+        ]);
+
+        // FeaturePlanMatrixSeeder opère sur la table feature_plan_matrix qui
+        // vit dans shared_tenants. Il remet lui-même le search_path correct
+        // avant ses insertions (cf. DatabaseSeeder::run() qui force public).
+        $this->call([
+            FeaturePlanMatrixSeeder::class, // Matrice features × plans (free/pilot/operations/enterprise)
+            // #7358 — le registre d'outils de l'assistant IA (BC-23) est une
+            // donnée de référence GLOBALE (shared_tenants.ai_tool_registry, pas
+            // de company_id) : sans lui, `GET /api/v1/ai/tools` renvoie [] et
+            // l'orchestrateur n'expose AUCUN outil au LLM, même avec une clé
+            // fournisseur valide — quel que soit l'état des flags tenant.
+            // Placé après FeaturePlanMatrixSeeder qui laisse le search_path à
+            // `shared_tenants,public` ; semeur idempotent (updateOrInsert).
+            AIToolRegistrySeeder::class,
+        ]);
+
+        $this->command->info('');
+        $this->command->info('═══════════════════════════════════════════════════');
+        $this->command->info('✅ Base de données initialisée avec succès !');
+        $this->command->info('');
+        $this->command->info('Prochaines étapes :');
+        $this->command->info('  1. Configurer Nginx (nginx-api.conf)');
+        $this->command->info('  2. Configurer Supervisor (leopardo-horizon.supervisor.conf)');
+        $this->command->info('  3. php artisan horizon:start');
+        $this->command->info('  4. Tester : GET /api/health');
+
+        // En environnement local : proposer les données de démo
+        if (app()->environment('local', 'development')) {
+            $this->command->info('');
+            $this->command->info('💡 Environnement local détecté');
+            $this->command->info('   Pour créer une company de démo avec des données :');
+            $this->command->info('   php artisan db:seed --class=DemoCompanySeeder');
+        }
+    }
+}

@@ -1,0 +1,677 @@
+name: Tests - Leopardo RH
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'front/admin-dashboard/**'
+      - '.github/workflows/tests.yml'
+      - '.github/workflows/phpstan-baseline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'front/admin-dashboard/**'
+      - '.github/workflows/tests.yml'
+      - '.github/workflows/phpstan-baseline.yml'
+
+# Least privilege: tests only need to read the repository by default.
+# Jobs requiring additional access must declare it locally.
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEFAULT_BACKEND_COVERAGE_MIN: "65"
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  # Issue CI/CD : sur main, un push ne doit PAS annuler le run tests en cours —
+  # le workflow Deploy (deploy-main.yml) attend la conclusion `success` du run
+  # push sur main ; avec cancel-in-progress:true, chaque nouveau push annulait
+  # le run précédent → aucun run tests ne se terminait → jamais de déploiement.
+  # Les runs PR gardent l'annulation (feedback rapide sur une même branche).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  detect-changes:
+    timeout-minutes: 15
+    name: Detect Changed Areas
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      api_changed: ${{ steps.changes.outputs.api }}
+      web_changed: ${{ steps.changes.outputs.web }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Detect changed directories
+        id: changes
+        # Audit §3.3 / Plan P2: replaced the hand-rolled `git diff` + `grep -E`
+        # detection (which had drifted out of sync with deploy-main.yml's copy
+        # of the same logic) with dorny/paths-filter, reading filter patterns
+        # from a single shared file (.github/paths-filters.yml) also consumed
+        # by deploy-main.yml. This is a deliberate behavior change: the `web`
+        # filter is now a superset matching deploy-main.yml's broader pattern
+        # (adds deploy-main.yml + two doc files as web triggers) — strictly
+        # widens when Web CI runs, never narrows it.
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: .github/paths-filters.yml
+
+      - name: Log detected changes
+        shell: bash
+        run: |
+          echo "API changed: ${{ steps.changes.outputs.api }}"
+          echo "Web changed: ${{ steps.changes.outputs.web }}"
+
+  backend-tests:
+    # Train #6817 (2026-09-05) : la suite complete (unit ~40 min + feature
+    # ~40 min, tests restaurés) DEPASSE 75 min — run annulé a ~75 min le
+    # 2026-09-05 14:06 (2e constat). Timeout porte a 120 min.
+    # Issue #6928 (2026-09-06) : le rebuild de la fixture CreatesMvpSchema à
+    # CHAQUE test (~25-46 s/test) fait dépasser 120 min à la suite (unit 29 min
+    # + feature > 90 min sans fin). Timeout porté à 300 min en MESURE
+    # TRANSITOIRE pour laisser les runs produire leur JUnit Feature complet
+    # (mine d'échecs) — à réduire dès que la fixture est construite une fois
+    # par process (#6928, plan P0 CI).
+    timeout-minutes: 300
+    name: Backend (PHP 8.4 + PostgreSQL 16 + Redis 7)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api_changed == 'true'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: leopardo_test
+          POSTGRES_USER: leopardo_user
+          POSTGRES_PASSWORD: leopardo_pass_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Setup backend (PHP + Composer + multi-tenant DB)
+        uses: ./.github/actions/setup-backend-db
+
+      - name: Validate composer.json
+        working-directory: ./api
+        run: composer validate --no-check-publish --strict
+
+      - name: Run backend unit tests
+        id: backend_unit_tests
+        continue-on-error: true
+        working-directory: ./api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: leopardo_test
+          DB_SEARCH_PATH: public,shared_tenants
+        run: php artisan test --testsuite=Unit --log-junit=storage/test-results/unit.xml
+
+      - name: Run backend feature tests
+        id: backend_feature_tests
+        continue-on-error: true
+        working-directory: ./api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: leopardo_test
+          DB_SEARCH_PATH: public,shared_tenants
+        # Issue #4695 : suite Feature en parallèle (paratest, 1 base par worker
+        # `leopardo_test_test_{token}`, créée automatiquement — voir
+        # tests/TestCase::configureTestingDatabaseConnection). La suite sérielle
+        # dépassait les 45 min (timeout du job) et bloquait main.
+        run: php artisan test --testsuite=Feature --parallel --processes=4 --log-junit=storage/test-results/feature.xml
+
+      - name: Upload backend test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-test-reports
+          path: |
+            api/storage/test-results/*.xml
+            api/storage/logs/*.log
+          if-no-files-found: ignore
+
+      - name: Fail backend job if unit tests failed
+        if: steps.backend_unit_tests.outcome == 'failure'
+        run: |
+          echo "Backend unit tests failed."
+          exit 1
+
+      - name: Fail backend job if feature tests failed
+        if: steps.backend_feature_tests.outcome == 'failure'
+        run: |
+          echo "Backend feature tests failed."
+          exit 1
+
+      - name: Extract first test failures (causal errors)
+        if: always()
+        working-directory: ./api
+        shell: bash
+        run: |
+          # Issue #4978 : extraire la PREMIÈRE erreur de chaque testsuite JUnit
+          # (unit + feature) pour rendre la cause racine visible dans le résumé
+          # du job, sans avoir à télécharger les artefacts.
+          set -uo pipefail
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          for path in sorted(glob.glob('storage/test-results/*.xml')):
+              try:
+                  tree = ET.parse(path)
+              except ET.ParseError:
+                  print(f"({path}: JUnit illisible)")
+                  continue
+              for suite in tree.iter('testsuite'):
+                  n = int(suite.get('failures', '0')) + int(suite.get('errors', '0'))
+                  if n == 0:
+                      continue
+                  for case in suite.iter('testcase'):
+                      for kind in ('failure', 'error'):
+                          node = case.find(kind)
+                          if node is None:
+                              continue
+                          name = case.get('classname', '') + '::' + case.get('name', '')
+                          msg = (node.get('message') or node.text or '')[:400]
+                          print(f"- {path} : `{name}` ({kind})\n  {msg}")
+                          break
+          PY
+
+  backend-security:
+    timeout-minutes: 45
+    name: Backend Security (Composer Audit)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api_changed == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Run Composer audit
+        working-directory: ./api
+        # Issue #5590 : fail sur les vulnérabilités connues (comportement par
+        # défaut de `composer audit`) + alerte non-bloquante sur les paquets
+        # abandonnés (--abandoned=report, Composer >= 2.8).
+        run: composer audit --locked --no-dev --abandoned=report
+
+  backend-quality:
+    # This job may push an explicitly generated Pint formatting commit on
+    # same-repository pull requests; keep the permission job-scoped.
+    permissions:
+      contents: write
+    timeout-minutes: 45
+    name: Backend Quality (Pint + PHP Syntax + PHPStan/Larastan)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api_changed == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: "8.4"
+          extensions: pdo, pdo_pgsql, pdo_sqlite, sqlite3, bcmath, mbstring, xml, zip, gd
+          tools: composer:v2
+          coverage: none
+
+      - name: Resolve Composer cache directory
+        id: composer-cache
+        working-directory: ./api
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          # Audit #1706 : clé au hash exact du lockfile — pas de restore-keys
+          # préfixé (un cache d'un lockfile différent serait un vecteur de
+          # poisoning sur les PR).
+          key: composer-${{ runner.os }}-php84-${{ hashFiles('api/composer.lock') }}
+
+      - name: Validate composer.json
+        id: validate_composer
+        working-directory: ./api
+        run: composer validate --no-check-publish --strict
+
+      - name: Install Composer dependencies
+        id: install_composer
+        working-directory: ./api
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Run Pint
+        id: pint
+        working-directory: ./api
+        shell: bash
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p storage/test-results
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${base_sha}"
+          fi
+
+          if ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${head_sha}"
+          fi
+
+          mapfile -t changed_php_files < <(
+            git diff --name-only "${base_sha}" "${head_sha}" \
+              | grep -E '^api/(app|bootstrap|config|database|public|routes|tests|lang)/.*\.php$|^api/config/app\.php$|^api/routes/.*\.php$' \
+              | sort -u || true
+          )
+
+          existing_php_files=()
+          for file in "${changed_php_files[@]}"; do
+            if [[ -f "${file#api/}" ]]; then
+              existing_php_files+=("${file}")
+            fi
+          done
+
+          if [[ ${#existing_php_files[@]} -eq 0 ]]; then
+            echo "No changed backend PHP files matched the Pint gate." | tee storage/test-results/pint-targets.txt
+            exit 0
+          fi
+
+          printf '%s\n' "${existing_php_files[@]}" > storage/test-results/pint-targets.txt
+          pint_targets=()
+          while IFS= read -r file; do
+            pint_targets+=("${file#api/}")
+          done < storage/test-results/pint-targets.txt
+
+          # #4722 (audit 360°) : garde réelle — pint --test échoue sur les
+          # fichiers modifiés non formatés (avant : || true + auto-fix rendaient
+          # le gate toujours vert).
+          if [[ -s storage/test-results/pint-targets.txt ]]; then
+            ./vendor/bin/pint --test "${pint_targets[@]}"
+          fi
+
+          ./vendor/bin/pint "${pint_targets[@]}" || true
+
+          # Audit #1708 : le push auto-fix ne doit JAMAIS cibler main (les
+          # corrections de style se font sur les branches de PR) et ne doit
+          # pas s'exécuter sur les forks (le token du workflow ne s'y
+          # applique pas de toute façon).
+          is_pr_push="false"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+              is_pr_push="true"
+            fi
+          fi
+
+          if [[ "${is_pr_push}" == "true" ]]; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore: auto-fix pint formatting" || true
+            git push || true
+          fi
+
+      - name: Lint PHP source files
+        id: php_lint
+        working-directory: ./api
+        shell: bash
+        run: |
+          set -euo pipefail
+          # #4291 : `lang` inclu — un ParseError dans les catalogues de
+          # traduction (régression errors.php ×4, merge #4275) cassait TOUTES
+          # les réponses localisées sans être détecté par le lint précédent.
+          mapfile -t php_files < <(find app bootstrap config database public routes tests lang -type f -name '*.php' | sort)
+          for file in "${php_files[@]}"; do
+            php -l "$file" >/dev/null
+          done
+
+      - name: Run PHPStan + Larastan
+        id: phpstan
+        working-directory: ./api
+        shell: bash
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Gate diff-scopé « Backend Quality » : analyse des fichiers CHANGÉS au
+          # niveau 8 avec TOUTES les baselines (legacy + modules + strict) —
+          # aligné sur les jobs backend requis (PHPStan Strict L8, Modules
+          # Architecture). Le niveau max de phpstan.neon seul (baseline legacy
+          # uniquement) rendait tout PR touchant un module avec dette level-8
+          # baselinée rouge (dette gérée par les baselines au niveau 8 ; leçon
+          # train #6817 : 1 038 findings max-only sur les fichiers restaurés).
+          cat > phpstan.ci.neon <<EOF
+          includes:
+              - phpstan.neon
+              - phpstan-strict-baseline.neon
+              - phpstan-modules-baseline.neon
+
+          parameters:
+              level: 8
+          EOF
+          mkdir -p storage/test-results
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          mapfile -t changed_php_files < <(
+            # Issue #5590 : périmètre étendu au full scope de phpstan.neon
+            # (app/ + routes/ + tests/) — avant, seuls app/AI, Http/Middleware
+            # et routes étaient analysés au niveau max ; config/ reste exclu
+            # (hors paths de phpstan.neon, conventionnellement).
+            # Filtre d'existence : un fichier SUPPRIMÉ dans le diff (refactor/
+            # purge) n'existe plus dans le working tree — PHPStan refuserait le
+            # chemin inexistant (leçon train #6817, SettleTravelSalesCommand).
+            git diff --name-only "${base_sha}" "${head_sha}" \
+              | grep -E '^api/(app|routes|tests)/.*\.php$' \
+              | sort -u \
+              | while IFS= read -r f; do [[ -f "$f" ]] && echo "$f"; done || true
+          )
+
+          if [[ ${#changed_php_files[@]} -eq 0 ]]; then
+            echo "No changed backend PHP files matched the PHPStan gate." | tee storage/test-results/phpstan.txt
+            exit 0
+          fi
+
+          printf '%s\n' "${changed_php_files[@]}" > storage/test-results/phpstan-targets.txt
+          phpstan_targets=()
+          while IFS= read -r file; do
+            phpstan_targets+=("${file#api/}")
+          done < storage/test-results/phpstan-targets.txt
+
+          ./vendor/bin/phpstan analyse -c phpstan.ci.neon --no-progress --error-format=raw "${phpstan_targets[@]}" | tee storage/test-results/phpstan.txt
+
+      - name: Build backend quality summary
+        if: always()
+        working-directory: ./api
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p storage/test-results
+          findings="0"
+          if [[ -f storage/test-results/phpstan.txt ]]; then
+            findings="$(awk 'END { print NR }' storage/test-results/phpstan.txt)"
+          fi
+          target_scope="full backend scope"
+          if [[ -f storage/test-results/phpstan-targets.txt ]]; then
+            target_scope="$(tr '\n' ',' < storage/test-results/phpstan-targets.txt | sed 's/,$//')"
+          fi
+          cat > storage/test-results/backend-quality-summary.md <<EOF
+          - Composer validate: ${{ steps.validate_composer.outcome }}
+          - Composer install: ${{ steps.install_composer.outcome }}
+          - Pint: ${{ steps.pint.outcome }}
+          - PHP syntax lint: ${{ steps.php_lint.outcome }}
+          - PHPStan/Larastan: ${{ steps.phpstan.outcome }}
+          - PHPStan findings captured: ${findings}
+          - PHPStan scope: ${target_scope}
+          - Baseline support: api/phpstan.neon + api/phpstan-baseline.neon
+          EOF
+
+      - name: Upload backend quality summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-quality-summary
+          path: api/storage/test-results/backend-quality-summary.md
+          if-no-files-found: error
+
+      - name: Upload backend quality reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-quality-reports
+          path: |
+            api/storage/test-results/phpstan.txt
+            api/storage/test-results/phpstan-targets.txt
+            api/storage/test-results/backend-quality-summary.md
+            api/phpstan.neon
+            api/phpstan-baseline.neon
+          if-no-files-found: ignore
+
+      - name: Fail backend quality job if PHPStan failed
+        if: steps.phpstan.outcome == 'failure'
+        run: |
+          echo "PHPStan/Larastan failed."
+          exit 1
+
+  governance-gates:
+    timeout-minutes: 45
+    name: Governance Gates (changelog + canonical files)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Validate governance and changelog
+        run: pwsh dev-hub/tools/check-governance.ps1 -BaseRef ${{ github.event.pull_request.base.sha }} -HeadRef ${{ github.event.pull_request.head.sha }}
+
+      - name: Self-test mojibake guard (#1612)
+        run: pwsh dev-hub/tools/check-governance-mojibake-test.ps1
+
+      - name: Postman collection dedupe guard (#3602)
+        run: python3 dev-hub/tools/check-postman-collection-dupes.py
+
+  dependency-review:
+    timeout-minutes: 15
+    name: Dependency Review (PR Security)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Review dependency changes
+        # Audit #1706 : ce job était décoratif (continue-on-error:true) alors
+        # qu'il est listé comme requis — il est désormais bloquant.
+        id: dependency_review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+
+  notify:
+    timeout-minutes: 30
+    name: Notify Result
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - backend-tests
+      - backend-security
+      - backend-quality
+      - governance-gates
+      - dependency-review
+    # Audit #1706 : les secrets SMTP ne doivent pas être exposés sur les PR
+    # (un auteur same-repo pourrait les lire en modifiant ce workflow).
+    if: >-
+      always() && (
+        github.event_name == 'push' && github.ref == 'refs/heads/main'
+        || github.event_name == 'workflow_dispatch'
+      )
+    env:
+      CI_SMTP_SERVER: ${{ secrets.CI_SMTP_SERVER }}
+      CI_SMTP_USERNAME: ${{ secrets.CI_SMTP_USERNAME }}
+      CI_SMTP_PASSWORD: ${{ secrets.CI_SMTP_PASSWORD }}
+      CI_REPORT_TO: ${{ vars.CI_REPORT_TO }}
+      CI_REPORT_FROM: ${{ vars.CI_REPORT_FROM }}
+
+    steps:
+      - name: Download backend quality summary
+        if: always() && !contains(fromJson('["cancelled","timed_out","skipped"]'), needs.backend-quality.result)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backend-quality-summary
+          path: artifacts/backend-quality-summary
+
+      - name: Build CI report
+        id: report
+        shell: bash
+        run: |
+          set -euo pipefail
+          BACKEND_SUMMARY="artifacts/backend-quality-summary/backend-quality-summary.md"
+          cat > ci-report.md <<EOF
+          # CI Report — Leopardo RH
+
+          - Workflow: ${{ github.workflow }}
+          - Run ID: ${{ github.run_id }}
+          - Run Number: ${{ github.run_number }}
+          - Branch/Ref: ${{ github.ref }}
+          - Commit: ${{ github.sha }}
+          - Actor: ${{ github.actor }}
+          - URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ## Job Results
+          - Backend Tests: ${{ needs.backend-tests.result }}
+          - Backend Security: ${{ needs.backend-security.result }}
+          - Backend Quality: ${{ needs.backend-quality.result }}
+          - Governance Gates: ${{ needs.governance-gates.result }}
+          - Dependency Review: ${{ needs.dependency-review.result }}
+
+          ## Scenario References
+          - Test registry: docs/GESTION_PROJET/REGISTRE_SCENARIOS_TESTS.md
+          - Backend API scenarios: docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md
+          - Mobile Flutter scenarios: docs/GESTION_PROJET/SCENARIOS_TEST_MOBILE_FLUTTER.md
+          - Web admin scenarios: docs/GESTION_PROJET/SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md
+          - Backend quality artifacts: backend-quality-reports
+          - Backend quality summary artifact: backend-quality-summary
+
+          ## Backend Coverage Intent
+          - Unit: services et logique metier pure
+          - Feature: auth, auth guardrails, RBAC, multitenant, attendance, estimation, health, contrats JSON mobile, Attendance (GPS geofencing, validation manager, multi-tenant isolation)
+          - Gate strategy: visible immediately, threshold progressive via BACKEND_COVERAGE_MIN
+
+          ## Quality Notes
+          - PHP static analysis: PHPStan + Larastan with versioned baseline support
+          - Mobile tests: machine-readable output + coverage summary artifact
+          - Deploy policy: main deploy is allowed only after the required workflows for the same SHA conclude successfully
+          EOF
+
+          if [[ -f "${BACKEND_SUMMARY}" ]]; then
+            {
+              echo
+              echo "## Backend Quality Summary"
+              cat "${BACKEND_SUMMARY}"
+            } >> ci-report.md
+          fi
+
+          cat ci-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CI report artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-report
+          path: ci-report.md
+          if-no-files-found: error
+
+      - name: Send CI report email (if SMTP configured)
+        if: always() && env.CI_SMTP_SERVER != '' && env.CI_SMTP_USERNAME != '' && env.CI_SMTP_PASSWORD != ''
+        uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59 # v18
+        with:
+          server_address: ${{ env.CI_SMTP_SERVER }}
+          server_port: 587
+          username: ${{ env.CI_SMTP_USERNAME }}
+          password: ${{ env.CI_SMTP_PASSWORD }}
+          secure: false
+          subject: "Leopardo RH CI Report — Run #${{ github.run_number }}"
+          to: ${{ env.CI_REPORT_TO != '' && env.CI_REPORT_TO || 'nouractu.com@gmail.com' }}
+          from: ${{ env.CI_REPORT_FROM != '' && env.CI_REPORT_FROM || env.CI_SMTP_USERNAME }}
+          body: file://ci-report.md
+
+      - name: All checks passed
+        if: |
+          (needs.backend-tests.result == 'success' || needs.backend-tests.result == 'skipped') &&
+          (needs.backend-security.result == 'success' || needs.backend-security.result == 'skipped') &&
+          (needs.backend-quality.result == 'success' || needs.backend-quality.result == 'skipped') &&
+          (needs.governance-gates.result == 'success' || needs.governance-gates.result == 'skipped') &&
+          (needs.dependency-review.result == 'success' || needs.dependency-review.result == 'skipped')
+        run: echo "All checks passed - PR can be merged or main can be deployed"
+
+      - name: Checks failed
+        if: |
+          contains(fromJson('["failure","cancelled","timed_out"]'), needs.backend-tests.result) ||
+          contains(fromJson('["failure","cancelled","timed_out"]'), needs.backend-security.result) ||
+          contains(fromJson('["failure","cancelled","timed_out"]'), needs.backend-quality.result) ||
+          contains(fromJson('["failure","cancelled","timed_out"]'), needs.governance-gates.result) ||
+          contains(fromJson('["failure","cancelled","timed_out"]'), needs.dependency-review.result)
+        run: |
+          echo "Checks failed - merge or deployment blocked"
+          exit 1

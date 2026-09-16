@@ -1,0 +1,182 @@
+<?php
+
+use App\Http\Controllers\Web\AttendanceCorrectionAdminController;
+use App\Http\Controllers\Web\BiometricAdminController;
+use App\Http\Controllers\Web\DashboardController;
+use App\Http\Controllers\Web\InvitationController;
+use App\Http\Controllers\Web\InvitationManagementController;
+use App\Http\Controllers\Web\KioskController;
+use App\Http\Controllers\Web\MyDashboardController;
+use App\Http\Controllers\Web\PlatformAuthController;
+use App\Http\Controllers\Web\PlatformCompanyController;
+use App\Http\Controllers\Web\DemoLoginController;
+use App\Http\Controllers\Web\WebAuthController;
+use App\Http\Controllers\Web\WebEmployeeController;
+use App\Http\Controllers\Web\WebEmployeeManagementController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/', function () {
+    return view('welcome');
+});
+
+// Capture de lien partenaire (Middleware gère la redirection et le cookie)
+// #4606 : route publique écrite en DB à chaque hit (PartnerClick via le
+// middleware global) — throttle 60/min/IP + entrées bornées (voir
+// PartnerLinkMiddleware) pour éviter 500 (Referer > 255) et l'amplification.
+Route::get('/p/{code}', function () {
+    return redirect('/signup');
+})->middleware('throttle:60,1')->name('partner.link');
+
+// Issue #2253 — magic link d'accès au sandbox de démo (jeton à usage unique).
+// #4931 : /demo-login CONSOMME un jeton à usage unique (effet de bord).
+// Le GET est CONSERVÉ volontairement : un magic link dans un email doit
+// rester cliquable (un navigateur ne fait pas de POST depuis un lien
+// email) — exception documentée, token single-use + expiration déjà en
+// place. Un alias POST est ajouté pour les clients API/JSON.
+Route::middleware('throttle:auth-sensitive')->get('/demo-login/{token}', DemoLoginController::class);
+Route::middleware('throttle:auth-sensitive')->post('/demo-login/{token}', DemoLoginController::class);
+
+// Issue #5588 : la doc API reste publique hors production (QA/démo/tests)
+// mais requiert l'authentification en production (Gate viewApiDocs).
+Route::middleware(\App\Http\Middleware\EnsureApiDocsAuthorized::class)->group(function (): void {
+    Route::get('/docs', function () {
+        return view('docs.openapi');
+    })->name('docs.openapi');
+
+    Route::get('/tester-guide', function () {
+        return view('docs.tester-guide');
+    })->name('docs.tester-guide');
+
+    Route::get('/api-explorer', function () {
+        return view('docs.api-explorer');
+    })->name('docs.api-explorer');
+
+    Route::get('/docs/openapi.yaml', function () {
+        $path = base_path('openapi.yaml');
+
+        abort_unless(is_file($path), 404);
+
+        return response((string) file_get_contents($path), 200, [
+            'Cache-Control' => 'public, max-age=300',
+            'Content-Type' => 'application/yaml; charset=UTF-8',
+        ]);
+    })->name('docs.openapi.spec');
+});
+
+Route::middleware('guest:super_admin_web')->group(function (): void {
+    Route::get('/platform/login', [PlatformAuthController::class, 'showLogin'])->name('platform.login');
+    // PA2-API-005: dedicated 'web-login' throttle since this session-based form
+    // is not covered by the API 'auth-sensitive' limiter.
+    Route::post('/platform/login', [PlatformAuthController::class, 'login'])
+        ->middleware('throttle:web-login')
+        ->name('platform.login.store');
+    // Issue #6530 — challenge TOTP de la surface web super-admin (alignement
+    // sur le login API) : l'etat « en attente de 2FA » est porte par la
+    // session, le code est verifie avant toute ouverture de session.
+    Route::get('/platform/login/2fa', [PlatformAuthController::class, 'show2fa'])->name('platform.login.2fa');
+    Route::post('/platform/login/2fa', [PlatformAuthController::class, 'verify2fa'])
+        ->middleware('throttle:web-login')
+        ->name('platform.login.2fa.verify');
+});
+
+Route::post('/platform/logout', [PlatformAuthController::class, 'logout'])
+    ->middleware('auth:super_admin_web')
+    ->name('platform.logout');
+
+Route::middleware('auth:super_admin_web')->prefix('platform')->name('platform.')->group(function (): void {
+    Route::get('/companies', [PlatformCompanyController::class, 'index'])->name('companies.index');
+    Route::get('/companies/create', [PlatformCompanyController::class, 'create'])->name('companies.create');
+    Route::post('/companies', [PlatformCompanyController::class, 'store'])->name('companies.store');
+    Route::get('/companies/{company}/edit', [PlatformCompanyController::class, 'edit'])->name('companies.edit');
+    Route::put('/companies/{company}', [PlatformCompanyController::class, 'update'])->name('companies.update');
+    Route::post('/companies/{company}/resend-invitation', [PlatformCompanyController::class, 'resendManagerInvitation'])->name('companies.resend');
+});
+
+Route::middleware('guest:web')->group(function (): void {
+    Route::get('/login', [WebAuthController::class, 'showLogin'])->name('login');
+    // PA2-API-005: dedicated 'web-login' throttle since this session-based form
+    // is not covered by the API 'auth-sensitive' limiter.
+    Route::post('/login', [WebAuthController::class, 'login'])
+        ->middleware('throttle:web-login')
+        ->name('login.store');
+    // #6541 — challenge 2FA web (session) : le compte 2FA doit fournir son
+    // code TOTP / code de récupération avant l'ouverture de session.
+    Route::get('/login/2fa', [WebAuthController::class, 'showTwoFactorChallenge'])
+        ->name('login.2fa');
+    Route::post('/login/2fa', [WebAuthController::class, 'verifyTwoFactor'])
+        ->middleware('throttle:web-login')
+        ->name('login.2fa.verify');
+});
+
+// #4498 : endpoints publics de pose de mot de passe — throttle dédié (token + IP).
+Route::get('/activate/{token}', [InvitationController::class, 'showActivationForm'])
+    ->middleware('throttle:web-activate')
+    ->name('invitation.activate.show');
+Route::post('/activate/{token}', [InvitationController::class, 'activate'])
+    ->middleware('throttle:web-activate')
+    ->name('invitation.activate.store');
+// #4607 : le GET de la page kiosk (device_code = seule credential de la
+// borne) est throttlé sur un bucket DÉDIÉ (kiosk-show, 120/min, device+IP)
+// — ne pas partager kiosk-punch (30/min) pour ne pas pénaliser une borne
+// active qui recharge la page à chaque pointage. Sans throttle, le
+// device_code était énumérable en force brute (lookup DB + session par hit).
+Route::get('/kiosk/{deviceCode}', [KioskController::class, 'show'])
+    ->middleware('throttle:kiosk-show')
+    ->name('kiosk.show');
+// PA2-API-005: public, device-code based, unauthenticated-by-Sanctum kiosk
+// punch endpoint gets its own 'kiosk-punch' throttle bucket (keyed by device
+// code + IP) to guard against brute force / abuse.
+Route::post('/kiosk/{deviceCode}/punch', [KioskController::class, 'punch'])
+    ->middleware('throttle:kiosk-punch')
+    ->name('kiosk.punch');
+
+Route::post('/logout', [WebAuthController::class, 'logout'])
+    ->middleware('auth:web')
+    ->name('logout');
+
+// Espace personnel accessible a tout employe authentifie (manager ou simple employe).
+Route::middleware(['auth:web', 'tenant', 'employee'])->prefix('me')->name('me.')->group(function (): void {
+    Route::get('/', [MyDashboardController::class, 'index'])->name('dashboard');
+});
+
+// Dashboard manager (principal + sous-roles RH / dept / comptable / superviseur).
+Route::middleware(['auth:web', 'tenant', 'manager'])->group(function (): void {
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
+    Route::get('/employees/{employee}', [WebEmployeeController::class, 'show'])
+        ->where('employee', '[0-9]+')
+        ->name('employees.show');
+    Route::get('/employees/{employee}/quick-estimate', [WebEmployeeController::class, 'quickEstimate'])
+        ->where('employee', '[0-9]+')
+        ->name('employees.quickEstimate');
+    Route::get('/employees/{employee}/receipt', [WebEmployeeController::class, 'receipt'])
+        ->where('employee', '[0-9]+')
+        ->name('employees.receipt');
+});
+
+// Creation / gestion des employes : reservee aux managers Principal et RH.
+Route::middleware(['auth:web', 'tenant', 'manager_role:principal,rh'])->group(function (): void {
+    Route::get('/employees/create', [WebEmployeeManagementController::class, 'create'])->name('employees.create');
+    Route::post('/employees', [WebEmployeeManagementController::class, 'store'])->name('employees.store');
+
+    Route::prefix('hr')->name('hr.')->group(function (): void {
+        Route::get('/invitations', [InvitationManagementController::class, 'index'])->name('invitations.index');
+        Route::post('/invitations/{invitation}/resend', [InvitationManagementController::class, 'resend'])->name('invitations.resend');
+    });
+
+    Route::get('/attendance-corrections', [AttendanceCorrectionAdminController::class, 'index'])->name('attendance-corrections.index');
+    Route::post('/attendance-corrections/{correction}/approve', [AttendanceCorrectionAdminController::class, 'approve'])
+        ->whereNumber('correction')
+        ->name('attendance-corrections.approve');
+    Route::post('/attendance-corrections/{correction}/reject', [AttendanceCorrectionAdminController::class, 'reject'])
+        ->whereNumber('correction')
+        ->name('attendance-corrections.reject');
+});
+
+// Biometrie / bornes : Principal et Superviseur.
+Route::middleware(['auth:web', 'tenant', 'manager_role:principal,superviseur'])->group(function (): void {
+    Route::get('/biometrics', [BiometricAdminController::class, 'index'])->name('biometrics.index');
+    Route::post('/biometrics/requests/{id}/approve', [BiometricAdminController::class, 'approve'])->name('biometrics.requests.approve');
+    Route::post('/biometrics/requests/{id}/reject', [BiometricAdminController::class, 'reject'])->name('biometrics.requests.reject');
+    Route::post('/biometrics/kiosks', [BiometricAdminController::class, 'createKiosk'])->name('biometrics.kiosks.store');
+});

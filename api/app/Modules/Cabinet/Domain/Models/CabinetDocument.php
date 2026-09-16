@@ -1,0 +1,78 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Cabinet\Domain\Models;
+
+use App\Core\Auth\Domain\Models\Employee;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Carbon;
+
+/**
+ * @property int $id
+ * @property string|null $company_id
+ * @property int $employee_id
+ * @property int|null $folder_id
+ * @property string $name
+ * @property string $original_name
+ * @property string $mime_type
+ * @property int $size
+ * @property string $disk
+ * @property string $path
+ * @property string|null $notes
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @mixin \Illuminate\Database\Eloquent\Builder<static>
+ */
+class CabinetDocument extends Model
+{
+    protected $table = 'cabinet_documents';
+
+    protected $fillable = [
+        'company_id',
+        'employee_id',
+        'folder_id',
+        'name',
+        'original_name',
+        'mime_type',
+        'size',
+        'disk',
+        'path',
+        'notes',
+        'read_only',
+        'document_type',
+        'source_id',
+    ];
+
+    protected $casts = [
+        'employee_id' => 'integer',
+        'size' => 'integer',
+        'read_only' => 'boolean',
+    ];
+
+    /**
+     * @return BelongsTo<Employee, $this>
+     */
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'employee_id');
+    }
+
+    /**
+     * @return BelongsTo<CabinetFolder, $this>
+     */
+    public function folder(): BelongsTo
+    {
+        return $this->belongsTo(CabinetFolder::class, 'folder_id');
+    }
+
+    /**
+     * @return MorphMany<CabinetShare, $this>
+     */
+    public function shares(): MorphMany
+    {
+        return $this->morphMany(CabinetShare::class, 'shareable');
+    }
+}

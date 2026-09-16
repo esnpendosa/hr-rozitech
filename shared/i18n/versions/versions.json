@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-08-30T15:05:00Z",
+  "default_locale": "fr",
+  "rtl_locales": [
+    "ar"
+  ],
+  "supported_variants": {
+    "fr": [
+      "fr-FR",
+      "fr-BE",
+      "fr-CA"
+    ],
+    "ar": [
+      "ar-SA",
+      "ar-MA"
+    ],
+    "tr": [
+      "tr-TR"
+    ],
+    "en": [
+      "en-US",
+      "en-GB"
+    ]
+  },
+  "locales": {
+    "fr": {
+      "checksum": "43cf2ac8cfbeefc161e7c210e15149d27587e80708720777d27d93398a912e61",
+      "version": "1.0.0",
+      "updated_at": "2026-08-30T15:05:00Z"
+    },
+    "ar": {
+      "checksum": "b79342f27fa9838053f9db197757ab3dd23c8bba0153715107f917acac21c6de",
+      "version": "1.0.0",
+      "updated_at": "2026-08-30T15:05:00Z"
+    },
+    "tr": {
+      "checksum": "ea63caab776cdee7506bbd8d62d7a512aade51e80915c026c80f9fcd699d184a",
+      "version": "1.0.0",
+      "updated_at": "2026-08-30T15:05:00Z"
+    },
+    "en": {
+      "checksum": "3469eaf9da7f5b5f64aa058d88947ca171571aa014382672e926f0524fbe5772",
+      "version": "1.0.0",
+      "updated_at": "2026-08-30T15:05:00Z"
+    }
+  },
+  "surfaces": {
+    "web": {
+      "checksums": {
+        "ar": "b79342f27fa9838053f9db197757ab3dd23c8bba0153715107f917acac21c6de",
+        "en": "3469eaf9da7f5b5f64aa058d88947ca171571aa014382672e926f0524fbe5772",
+        "fr": "43cf2ac8cfbeefc161e7c210e15149d27587e80708720777d27d93398a912e61",
+        "tr": "ea63caab776cdee7506bbd8d62d7a512aade51e80915c026c80f9fcd699d184a"
+      },
+      "updated_at": "2026-09-14T15:03:17.335Z"
+    },
+    "admin": {
+      "checksums": {
+        "ar": "854ecb5f96d91ec77a5e87ae3fe50f048d11621d956a850d3408906f9fdb2d10",
+        "en": "55d99fe060785241a828a73039c9a89cd1b429e94d2b70ab104cef47cc666512",
+        "fr": "31d944e949b99218fa66e3e77eb79737a367b753b5def0697cc51560114dcae1",
+        "tr": "bdca9a984778b53f73a18b8883abf5f13dae9e5becb39b6c9dcf0f025c0fa3fb"
+      },
+      "updated_at": "2026-09-14T17:13:26.411Z"
+    }
+  }
+}

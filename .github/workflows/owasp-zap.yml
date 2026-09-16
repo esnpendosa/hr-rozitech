@@ -1,0 +1,135 @@
+name: OWASP ZAP Baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Base URL to scan"
+        required: false
+        default: ""
+  workflow_run:
+    workflows: ["Deploy - Leopardo RH"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  DEFAULT_ZAP_TARGET_URL: ${{ vars.DEV_API_BASE_URL }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  # Issue #2131 : groupe par SHA du déploiement déclencheur (et non par ref) —
+  # même anti-cascade que e2e-staging.yml (cf. commentaire là-bas).
+  # #3906 : cible = PRODUCTION (aucun staging réel, #1485) — scan honnêtement
+  # présenté comme baseline prod.
+  # workflow_run/dispatch n’émettent jamais l’événement pull_request : la
+  # condition précédente désactivait donc la déduplication en pratique.
+  group: owasp-zap-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  should-run:
+    # #5032 : un parent CANCELLED/skipped (déploiement supersédé par un push
+    # plus récent) ne doit pas consommer de runner juste pour laisser le
+    # deploy-gate le dire. On ne filtre QUE ces conclusions : un parent failed
+    # reste traité (le gate vérifie deploy-api précisément — un échec mobile
+    # ne doit pas bloquer le smoke API).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' }}
+    timeout-minutes: 45
+    name: Check deployment status
+    runs-on: ubuntu-latest
+    outputs:
+      run_scan: ${{ steps.gate.outputs.result }}
+    steps:
+      # Issue #4720 : plus de fallback silencieux vers un hôte legacy — le scan
+      # échoue explicitement si la base API prod n'est pas positionnée.
+      - name: Guard DEV_API_BASE_URL (fail-closed, #4720)
+        if: ${{ !vars.DEV_API_BASE_URL }}
+        run: |
+          echo "::error::DEV_API_BASE_URL must be set (silent fallback removed, issue #4720)."
+          exit 1
+      # Audit §4.2 / Plan P3: previously gated on the parent "Deploy - Leopardo RH"
+      # workflow_run's overall conclusion, which also depends on the
+      # distribute-mobile job (Flutter/Firebase). A broken mobile build could
+      # mark the whole workflow failed and skip this API-only smoke scan even
+      # when the API deploy itself succeeded. This now checks the specific
+      # `deploy-api` job's conclusion via the Checks API, matching the level
+      # of specificity deploy-main.yml already uses for its own gating.
+      # Local actions are unavailable until the repository is checked out.
+      - name: Checkout repository for local deploy gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          lfs: false
+
+      - name: Determine if ZAP should run
+        id: gate
+        uses: ./.github/actions/deploy-gate
+        with:
+          output_name: run_scan
+
+  zap-baseline:
+    timeout-minutes: 30
+    name: ZAP Baseline Scan
+    runs-on: ubuntu-latest
+    needs: should-run
+    if: needs.should-run.outputs.run_scan == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Resolve target URL
+        id: target
+        shell: bash
+        run: |
+          INPUT_URL="${{ github.event.inputs.target_url }}"
+          URL="${INPUT_URL:-${DEFAULT_ZAP_TARGET_URL}}"
+          URL="${URL%/}"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Scanning ${URL}"
+
+      - name: Wait for health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="${{ steps.target.outputs.url }}/api/v1/health"
+          for attempt in {1..6}; do
+            if curl --fail --silent --show-error "${URL}" | grep -q '"status"'; then
+              echo "API health endpoint is ready."
+              exit 0
+            fi
+            echo "Health check attempt ${attempt}/6 failed; retrying in 10s."
+            sleep 10
+          done
+          echo "API health endpoint did not become ready: ${URL}"
+          exit 1
+
+      - name: Run OWASP ZAP baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zap-reports
+          docker run --rm \
+            -v "${PWD}/zap-reports:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t "${{ steps.target.outputs.url }}" \
+              -J zap-baseline.json \
+              -r zap-baseline.html \
+              -w zap-baseline.md \
+              -I
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: owasp-zap-baseline
+          path: zap-reports/
+          if-no-files-found: ignore
+          retention-days: 30

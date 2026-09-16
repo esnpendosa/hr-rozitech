@@ -1,0 +1,505 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Web;
+
+use App\Core\Auth\Domain\Models\AuditLog;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Tenant\Domain\Models\SuperAdmin;
+use App\Http\Controllers\Controller;
+use App\Modules\HR\Infrastructure\Services\UserInvitationService;
+use App\Modules\Payroll\Domain\Models\PayrollRun;
+use App\Modules\Payroll\Domain\Models\SalaryStructure;
+use App\Modules\Platform\Infrastructure\Services\CompanyProvisioningService;
+use App\Support\CountryDefaults;
+use Illuminate\Contracts\View\View;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+
+class PlatformCompanyController extends Controller
+{
+    public function __construct(
+        private readonly CompanyProvisioningService $companyProvisioningService,
+    ) {}
+
+    public function index(Request $request): View|JsonResponse
+    {
+        DB::statement('SET search_path TO public');
+
+        $query = Company::query()->latest();
+
+        if ($request->expectsJson()) {
+            $validated = $request->validate([
+                'status' => ['nullable', Rule::in(['active', 'trial', 'suspended', 'expired'])],
+                'search' => ['nullable', 'string', 'max:100'],
+                'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+            ]);
+
+            if (isset($validated['status'])) {
+                $query->where('status', $validated['status']);
+            }
+
+            if (isset($validated['search']) && trim($validated['search']) !== '') {
+                $search = trim($validated['search']);
+                $query->where(function ($inner) use ($search): void {
+                    $inner
+                        ->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%")
+                        ->orWhere('country', 'like', "%{$search}%")
+                        ->orWhere('city', 'like', "%{$search}%");
+                });
+            }
+
+            $companies = $query->paginate((int) ($validated['per_page'] ?? 20));
+
+            return new JsonResponse([
+                'data' => $companies->map(fn (Company $company): array => [
+                    'id' => $company->id,
+                    'name' => $company->name,
+                    'slug' => $company->slug,
+                    'email' => $company->email,
+                    'status' => $company->status,
+                    'country' => $company->country,
+                    'city' => $company->city,
+                    'currency' => $company->currency,
+                    'language' => $company->language,
+                    'plan_id' => $company->plan_id,
+                    'features' => $company->features ?? [],
+                    'created_at' => $company->created_at?->toIso8601String(),
+                ]),
+                'meta' => [
+                    'current_page' => $companies->currentPage(),
+                    'last_page' => $companies->lastPage(),
+                    // #7339 — le défaut (20) était implicite : un client qui
+                    // demande « toutes les sociétés » recevait 20 lignes sans
+                    // que rien ne l'indique. On l'expose pour qu'un appelant
+                    // puisse le détecter et paginer (`?page=`).
+                    'per_page' => $companies->perPage(),
+                    'total' => $companies->total(),
+                ],
+            ]);
+        }
+
+        $companies = $query->limit(50)->get();
+
+        return view('platform.companies.index', [
+            'companies' => $companies,
+        ]);
+    }
+
+    public function create(): View
+    {
+        DB::statement('SET search_path TO public');
+
+        return view('platform.companies.create', [
+            'plans' => DB::table('plans')->orderBy('id')->get(),
+        ]);
+    }
+
+    public function store(Request $request): RedirectResponse|JsonResponse
+    {
+        DB::statement('SET search_path TO public');
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:100'],
+            'slug' => ['nullable', 'string', 'max:100', Rule::unique('companies', 'slug')],
+            'sector' => ['nullable', 'string', 'max:100'],
+            'country' => ['required', 'string', 'size:2'],
+            'city' => ['required', 'string', 'max:100'],
+            'address' => ['nullable', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:150', Rule::unique('companies', 'email')],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'plan_id' => ['nullable', 'integer', Rule::exists('plans', 'id')],
+            'language' => ['nullable', 'string', 'size:2'],
+            'timezone' => ['nullable', 'string', 'max:50'],
+            'currency' => ['nullable', 'string', 'size:3'],
+            'status' => ['nullable', Rule::in(['active', 'trial'])],
+            'notes' => ['nullable', 'string', 'max:1000'],
+            'manager_first_name' => ['required', 'string', 'max:100'],
+            'manager_last_name' => ['required', 'string', 'max:100'],
+            'manager_email' => ['required', 'email', 'max:150'],
+            'manager_phone' => ['nullable', 'string', 'max:30'],
+            // #6693 : solutions sectorielles à activer au provisioning
+            // (ex. ["restaurant"] depuis le wizard vitrine). Allowlist
+            // vérifiée par CompanyProvisioningService (fail-closed).
+            'solutions' => ['nullable', 'array'],
+            'solutions.*' => ['string', 'max:50'],
+        ]);
+
+        $validated['sector'] = trim((string) ($validated['sector'] ?? '')) ?: 'Non precise';
+        // MULTI-PAYS (#1867/#1950) : pays obligatoire et supporté — résolution
+        // STRICTE (CountryDefaults::find), aucun fallback silencieux vers DZ
+        // (invariant 10). Le code est normalisé en majuscules avant lookup.
+        $validated['country'] = strtoupper(trim($validated['country']));
+        $countryDefaults = CountryDefaults::find($validated['country']);
+        if ($countryDefaults === null) {
+            $message = __('errors.COUNTRY_NOT_SUPPORTED', ['countries' => implode(', ', array_column(CountryDefaults::all(), 'country'))]);
+            if ($request->expectsJson()) {
+                return new JsonResponse([
+                    'message' => $message,
+                    'errors' => ['country' => [$message]],
+                ], 422);
+            }
+
+            return back()
+                ->withInput()
+                ->withErrors(['country' => $message]);
+        }
+        $validated['country'] = $countryDefaults['country'];
+        $validated['language'] = strtolower($validated['language'] ?? $countryDefaults['language']);
+        $validated['currency'] = strtoupper($validated['currency'] ?? $countryDefaults['currency']);
+        $validated['timezone'] = $validated['timezone'] ?? $countryDefaults['timezone'];
+        $validated['status'] = $validated['status'] ?? 'trial';
+        $validated['plan_id'] = $validated['plan_id']
+            ?? DB::table('plans')->where('is_active', true)->orderBy('id')->value('id')
+            ?? DB::table('plans')->orderBy('id')->value('id');
+
+        if (! $validated['plan_id']) {
+            if ($request->expectsJson()) {
+                return new JsonResponse([
+                    'message' => __('errors.NO_ACTIVE_PLAN_FOR_COMPANY'),
+                    'errors' => [
+                        'plan_id' => ['Aucun plan actif disponible pour creer cette societe.'],
+                    ],
+                ], 422);
+            }
+
+            return back()
+                ->withInput()
+                ->withErrors(['plan_id' => 'Aucun plan actif disponible pour creer cette societe.']);
+        }
+
+        if (DB::getDriverName() === 'pgsql' && DB::table('public.user_lookups')->where('email', $validated['manager_email'])->exists()) {
+            if ($request->expectsJson()) {
+                return new JsonResponse([
+                    'message' => __('errors.EMAIL_ALREADY_USED_BY_USER'),
+                    'errors' => [
+                        'manager_email' => ['Cet email est deja utilise par un utilisateur existant.'],
+                    ],
+                ], 422);
+            }
+
+            return back()
+                ->withInput()
+                ->withErrors(['manager_email' => 'Cet email est deja utilise par un utilisateur existant.']);
+        }
+
+        /** @var SuperAdmin $superAdmin */
+        $superAdmin = $request->user('super_admin_web') ?? $request->user('super_admin_api');
+
+        $result = $this->companyProvisioningService->provisionSharedCompany($validated, $superAdmin);
+
+        if ($request->expectsJson()) {
+            $data = [
+                'company' => $result['company'],
+                'manager' => [
+                    'id' => $result['manager']->id,
+                    'email' => $result['manager']->email,
+                    'role' => $result['manager']->role,
+                    'manager_role' => $result['manager']->manager_role,
+                ],
+            ];
+
+            // #6693 : statut d'activation des solutions demandées.
+            if (isset($result['solutions'])) {
+                $data['solutions'] = $result['solutions'];
+            }
+
+            return new JsonResponse(['data' => $data], 201);
+        }
+
+        return redirect()
+            ->route('platform.companies.index')
+            ->with('status', 'Societe creee et invitation manager envoyee.');
+    }
+
+    /**
+     * Ecran d edition d une societe : toggler les modules actifs, changer
+     * le statut, les notes et le plan. Entree principale du super-admin pour
+     * repondre a "un client demande le module Securite / Muhasebe / Finance".
+     */
+    public function edit(string $companyId): View
+    {
+        DB::statement('SET search_path TO public');
+
+        $company = Company::query()->findOrFail($companyId);
+
+        return view('platform.companies.edit', [
+            'company' => $company,
+            'plans' => DB::table('plans')->orderBy('id')->get(),
+            'known_modules' => Company::KNOWN_MODULES,
+        ]);
+    }
+
+    /**
+     * Mise a jour des attributs editables par le super-admin :
+     *   - features (toggle par module connu)
+     *   - status (active / suspended / expired)
+     *   - notes / plan_id
+     * On ne touche ni a schema_name, ni a tenancy_type, ni aux identifiants
+     * structurels (email societe, slug) qui sont figes apres provisioning.
+     */
+    public function update(Request $request, string $companyId): RedirectResponse|JsonResponse
+    {
+        DB::statement('SET search_path TO public');
+
+        $company = Company::query()->findOrFail($companyId);
+
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(['active', 'suspended', 'expired'])],
+            'plan_id' => ['required', 'integer', Rule::exists('plans', 'id')],
+            'notes' => ['nullable', 'string', 'max:1000'],
+            'features' => ['nullable', 'array'],
+            'features.*' => ['boolean'],
+        ]);
+
+        $company->status = $validated['status'];
+        $company->plan_id = $validated['plan_id'];
+        $company->notes = $validated['notes'] ?? null;
+
+        // On reconstruit la map features uniquement a partir des modules connus
+        // (Company::KNOWN_MODULES). Un toggle absent = false, sauf rh qui reste
+        // active par defaut (base de l app, APV L.08).
+        $submitted = $validated['features'] ?? [];
+        $features = [];
+        foreach (Company::KNOWN_MODULES as $module) {
+            if ($module === 'rh') {
+                $features['rh'] = true;
+
+                continue;
+            }
+            $features[$module] = (bool) ($submitted[$module] ?? false);
+        }
+        $company->features = $features;
+        $company->save();
+
+        if ($request->expectsJson()) {
+            return new JsonResponse([
+                'data' => [
+                    'company' => $company->fresh(),
+                ],
+            ]);
+        }
+
+        return redirect()
+            ->route('platform.companies.edit', ['company' => $company->id])
+            ->with('status', 'Societe mise a jour.');
+    }
+
+    /**
+     * MULTI-PAYS (#1867/#1952) — réparation/choix du pays légal d'un tenant
+     * par le super-admin (chemin de sortie pour les tenants legacy créés sans
+     * pays). INVARIANT 9 : refusé dès que des données de paie existent
+     * (PayrollRun ou SalaryStructure) — sauf procédure administrative
+     * documentée (les données doivent être purgées/exportées d'abord).
+     */
+    public function updateCountry(Request $request, string $companyId): RedirectResponse|JsonResponse
+    {
+        // Capturer le search_path ORIGINAL AVANT de basculer sur public : la
+        // restauration finale doit rendre la session à son état d'entrée
+        // (ex. 'public,shared_tenants'), sinon l'écriture d'audit (table
+        // tenant `audit_logs`) échoue en 500 (« relation does not exist »).
+        $searchPathRow = DB::selectOne('SHOW search_path');
+        $originalSearchPath = is_object($searchPathRow) && property_exists($searchPathRow, 'search_path')
+            ? (string) $searchPathRow->search_path
+            : 'public';
+
+        DB::statement('SET search_path TO public');
+
+        $company = Company::query()->findOrFail($companyId);
+
+        $validated = $request->validate([
+            'country' => ['required', 'string', 'size:2'],
+        ]);
+
+        $countryDefaults = CountryDefaults::find($validated['country']);
+        if ($countryDefaults === null) {
+            $message = 'Le pays est invalide ou non supporte ('.implode(', ', array_column(CountryDefaults::all(), 'country')).').';
+            if ($request->expectsJson()) {
+                return new JsonResponse([
+                    'message' => $message,
+                    'errors' => ['country' => [$message]],
+                ], 422);
+            }
+
+            return back()->withInput()->withErrors(['country' => $message]);
+        }
+
+        // INVARIANT 9 : verrouillage du pays après création de données de paie.
+        // Les tables `payroll_runs`/`salary_structures` vivent dans le schéma
+        // du TENANT (pas dans public) : bascule sur le search_path du tenant
+        // pour le check, puis RESTAURATION en `finally` (une session restée
+        // sur le schéma tenant fuirait vers les requêtes suivantes — même
+        // garde que `withTenantSearchPath()` de PlatformCompanyHealthService).
+        $hasPayrollData = false;
+        DB::statement('SET search_path TO '.$company->getSafeSearchPath());
+        try {
+            DB::statement('SET search_path TO public');
+
+            $company = Company::query()->findOrFail($companyId);
+
+            $validated = $request->validate([
+                'country' => ['required', 'string', 'size:2'],
+            ]);
+
+            $countryDefaults = CountryDefaults::find($validated['country']);
+            if ($countryDefaults === null) {
+                $message = 'Le pays est invalide ou non supporte ('.implode(', ', array_column(CountryDefaults::all(), 'country')).').';
+                if ($request->expectsJson()) {
+                    return new JsonResponse([
+                        'message' => $message,
+                        'errors' => ['country' => [$message]],
+                    ], 422);
+                }
+
+                return back()->withInput()->withErrors(['country' => $message]);
+            }
+
+            // INVARIANT 9 : verrouillage du pays après création de données de paie.
+            // Les tables `payroll_runs`/`salary_structures` vivent dans le schéma
+            // du TENANT (pas dans public) : bascule sur le search_path du tenant
+            // pour le check, puis RESTAURATION en `finally` (une session restée
+            // sur le schéma tenant fuirait vers les requêtes suivantes — même
+            // garde que `withTenantSearchPath()` de PlatformCompanyHealthService).
+            $searchPathRow = DB::selectOne('SHOW search_path');
+            $previousSearchPath = is_object($searchPathRow) && property_exists($searchPathRow, 'search_path')
+                ? (string) $searchPathRow->search_path
+                : 'public';
+
+            $hasPayrollData = false;
+            DB::statement('SET search_path TO '.$company->getSafeSearchPath());
+            try {
+                $hasPayrollData = PayrollRun::query()->where('company_id', $company->id)->exists()
+                    || SalaryStructure::query()->where('company_id', $company->id)->exists();
+            } finally {
+                DB::statement('SET search_path TO '.$previousSearchPath);
+            }
+
+            if ($hasPayrollData) {
+                $message = 'Le pays d\'un tenant avec des donnees de paie (runs ou structures salariales) ne peut pas etre modifie (invariant 9). Purge/export prealable requis.';
+                if ($request->expectsJson()) {
+                    return new JsonResponse([
+                        'message' => $message,
+                        'errors' => ['country' => [$message]],
+                    ], 422);
+                }
+
+                return back()->withInput()->withErrors(['country' => $message]);
+            }
+
+            // Issue #1873 — toute modification du pays d'un tenant est journalisée
+            // (audit trail : avant/après, acteur, IP) pour traçabilité complète.
+            $oldCountry = $company->country;
+            $oldCurrency = $company->currency;
+            $oldTimezone = $company->timezone;
+            $oldLanguage = $company->language;
+
+            $company->country = $countryDefaults['country'];
+            // La devise/fuseau/langue suivent le pays (réparation cohérente).
+            $company->currency = strtoupper($countryDefaults['currency']);
+            $company->timezone = $countryDefaults['timezone'];
+            $company->language = strtolower($countryDefaults['language']);
+            $company->save();
+
+            // Issue #1873 — toute modification du pays d'un tenant est journalisée.
+            // `audit_logs` vit dans le schéma du tenant (shared_tenants en mode
+            // partagé), or ce contrôleur s'exécute avec search_path=public (ligne
+            // 288) → l'INSERT non qualifié échoue (relation audit_logs introuvable).
+            // Bascule temporaire sur le schéma du tenant, puis restauration en
+            // `finally` (même garde que le bloc INVARIANT 9 ci-dessus).
+            $auditPathRow = DB::selectOne('SHOW search_path');
+            $previousAuditPath = is_object($auditPathRow) && property_exists($auditPathRow, 'search_path')
+                ? (string) $auditPathRow->search_path
+                : 'public';
+            DB::statement('SET search_path TO '.$company->getSafeSearchPath());
+            try {
+                AuditLog::create([
+                    'company_id' => $company->id,
+                    'user_id' => $request->user()?->id,
+                    'action' => 'tenant_country_changed',
+                    'auditable_type' => $company->getMorphClass(),
+                    'auditable_id' => $company->id,
+                    'old_values' => [
+                        'country' => $oldCountry,
+                        'currency' => $oldCurrency,
+                        'timezone' => $oldTimezone,
+                        'language' => $oldLanguage,
+                    ],
+                    'new_values' => [
+                        'country' => $company->country,
+                        'currency' => $company->currency,
+                        'timezone' => $company->timezone,
+                        'language' => $company->language,
+                    ],
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
+                ]);
+            } finally {
+                DB::statement('SET search_path TO '.$previousAuditPath);
+            }
+
+            if ($request->expectsJson()) {
+                return new JsonResponse([
+                    'data' => [
+                        'company' => $company->fresh(),
+                    ],
+                ]);
+            }
+
+            return redirect()
+                ->route('platform.companies.edit', ['company' => $company->id])
+                ->with('status', 'Pays du tenant mis a jour.');
+        } finally {
+            DB::statement('SET search_path TO '.$originalSearchPath);
+        }
+
+    }
+
+    /**
+     * Renvoie l invitation du manager principal de la societe.
+     * Utile quand l email initial n est jamais arrive ou que le lien a expire.
+     * Passe par createAndSend qui fait un updateOrCreate sur (company_id,
+     * employee_id) et invalide automatiquement l ancien token.
+     */
+    public function resendManagerInvitation(
+        Request $request,
+        string $companyId,
+        UserInvitationService $invitationService,
+    ): RedirectResponse {
+        DB::statement('SET search_path TO public');
+
+        $company = Company::query()->findOrFail($companyId);
+
+        DB::statement('SET search_path TO shared_tenants,public');
+        $managerEmployee = Employee::query()
+            ->withoutGlobalScopes()
+            ->where('company_id', $company->id)
+            ->where('role', 'manager')
+            ->where('manager_role', 'principal')
+            ->first();
+
+        if ($managerEmployee === null) {
+            DB::statement('SET search_path TO public');
+
+            return back()->withErrors(['resend' => 'Aucun manager principal trouve pour cette societe.']);
+        }
+
+        /** @var SuperAdmin $superAdmin */
+        $superAdmin = $request->user('super_admin_web') ?? $request->user('super_admin_api');
+
+        DB::statement('SET search_path TO public');
+        $invitationService->createAndSend(
+            company: $company,
+            employee: $managerEmployee,
+            invitedByType: 'super_admin',
+            invitedByEmail: $superAdmin->email,
+        );
+
+        return back()->with('status', 'Invitation manager renvoyee.');
+    }
+}

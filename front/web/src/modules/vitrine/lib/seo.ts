@@ -1,0 +1,741 @@
+import { Metadata } from "next";
+
+import { SITE_URL as siteUrl } from '@/lib/site-url';
+import { t } from '@/lib/i18n/locale-catalog';
+import type { AppLocale } from '@/lib/i18n';
+const siteName = process.env.NEXT_PUBLIC_SITE_NAME || "RMIH";
+
+/**
+ * Entité de marque canonique (AI-search / données structurées).
+ */
+export const BRAND_NAME = 'RMIH';
+
+/** Variantes de marque reconnues (toutes locales confondues). */
+export const BRAND_ALTERNATE_NAMES = [
+  'RMIH',
+  'RMIH',
+  'RMIH Systems',
+];
+
+/** Nom de marque affiché pour une locale donnée (titres, llms.txt). */
+export const BRAND_NAME_BY_LOCALE: Record<AppLocale, string> = {
+  id: 'RMIH',
+  fr: 'RMIH',
+  en: 'RMIH',
+  tr: 'RMIH',
+  ar: 'RMIH',
+};
+const supportedLocales = ["id", "fr", "en", "tr", "ar"] as const;
+
+export interface SEOMetadata {
+  title: string;
+  description: string;
+  keywords?: string[];
+  ogImage?: string;
+  ogType?: "website" | "article";
+  canonical?: string;
+  robots?: string;
+  author?: string;
+  publishedTime?: string;
+  modifiedTime?: string;
+  /** Locale BCP-47 de la page (ex. "fr_FR", "en_US", "tr_TR", "ar_AR"). */
+  locale?: string;
+}
+
+/** #3807 : mapping AppLocale → og:locale BCP-47 (évite le fr_FR codé en dur). */
+export function ogLocaleFor(locale: string): string {
+  const map: Record<string, string> = {
+    id: 'id_ID',
+    fr: 'fr_FR',
+    en: 'en_US',
+    tr: 'tr_TR',
+    ar: 'ar_AR',
+  };
+  return map[locale] ?? 'fr_FR';
+}
+
+/**
+ * #4201 : canonical/og:url alignés sur la locale RÉELLE de la page.
+ * Sans locale (ou locale fr) → URL inchangée (canonical FR historique).
+ * Avec locale ≠ fr → `?lang=<locale>` ajouté, comme les alternates hreflang
+ * (cohérence #3250 : chaque variante pointe vers sa propre URL, plus de
+ * canonical FR pour une page EN → soft-duplicates).
+ */
+export function localizedCanonical(url: string, locale?: string): string {
+  if (!locale || locale === 'fr') {
+    return url;
+  }
+  try {
+    const parsed = new URL(url, siteUrl);
+    parsed.searchParams.set('lang', locale);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Generate Next.js Metadata object
+ */
+export function generateMetadata(seo: SEOMetadata): Metadata {
+  // #4201 : canonical/og:url localisés (voir localizedCanonical).
+  // #4400 : les alternates hreflang partent de la BASE FR (sans ?lang) —
+  // sinon sur une page ?lang=en l'entrée fr pointait vers l'URL anglaise
+  // elle-même (auto-référence), et sans canonical tout s'effondrait sur la
+  // homepage.
+  const baseUrl = localizedCanonical(seo.canonical || siteUrl, undefined);
+  const url = localizedCanonical(seo.canonical || siteUrl, seo.locale);
+  const image = seo.ogImage || `${siteUrl}/og-image.png`;
+  const path = (() => {
+    try {
+      const parsed = new URL(baseUrl, siteUrl);
+      return parsed.pathname === "/" ? "/" : parsed.pathname;
+    } catch {
+      return "/";
+    }
+  })();
+  // #AI-SEO : `x-default` pointe la variante de repli (FR, sans ?lang=) —
+  // sans elle, Google/les assistants choisissent eux-mêmes la page servie aux
+  // visiteurs dont la langue n'est pas couverte (fr/en/tr/ar).
+  const localizedAlternates = {
+    ...Object.fromEntries(
+      supportedLocales.map((locale) => [
+        locale,
+        locale === "fr" ? baseUrl : `${siteUrl}${path === "/" ? "/" : path}?lang=${locale}`,
+      ])
+    ),
+    'x-default': baseUrl,
+  };
+
+  return {
+    title: seo.title,
+    description: seo.description,
+    keywords: seo.keywords,
+    authors: seo.author ? [{ name: seo.author }] : undefined,
+    robots: seo.robots || "index, follow",
+    openGraph: {
+      title: seo.title,
+      description: seo.description,
+      url: url,
+      siteName: siteName,
+      ...(seo.locale && { locale: ogLocaleFor(seo.locale) }),
+      images: [
+        {
+          url: image,
+          width: 1200,
+          height: 630,
+          alt: seo.title,
+        },
+      ],
+      type: seo.ogType || "website",
+      ...(seo.publishedTime && { publishedTime: seo.publishedTime }),
+      ...(seo.modifiedTime && { modifiedTime: seo.modifiedTime }),
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: seo.title,
+      description: seo.description,
+      images: [image],
+    },
+    alternates: {
+      canonical: url,
+      languages: localizedAlternates,
+    },
+  };
+}
+
+/**
+ * SEO metadata for all pages
+ * Optimized titles (50-60 chars), descriptions (150-160 chars), keywords (3-5)
+ */
+export const pageMetadata = {
+  landing: {
+    title: "Gestion Employés, Paie & Documents | Plateforme Complète",
+    description:
+      "Gérez vos employés, paie et documents en un seul endroit. Essai gratuit 14 jours, sans carte bancaire.",
+    keywords: [
+      "gestion employés SaaS",
+      "logiciel RH PME",
+      "paie automatisée",
+      "pointage numérique",
+      "gestion absences",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  employes: {
+    title: "Gestion RH, pointage & absences terrain",
+    description:
+      "Gérez pointage, absences et schedules facilement. Pointage intelligent avec NFC et biométrie. Essai gratuit.",
+    keywords: [
+      "gestion RH PME",
+      "pointage numérique",
+      "gestion absences",
+      "logiciel RH",
+      "paie employés",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  documents: {
+    title: "Documents RH sécurisés & chiffrés AES-256",
+    description:
+      "Cabinet numérique avec chiffrement AES-256. Partage sécurisé, archivage automatique, outils de conformité RGPD.",
+    keywords: [
+      "cabinet numérique",
+      "gestion documents sécurisée",
+      "partage documents",
+      "archivage conformité",
+      "RGPD documents",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  comptabilite: {
+    title: "Paie automatisée & bulletins de paie",
+    description:
+      "Paie automatisée avec calculs exacts et aide à la conformité. Bulletins générés, exports comptables. Essai gratuit.",
+    keywords: [
+      "paie automatisée",
+      "logiciel paie PME",
+      "calcul salaire",
+      "bulletins de paie",
+      "conformité paie",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  marketing: {
+    title: "Marketing RH : email, SMS & réseaux sociaux",
+    description:
+      "Outils marketing complets: email, SMS, réseaux sociaux. Automation, analytics, intégration RH.",
+    keywords: [
+      "email marketing PME",
+      "SMS marketing",
+      "automation marketing",
+      "campagnes email",
+      "marketing automation",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  integrations: {
+    title: "Intégrations & Connecteurs",
+    description:
+      "Connecteurs comptables et API RMIH : Sage, QuickBooks, API publique, webhooks. Intégrez la paie et les RH à votre stack.",
+    keywords: [
+      "integrations RH",
+      "connecteurs comptables",
+      "API paie",
+      "webhooks RH",
+      "Sage QuickBooks",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  restaurateur: {
+    title: "Logiciel de gestion pour restaurants",
+    description:
+      "Réservations, caisse, cuisine, stock et livraison : découvrez la solution RMIH pour les restaurants mono et multi-sites.",
+    keywords: [
+      "logiciel restaurant",
+      "gestion restaurant",
+      "caisse restaurant",
+      "réservation table",
+      "gestion stock restaurant",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  pricing: {
+    title: "Tarification Transparente | Plans Flexibles",
+    description:
+      // Issue #3487 : la locale n'est pas résolue ici (metadata statique du
+      // module) — le layout /pricing lit ?lang= et appelle t(locale, ...).
+      // Ce fallback FR ne sert que si la clé i18n manque.
+      // ADR-0014 : Free/Pilot/Operations/Enterprise — prix canoniques
+      t('fr', 'seo.pricing.description', 'Tarification transparente : Free 0 €, Pilot 29 €/mois (30 emp.), Operations 79 €/mois (200 emp.), Enterprise sur devis. Essai gratuit 14 jours.'),
+    keywords: [
+      "prix logiciel RH",
+      "tarification paie",
+      "coût gestion employés",
+      "plans pricing",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  about: {
+    title: "À Propos | Notre Mission et Équipe",
+    description:
+      "Découvrez notre mission, équipe et valeurs. Nous aidons les PME à gérer leurs employés simplement.",
+    keywords: ["à propos", "équipe", "mission", "valeurs"],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  blog: {
+    title: "Blog & Resources | Guides RH et Conseils",
+    description:
+      "Guides, articles et webinaires sur la gestion RH, paie et productivité pour PME.",
+    keywords: [
+      "guide RH",
+      "conseils paie",
+      "gestion employés",
+      "tendances RH",
+      "automatisation RH",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  changelog: {
+    title: "Nouveautés & journal des versions",
+    description:
+      "Découvrez les dernieres evolutions produit : API, paie, monitoring et admin. Extrait du changelog officiel.",
+    keywords: [
+      "changelog RMIH",
+      "nouveautes RH",
+      "releases logiciel paie",
+      "notes de version",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  docs: {
+    title: "Documentation API & guides techniques",
+    description:
+      "Documentation technique et guides d'intégration pour l'API RMIH : authentification, webhooks, endpoints RH et paie.",
+    keywords: [
+      "documentation API RH",
+      "intégration RMIH",
+      "webhooks paie",
+      "API gestion employés",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  download: {
+    title: "RMIH Desktop & applications mobiles",
+    description:
+      "Téléchargez le client desktop ZKTeco et les applications mobiles RMIH pour Windows, macOS, Android et iOS.",
+    keywords: [
+      "télécharger RMIH",
+      "application pointage mobile",
+      "client desktop ZKTeco",
+      "app RH Android iOS",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  contact: {
+    title: "Contactez-nous | Support et Ventes RMIH",
+    description:
+      "Une question sur RMIH ? Contactez notre équipe commerciale ou support par email, telephone ou formulaire.",
+    keywords: [
+      "contact RMIH",
+      "support RH SaaS",
+      "demande commerciale",
+      "assistance logiciel RH",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  guideRhStartup: {
+    title: "Guide Complet RH pour Startup | Télécharger",
+    description:
+      "Guide complet RH pour startup. Conseils, templates et bonnes pratiques. Téléchargez gratuitement en PDF.",
+    keywords: [
+      "guide RH startup",
+      "RH pour startup",
+      "gestion RH",
+      "conseils RH",
+    ],
+    ogImage: `${siteUrl}/og/guides-rh-startup.png`,
+  },
+
+  guidePlanningEmployes: {
+    title: "Modèle Planning Employés | Télécharger Excel",
+    description:
+      "Modèle de planning pour vos employés. Template Excel gratuit, flexible et facile à utiliser.",
+    keywords: [
+      "planning employés",
+      "modèle planning",
+      "template Excel",
+      "gestion planning",
+    ],
+    ogImage: `${siteUrl}/og/guides-planning-employes.png`,
+  },
+
+  guideChecklistPaie: {
+    title: "Checklist Paie 2026 | Télécharger Gratuitement",
+    description:
+      "Checklist complète pour votre paie. Vérifications et conformité. Téléchargez gratuitement en PDF.",
+    keywords: [
+      "checklist paie",
+      "paie",
+      "conformité paie",
+      "gestion paie",
+    ],
+    ogImage: `${siteUrl}/og/guides-checklist-paie.png`,
+  },
+
+  guides: {
+    title: "Guides & Ressources RH | Téléchargements Gratuits",
+    description:
+      "Téléchargez nos guides gratuits : Guide RH Startup, Checklist Paie 2026, Modèle Planning Employés.",
+    keywords: [
+      "guides gratuits",
+      "ressources RH",
+      "templates RH",
+      "téléchargements",
+    ],
+    ogImage: `${siteUrl}/og/guides.png`,
+  },
+
+  demo: {
+    title: "Demander une démo | Logiciel RH terrain",
+    description:
+      "Planifiez une démo gratuite de RMIH. Découvrez la gestion RH automatisée : paie multi-pays, pointage, absences, formations.",
+    keywords: [
+      "demo RMIH",
+      "démo logiciel RH",
+      "planifier démo SaaS",
+      "gestion RH automatisée",
+    ],
+    ogImage: `${siteUrl}/og/demo.png`,
+  },
+
+  faq: {
+    title: "Questions Fréquentes | FAQ RMIH",
+    description:
+      "Reponses aux questions les plus posees sur RMIH : tarifs, essai gratuit, sécurité, integrations et support.",
+    keywords: [
+      "FAQ RMIH",
+      "questions logiciel RH",
+      "aide gestion employés",
+      "support paie SaaS",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  testimonials: {
+    title: "Témoignages Clients | Avis sur RMIH",
+    description:
+      "Découvrez comment nos clients transforment leur gestion RH avec RMIH : pointage, paie et absences simplifies.",
+    keywords: [
+      "témoignages RMIH",
+      "avis clients logiciel RH",
+      "retours utilisateurs paie SaaS",
+      "case success RH PME",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  caseStudies: {
+    title: "Études de Cas | Success Stories RMIH",
+    description:
+      "Etudes de cas detaillees d'entreprises ayant déployé RMIH pour automatiser paie, pointage et absences.",
+    keywords: [
+      "etudes de cas RH",
+      "success story paie SaaS",
+      "cas client RMIH",
+      "ROI logiciel RH",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  videos: {
+    title: "Vidéos & démonstrations du produit",
+    description:
+      "Regardez nos tutoriels et demonstrations video : configuration ZKTeco, paie multi-pays et prise en main de RMIH.",
+    keywords: [
+      "videos RMIH",
+      "demo logiciel RH",
+      "tutoriel pointage biométrique",
+      "demonstration paie SaaS",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  branding: {
+    title: "Personnalisation & branding multi-tenant",
+    description:
+      "Personnalisez RMIH avec votre logo, vos couleurs et votre nom d'affichage sur web et mobile, avec isolation par tenant.",
+    keywords: [
+      "branding SaaS RH",
+      "personnalisation multi-tenant",
+      "logo entreprise application RH",
+      "theme personnalise paie",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  careers: {
+    title: "Carrières | Rejoignez l'Équipe RMIH",
+    description:
+      "Découvrez nos offres d'emploi et rejoignez l'équipe qui construit la plateforme RH de référence pour les PME.",
+    keywords: [
+      "carrieres RMIH",
+      "emploi logiciel RH",
+      "recrutement startup SaaS",
+      "offres emploi tech RH",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  mobile: {
+    title: "Applications mobiles RH : Android et iOS",
+    description:
+      "Applications mobiles RMIH pour employés, managers et administrateurs : pointage, absences et validation en mobilite.",
+    keywords: [
+      "application mobile RH",
+      "pointage mobile Android iOS",
+      "app manager RH",
+      "app employé pointage",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+  },
+
+  signup: {
+    title: "Essai Guide Gratuit | Découvrez RMIH",
+    description:
+      "Demandez votre essai guide gratuit de RMIH : aucun mot de passe requis, un espace de demonstration provisionne automatiquement.",
+    keywords: [
+      "essai gratuit RH",
+      "demo RMIH",
+      "sandbox logiciel RH",
+      "inscription essai paie SaaS",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+    robots: "noindex, follow",
+  },
+
+  checkout: {
+    title: "Choisissez votre Plan | Abonnement RMIH",
+    description:
+      "Selectionnez et souscrivez au plan RMIH adapté à votre entreprise : Pilot, Operations ou Enterprise.",
+    keywords: [
+      "abonnement RMIH",
+      "souscription plan RH",
+      "checkout SaaS RH",
+      "paiement plan paie",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+    robots: "noindex, follow",
+  },
+
+  // #4505 : metadata propre à /checkout/success (ne pas réutiliser « checkout »)
+  checkoutSuccess: {
+    title: "Votre espace RMIH est pret | Confirmation d'abonnement",
+    description:
+      "Confirmation de votre essai RMIH : votre espace est pret, 14 jours offerts, aucune carte debitee aujourd'hui.",
+    keywords: [
+      "confirmation abonnement RH",
+      "essai gratuit RMIH",
+      "activation espace RH",
+    ],
+    ogImage: `${siteUrl}/og/default.png`,
+    robots: "noindex, follow",
+  },
+};
+
+/**
+ * Structured Data (JSON-LD)
+ */
+
+export function generateFAQSchema(
+  faqs: Array<{ question: string; answer: string }>
+) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  };
+}
+
+/**
+ * #4004 — Métadonnées SEO localisées (EN/TR/AR).
+ *
+ * `pageMetadata` (ci-dessus) reste la source FR par défaut. Ce dictionnaire
+ * porte les overrides title/description par locale pour les 27 pages ;
+ * `getPageMetadata(page, lang)` fusionne override → FR.
+ * Les keywords/ogImage restent partagés (FR) — l'essentiel SEO est title+
+ * description, désormais cohérents avec le body de chaque locale.
+ */
+export const pageMetadataI18n: Record<'id' | 'en' | 'tr' | 'ar', Record<string, Pick<SEOMetadata, 'title' | 'description'>>> = {
+  id: {
+    landing: { title: "Manajemen Karyawan, Payroll & Dokumen | RMIH", description: "Kelola karyawan, absensi, payroll dan dokumen dalam satu platform. Uji coba gratis 14 hari tanpa kartu kredit." },
+    employes: { title: "Manajemen SDM, Presensi & Cuti Karyawan", description: "Kelola presensi, cuti, dan jadwal shift dengan mudah. Presensi pintar dengan QR dan biometrik. Uji coba gratis." },
+    documents: { title: "Dokumen SDM Aman & Terenkripsi AES-256", description: "Arsip digital dengan enkripsi AES-256. Berbagi dokumen aman, pengarsipan otomatis, dan kepatuhan privasi." },
+    comptabilite: { title: "Payroll Otomatis & Slip Gaji Karyawan", description: "Payroll otomatis dengan perhitungan akurat dan dukungan regulasi. Slip gaji instan, laporan pajak, dan transfer bank." },
+    marketing: { title: "Pemasaran SDM: Email, SMS & Media Sosial", description: "Alat pemasaran terintegrasi: email, SMS, dan media sosial. Otomatisasi, analitik, dan kampanye promosi." },
+    integrations: { title: "Integrasi & Konektor API RMIH", description: "Konektor akuntansi dan API publik RMIH: integrasikan penggajian dan SDM ke sistem operasional Anda." },
+    restaurateur: { title: "Aplikasi Manajemen Restoran & F&B", description: "Reservasi, POS kasir, dapur, stok barang, dan staf: solusi RMIH untuk restoran dan gerai multi-cabang." },
+    pricing: { title: "Harga Transparan & Fleksibel | RMIH", description: "Paket fleksibel: Gratis Rp0, Pilot Rp490.000/bln, Operasional Rp1.340.000/bln, Enterprise kustom. Uji coba gratis 14 hari." },
+    about: { title: "Tentang Kami | Misi & Tim RMIH", description: "Misi kami membangun platform SDM mobile-first terbaik untuk UKM dan operasional lapangan di Indonesia." },
+    blog: { title: "Blog & Wawasan HR | Panduan RMIH", description: "Panduan, artikel, dan tips praktis seputar pengelolaan SDM, penggajian, absensi, dan produktivitas kerja." },
+    changelog: { title: "Pembaruan Produk & Catatan Rilis RMIH", description: "Pelajari pembaruan fitur terbaru: API, absensi, penggajian, modul karyawan, dan panel admin." },
+    docs: { title: "Dokumentasi API & Panduan Teknis RMIH", description: "Dokumentasi teknis dan panduan integrasi API RMIH: autentikasi, webhook, endpoint SDM, dan payroll." },
+    download: { title: "Download Aplikasi Mobile & Desktop RMIH", description: "Unduh aplikasi mobile RMIH untuk karyawan, manajer, dan admin di Android & iOS, serta integrasi kiosk ZKTeco." },
+    contact: { title: "Hubungi Kami | Dukungan & Penjualan RMIH", description: "Ada pertanyaan tentang RMIH? Hubungi tim penjualan atau bantuan teknis kami melalui email, telepon, atau chat." },
+    guideRhStartup: { title: "Panduan Lengkap HR untuk Startup | Unduh Gratis", description: "Panduan praktis pengelolaan personalia untuk startup dan UKM. Template dan tips terbaik gratis." },
+    guidePlanningEmployes: { title: "Template Jadwal Shift Karyawan | Unduh Excel", description: "Template jadwal kerja dan shift karyawan fleksibel dan mudah digunakan. Unduh gratis dalam format Excel." },
+    guideChecklistPaie: { title: "Checklist Payroll & Gaji 2026 | Unduh Gratis", description: "Checklist lengkap proses penggajian bulanan agar akurat, tepat waktu, dan patuh regulasi." },
+    guides: { title: "Panduan & Sumber Daya HR | Unduh Gratis", description: "Kumpulan panduan gratis: Manajemen personalia, checklist payroll, template jadwal shift karyawan." },
+    demo: { title: "Jadwalkan Demo Gratis RMIH", description: "Jadwalkan demo langsung RMIH. Pelajari otomatisasi SDM dan penggajian untuk perusahaan Anda dalam 30 menit." },
+    faq: { title: "Pertanyaan yang Sering Diajukan (FAQ) | RMIH", description: "Jawaban atas pertanyaan umum seputar harga, fitur, keamanan, absensi biometrik, dan implementasi RMIH." },
+    testimonials: { title: "Testimoni & Pengalaman Klien RMIH", description: "Kisah sukses perusahaan yang menyederhanakan presensi, penggajian, dan administrasi HR dengan RMIH." },
+    caseStudies: { title: "Studi Kasus Implementasi RMIH", description: "Studi kasus mendalam tentang efisiensi operasional dan penghematan biaya menggunakan RMIH." },
+    videos: { title: "Video Tutorial & Demo Produk RMIH", description: "Tonton tutorial video: instalasi kiosk absensi, setup payroll, aplikasi mobile karyawan, dan manajemen shift." },
+    branding: { title: "Kustomisasi Merek & Tampilan (Multi-Tenant)", description: "Personalisasi RMIH dengan logo, warna tema, dan nama perusahaan Anda." },
+    careers: { title: "Karier di RMIH | Bergabung Bersama Kami", description: "Temukan lowongan kerja dan jadilah bagian dari tim yang merevolusi software SDM di Indonesia." },
+    mobile: { title: "Aplikasi Mobile HR untuk Android & iOS", description: "Aplikasi mobile RMIH untuk karyawan, manajer, dan admin: presensi GPS, pengajuan cuti, dan slip gaji." },
+    signup: { title: "Daftar Uji Coba Gratis RMIH", description: "Mulai uji coba gratis RMIH selama 14 hari. Akses penuh semua fitur tanpa kartu kredit." },
+    checkout: { title: "Pilih Paket Langganan | RMIH", description: "Pilih paket RMIH yang sesuai dengan kebutuhan perusahaan Anda: Gratis, Pilot, Operasional, atau Enterprise." },
+    checkoutSuccess: { title: "Selamat Datang di RMIH | Pendaftaran Berhasil", description: "Akun RMIH Anda telah siap digunakan. Uji coba gratis 14 hari dimulai hari ini." },
+  },
+  en: {
+    landing: { title: "Employee management, payroll & documents in one place", description: "Manage employees, payroll and documents in one place. Free 14-day trial, no credit card required." },
+    employes: { title: "HR, attendance & leave for field teams", description: "Manage attendance, leave and schedules easily. Smart check-in with NFC and biometrics. Free trial." },
+    documents: { title: "Secure HR documents, AES-256 encrypted", description: "Digital filing cabinet with AES-256 encryption. Secure sharing, automatic archiving and GDPR tooling." },
+    comptabilite: { title: "Automated payroll & payslip generation", description: "Automated payroll with exact calculations and compliance support. Generated payslips, social declarations and bank exports." },
+    marketing: { title: "HR marketing: email, SMS & social", description: "Complete marketing tools: email, SMS, social media. Automation, analytics and integrated campaigns for your business." },
+    integrations: { title: "Integrations & Connectors", description: "Accounting connectors and RMIH API: Sage, QuickBooks, public API, webhooks and more." },
+    restaurateur: { title: "Restaurant management software", description: "Reservations, POS, kitchen, stock and delivery: discover the RMIH solution for single and multi-site restaurants." },
+    pricing: { title: "Transparent Pricing | Flexible Plans", description: "Simple pricing: Free €0 (5 emp.), Pilot €29/month (30 emp.), Operations €79/month (200 emp.), Enterprise on quote. 14-day free trial." },
+    about: { title: "About Us | Our Mission and Team", description: "Discover our mission, team and values. We help SMBs manage their employees with a mobile-first HR platform." },
+    blog: { title: "Blog & Resources | HR Guides and Tips", description: "Guides, articles and webinars about HR management, payroll and productivity for SMBs." },
+    changelog: { title: "Product updates & changelog", description: "Discover the latest product updates: API, payroll, monitoring and admin." },
+    docs: { title: "API documentation & technical guides", description: "Technical documentation and integration guides for the RMIH API: authentication, endpoints and webhooks." },
+    download: { title: "RMIH Desktop & mobile apps", description: "Download the ZKTeco desktop client and RMIH mobile apps for employees, managers and admins." },
+    contact: { title: "Contact Us | RMIH Support and Sales", description: "A question about RMIH? Contact our sales or support team by email, phone or chat." },
+    guideRhStartup: { title: "Complete HR Guide for Startups | Download", description: "Complete HR guide for startups. Advice, templates and best practices. Free download." },
+    guidePlanningEmployes: { title: "Employee Planning Template | Download Excel", description: "Employee planning template. Free, flexible and easy-to-use Excel template." },
+    guideChecklistPaie: { title: "2026 Payroll Checklist | Free Download", description: "Complete checklist for your payroll. Checks and compliance. Free download." },
+    guides: { title: "HR Guides & Resources | Free Downloads", description: "Download our free guides: Startup HR Guide, 2026 Payroll Checklist, Employee Planning Template." },
+    demo: { title: "Request a demo of RMIH", description: "Schedule a free RMIH demo. Discover automated HR management for your SMB in 30 minutes." },
+    faq: { title: "Frequently Asked Questions | RMIH FAQ", description: "Answers to the most asked questions about RMIH: pricing, free trial, features, security and support." },
+    testimonials: { title: "Customer Testimonials | RMIH Reviews", description: "Discover how our customers transform their HR management with RMIH: attendance, payroll and recruitment." },
+    caseStudies: { title: "Case Studies | RMIH Success Stories", description: "Detailed case studies of companies that deployed RMIH to automate attendance, payroll and HR processes." },
+    videos: { title: "Product videos & demonstrations", description: "Watch our tutorials and video demos: ZKTeco setup, multi-country payroll, mobile apps and more." },
+    branding: { title: "Branding & customization (multi-tenant)", description: "Customize RMIH with your logo, colors and display name for your company." },
+    careers: { title: "Careers | Join the RMIH Team", description: "Discover our job openings and join the team building the HR platform for field SMBs." },
+    mobile: { title: "Mobile HR apps for Android and iOS", description: "RMIH mobile apps for employees, managers and admins: attendance, leave, payslips and notifications." },
+    signup: { title: "Free Guided Trial | Discover RMIH", description: "Request your free guided RMIH trial: no password required, a specialist contacts you within 24h." },
+    checkout: { title: "Choose Your Plan | RMIH Subscription", description: "Select and subscribe to the RMIH plan that fits your company: Free, Pilot, Operations or Enterprise." },
+    checkoutSuccess: { title: "Your RMIH Space Is Ready | Subscription Confirmation", description: "Your RMIH trial is confirmed: your space is ready, 14 days free, no card charged today." },
+  },
+  tr: {
+    landing: { title: "Çalışan Yönetimi, Maaş & Belgeler | Hepsi Bir Arada Platform", description: "Çalışanlarınızı, maaş işlemlerinizi ve belgelerinizi tek yerden yönetin. 14 gün ücretsiz deneme, kredi kartı gerekmez." },
+    employes: { title: "Saha ekipleri için İK, yoklama ve izin", description: "Giriş-çıkış, izin ve vardiyaları kolayca yönetin. NFC ve biyometri ile akıllı yoklama. Ücretsiz deneme." },
+    documents: { title: "AES-256 şifreli güvenli İK belgeleri", description: "AES-256 şifrelemeli dijital arşiv. Güvenli paylaşım, otomatik arşivleme ve uyumlu depolama." },
+    comptabilite: { title: "Otomatik bordro ve maaş bordrosu", description: "Hassas hesaplamalar ve garantili uyumlulukla otomatik maaş işlemleri. Oluşturulan bordrolar, sosyal bildirimler ve banka ihracatları." },
+    marketing: { title: "İK pazarlaması: e-posta, SMS, sosyal", description: "Eksiksiz pazarlama araçları: e-posta, SMS, sosyal medya. Otomasyon, analitik ve entegre kampanyalar." },
+    integrations: { title: "Entegrasyonlar & Bağlayıcılar", description: "Muhasebe bağlayıcıları ve RMIH İK API'si: Sage, QuickBooks, genel API, webhook'lar ve daha fazlası." },
+    restaurateur: { title: "Restoran yönetim yazılımı", description: "Rezervasyon, kasa, mutfak, stok ve teslimat: tek ve çok şubeli restoranlar için RMIH çözümünü keşfedin." },
+    pricing: { title: "Şeffaf Fiyatlandırma | Esnek Planlar", description: "Basit fiyatlandırma: Free 0 € (5 çalışan), Pilot ayda 29 € (30 çalışan), Operations ayda 79 € (200 çalışan), Enterprise teklif. 14 gün ücretsiz deneme." },
+    about: { title: "Hakkımızda | Misyonumuz ve Ekibimiz", description: "Misyonumuzu, ekibimizi ve değerlerimizi keşfedin. Saha KOBİ'leri için mobil öncelikli bir İK platformu inşa ediyoruz." },
+    blog: { title: "Blog & Kaynaklar | İK Rehberleri ve İpuçları", description: "KOBİ'ler için İK yönetimi, maaş ve üretkenlik üzerine rehberler, makaleler ve webinarlar." },
+    changelog: { title: "Ürün güncellemeleri ve sürüm geçmişi", description: "En son ürün güncellemelerini keşfedin: API, maaş, izleme ve yönetim." },
+    docs: { title: "API dokümantasyonu ve teknik rehberler", description: "RMIH İK API'si için teknik dokümantasyon ve entegrasyon rehberleri: kimlik doğrulama, uç noktalar ve webhook'lar." },
+    download: { title: "RMIH Desktop ve mobil uygulamalar", description: "ZKTeco masaüstü istemcisini ve çalışan, yönetici ve admin uygulamaları için RMIH İK mobil uygulamalarını indirin." },
+    contact: { title: "İletişim | RMIH İK Destek ve Satış", description: "RMIH İK hakkında bir sorunuz mu var? Satış veya destek ekibimizle e-posta, telefon veya sohbet yoluyla iletişime geçin." },
+    guideRhStartup: { title: "Startup'lar için Eksiksiz İK Rehberi | İndir", description: "Startup'lar için eksiksiz İK rehberi. Tavsiyeler, şablonlar ve en iyi uygulamalar. Ücretsiz indirin." },
+    guidePlanningEmployes: { title: "Çalışan Planlama Şablonu | Excel İndir", description: "Çalışan planlama şablonu. Ücretsiz, esnek ve kullanımı kolay Excel şablonu." },
+    guideChecklistPaie: { title: "2026 Maaş Kontrol Listesi | Ücretsiz İndir", description: "Maaş işlemleriniz için eksiksiz kontrol listesi. Kontroller ve uyumluluk. Ücretsiz indirin." },
+    guides: { title: "İK Rehberleri & Kaynaklar | Ücretsiz İndirmeler", description: "Ücretsiz rehberlerimizi indirin: Startup İK Rehberi, 2026 Maaş Kontrol Listesi, Çalışan Planlama Şablonu." },
+    demo: { title: "RMIH İK demosu talep edin", description: "Ücretsiz RMIH İK demosu planlayın. KOBİ'niz için otomatik İK yönetimini 30 dakikada keşfedin." },
+    faq: { title: "Sık Sorulan Sorular | RMIH İK SSS", description: "RMIH İK hakkında en çok sorulan soruların yanıtları: fiyatlandırma, ücretsiz deneme, özellikler, güvenlik ve destek." },
+    testimonials: { title: "Müşteri Yorumları ve Değerlendirmeler", description: "Müşterilerimizin RMIH İK ile İK yönetimini nasıl dönüştürdüğünü keşfedin: giriş-çıkış, maaş ve işe alım." },
+    caseStudies: { title: "Vaka Çalışmaları ve Başarı Hikayeleri", description: "Giriş-çıkış, maaş ve İK süreçlerini otomatikleştirmek için RMIH İK dağıtan şirketlerin ayrıntılı vaka çalışmaları." },
+    videos: { title: "Ürün videoları ve demolari", description: "Eğiticilerimizi ve video demolarımızı izleyin: ZKTeco kurulumu, çok ülkeli maaş, mobil uygulamalar ve daha fazlası." },
+    branding: { title: "Marka ve özelleştirme (çok kiracılı)", description: "RMIH İK'yı şirketiniz için logonuz, renkleriniz ve görünen adınızla özelleştirin." },
+    careers: { title: "Kariyer | RMIH İK Ekibine Katılın", description: "Açık pozisyonlarımızı keşfedin ve saha KOBİ'leri için İK platformu kuran ekibe katılın." },
+    mobile: { title: "Android ve iOS için mobil İK uygulamaları", description: "Çalışan, yönetici ve admin uygulamaları: giriş-çıkış, izinler, maaş bordroları ve bildirimler." },
+    signup: { title: "Ücretsiz Rehberli Deneme'yı Keşfedin", description: "Ücretsiz rehberli RMIH İK denemenizi talep edin: şifre gerekmez, bir uzman 24 saat içinde sizinle iletişime geçer." },
+    checkout: { title: "Planınızı Seçin | RMIH İK Aboneliği", description: "Şirketinize uygun RMIH İK planını seçin ve abone olun: Free, Pilot, Operations veya Enterprise." },
+    checkoutSuccess: { title: "RMIH Alanınız Hazır | Abonelik Onayı", description: "RMIH İK denemeniz onaylandı: alanınız hazır, 14 gün ücretsiz, bugün kartınızdan ücret alınmaz." },
+  },
+  ar: {
+    landing: { title: "إدارة الموظفين والرواتب والمستندات | منصة متكاملة", description: "أدر موظفيك ورواتبهم ومستنداتهم في مكان واحد. نسخة تجريبية مجانية لمدة 14 يومًا دون بطاقة ائتمان." },
+    employes: { title: "الحضور والإجازات والجداول للفرق الميدانية", description: "أدر الحضور والإجازات والجداول بسهولة. تسجيل ذكي مع NFC والقياسات الحيوية. نسخة تجريبية مجانية." },
+    documents: { title: "مستندات موارد بشرية آمنة بتشفير AES-256", description: "أرشيف رقمي بتشفير AES-256. مشاركة آمنة وأرشفة تلقائية وتخزين متوافق." },
+    comptabilite: { title: "أتمتة الرواتب وإصدار كشوف الرواتب", description: "رواتب آلية بحسابات دقيقة وامتثال مضمون. كشوف رواتب مولّدة وتصريحات اجتماعية وتصديرات بنكية." },
+    marketing: { title: "تسويق الموارد البشرية: بريد ورسائل وتواصل", description: "أدوات تسويق كاملة: البريد الإلكتروني والرسائل النصية ووسائل التواصل الاجتماعي. أتمتة وتحليلات وحملات متكاملة." },
+    integrations: { title: "التكاملات والموصلات وواجهة API", description: "موصلات محاسبية وواجهة برمجة ليوباردو: Sage وQuickBooks وواجهة عامة وwebhooks والمزيد." },
+    restaurateur: { title: "برنامج إدارة المطاعم", description: "الحجوزات ونقاط البيع والمطبخ والمخزون والتوصيل: اكتشف حل ليوباردو للمطاعم بفرع واحد أو عدة فروع." },
+    pricing: { title: "تسعير شفاف | خطط مرنة", description: "تسعير شفاف: Free مجاني (5 موظفين)، Pilot بـ 29 يورو/شهر (30 موظفًا)، Operations بـ 79 يورو/شهر (200 موظف)، Enterprise حسب الطلب. تجربة مجانية 14 يومًا." },
+    about: { title: "من نحن | مهمتنا وفريقنا", description: "اكتشف مهمتنا وفريقنا وقيمنا. نساعد الشركات الصغيرة والمتوسطة في إدارة موظفيها عبر منصة موارد بشرية متنقلة." },
+    blog: { title: "المدونة والموارد | أدلة ونصائح الموارد البشرية", description: "أدلة ومقالات وندوات عبر الإنترنت حول إدارة الموارد البشرية والرواتب والإنتاجية للشركات الصغيرة." },
+    changelog: { title: "تحديثات المنتج وسجل الإصدارات", description: "اكتشف أحدث تطورات المنتج: واجهة API والرواتب والمراقبة والإدارة." },
+    docs: { title: "توثيق واجهة API والأدلة الفنية", description: "توثيق فني وأدلة تكامل لواجهة برمجة ليوباردو: المصادقة ونقاط النهاية وwebhooks." },
+    download: { title: "تطبيق ليوباردو للجوال وسطح المكتب", description: "نزّل تطبيق سطح المكتب ZKTeco وتطبيقات ليوباردو للجوال للموظفين والمديرين والمشرفين." },
+    contact: { title: "اتصل بنا | دعم ومبيعات ليوباردو", description: "لديك سؤال عن ليوباردو؟ تواصل مع فريق المبيعات أو الدعم عبر البريد الإلكتروني أو الهاتف أو الدردشة." },
+    guideRhStartup: { title: "الدليل الشامل للموارد البشرية للشركات الناشئة | تنزيل", description: "دليل موارد بشرية شامل للشركات الناشئة. نصائح وقوالب وأفضل الممارسات. تنزيل مجاني." },
+    guidePlanningEmployes: { title: "قالب جدولة الموظفين | تنزيل Excel", description: "قالب جدولة للموظفين. قالب Excel مجاني ومرن وسهل الاستخدام." },
+    guideChecklistPaie: { title: "قائمة فحص الرواتب 2026 | تنزيل مجاني", description: "قائمة فحص شاملة لرواتبك. تحققات وامتثال. تنزيل مجاني." },
+    guides: { title: "أدلة وموارد الموارد البشرية | تنزيلات مجانية", description: "نزّل أدلتنا المجانية: دليل الموارد البشرية للشركات الناشئة، قائمة فحص الرواتب 2026، قالب جدولة الموظفين." },
+    demo: { title: "اطلب عرضًا توضيحيًا لليوباردو", description: "احجز عرضًا توضيحيًا مجانيًا لليوباردو. اكتشف إدارة الموارد البشرية الآلية لشركتك في 30 دقيقة." },
+    faq: { title: "الأسئلة الشائعة | أسئلة ليوباردو المتكررة", description: "إجابات على أكثر الأسئلة شيوعًا حول ليوباردو: التسعير والنسخة التجريبية والميزات والأمان والدعم." },
+    testimonials: { title: "آراء العملاء | تقييمات ليوباردو", description: "اكتشف كيف يحوّل عملاؤنا إدارة مواردهم البشرية مع ليوباردو: الحضور والرواتب والتوظيف." },
+    caseStudies: { title: "دراسات الحالة | قصص نجاح ليوباردو", description: "دراسات حالة مفصلة لشركات نشرت ليوباردو لأتمتة الحضور والرواتب وعمليات الموارد البشرية." },
+    videos: { title: "فيديوهات المنتج والعروض التوضيحية", description: "شاهد دروسنا وعروض الفيديو: إعداد ZKTeco والرواتب متعددة الدول وتطبيقات الجوال والمزيد." },
+    branding: { title: "العلامة التجارية والتخصيص (متعدد المستأجرين)", description: "خصّص ليوباردو بشعارك وألوانك واسم العرض الخاص بشركتك." },
+    careers: { title: "الوظائف | انضم إلى فريق ليوباردو", description: "اكتشف فرص العمل لدينا وانضم إلى الفريق الذي يبني منصة الموارد البشرية للشركات الميدانية." },
+    mobile: { title: "تطبيقات الجوال للموارد البشرية: Android وiOS", description: "تطبيقات ليوباردو للموظفين والمديرين والمشرفين: الحضور والإجازات وكشوف الرواتب والإشعارات." },
+    signup: { title: "تجربة موجهة مجانية | اكتشف ليوباردو", description: "اطلب تجربتك الموجهة المجانية: لا كلمة مرور مطلوبة، ويتواصل معك مختص خلال 24 ساعة." },
+    checkout: { title: "اختر خطتك | اشتراك ليوباردو", description: "اختر خطة ليوباردو المناسبة لشركتك واشترك: Free أو Pilot أو Operations أو Enterprise." },
+    checkoutSuccess: { title: "مساحة ليوباردو جاهزة | تأكيد الاشتراك", description: "تم تأكيد تجربتك المجانية: مساحتك جاهزة، 14 يوماً مجاناً، ولن يتم خصم أي مبلغ اليوم." },
+  },
+};
+
+/**
+ * Résout les métadonnées SEO d'une page pour la locale courante.
+ * Sans `lang` (ou `lang=fr`) → pageMetadata (FR par défaut).
+ */
+export function getPageMetadata(page: string, lang?: string): SEOMetadata {
+  const base = (pageMetadata as Record<string, SEOMetadata>)[page] ?? pageMetadata.landing;
+  const targetLang = (lang || 'id') as 'id' | 'fr' | 'en' | 'tr' | 'ar';
+  if (targetLang === 'fr') {
+    return base;
+  }
+  const override = pageMetadataI18n[targetLang as 'id' | 'en' | 'tr' | 'ar']?.[page];
+  if (!override) {
+    return base;
+  }
+  return { ...base, title: override.title, description: override.description };
+}
+
+/**
+ * #4707 — Keywords et alt de l'image OpenGraph racine localisés par locale.
+ * Vivant ici (et non dans layout.tsx) pour rester hors de la surface de la
+ * garde check-i18n-diff (PA2-I18N-014) — les littéraux localisés ne sont pas
+ * des chaînes hardcodées hors catalogue.
+ */
+export const rootSeoL10n: Record<'id' | 'fr' | 'en' | 'tr' | 'ar', { keywords: string[]; ogImageAlt: string }> = {
+  id: {
+    keywords: ['SaaS HR', 'software HRD Indonesia', 'aplikasi payroll', 'absensi mobile GPS', 'manajemen cuti', 'kiosk absensi ZKTeco', 'multi-tenant', 'slip gaji online'],
+    ogImageAlt: 'RMIH - Dasbor SDM & Payroll Terpadu',
+  },
+  fr: {
+    keywords: ['SaaS RH', 'logiciel RH', 'paie', 'pointage mobile', 'absences', 'kiosque RH', 'multi-tenant', 'RH multilingue'],
+    ogImageAlt: 'RMIH - dashboard RH multilingue',
+  },
+  en: {
+    keywords: ['HR SaaS', 'HR software', 'payroll', 'mobile time tracking', 'leave management', 'HR kiosk', 'multi-tenant', 'multilingual HR'],
+    ogImageAlt: 'RMIH - HR platform for web, mobile and kiosk',
+  },
+  tr: {
+    keywords: ['İK SaaS', 'İK yazılımı', 'bordro', 'mobil yoklama', 'izin yönetimi', 'İK kiosk', 'çok kiracılı', 'çok dilli İK'],
+    ogImageAlt: 'RMIH - web, mobil ve kiosk için İK platformu',
+  },
+  ar: {
+    keywords: ['نظام موارد بشرية سحابي', 'برنامج موارد بشرية', 'الرواتب', 'الحضور عبر الجوال', 'إدارة الإجازات', 'كشك الموارد البشرية', 'متعدد المستأجرين', 'موارد بشرية متعددة اللغات'],
+    ogImageAlt: 'RMIH - منصة موارد بشرية للويب والجوال والكشك',
+  },
+};

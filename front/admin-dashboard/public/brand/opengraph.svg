@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="RMIH - Resources Management Integrated Human">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- subtle grid lines -->
+  <path d="M0 520h1200v110H0z" fill="#e0e7ff" opacity=".03"/>
+  <!-- logo icon box -->
+  <rect x="112" y="108" width="96" height="96" rx="20" fill="url(#badge)"/>
+  <text x="160" y="168" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="800" fill="white" text-anchor="middle">RM</text>
+  <!-- dashboard mockup right -->
+  <path d="M690 120h320c44 0 80 36 80 80v250c0 44-36 80-80 80H690c-44 0-80-36-80-80V200c0-44 36-80 80-80Z" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <path d="M650 186h400" stroke="#334155" stroke-width="2"/>
+  <rect x="668" y="216" width="150" height="92" rx="8" fill="#2563eb" opacity=".25"/>
+  <rect x="838" y="216" width="192" height="92" rx="8" fill="#4f46e5" opacity=".20"/>
+  <rect x="668" y="332" width="362" height="32" rx="8" fill="#e0e7ff" opacity=".12"/>
+  <rect x="668" y="384" width="290" height="32" rx="8" fill="#e0e7ff" opacity=".09"/>
+  <rect x="668" y="436" width="214" height="32" rx="8" fill="#6366f1" opacity=".35"/>
+  <!-- main text -->
+  <text x="112" y="282" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="800">RMIH</text>
+  <text x="112" y="330" fill="#a5b4fc" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="400" letter-spacing="3">RESOURCES MANAGEMENT INTEGRATED HUMAN</text>
+  <text x="112" y="404" fill="#bae6fd" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="600">Platform SDM &amp; HR Terintegrasi untuk Indonesia</text>
+  <text x="112" y="460" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="28">Absensi, penggajian, cuti, onboarding, mobile &amp; kiosk.</text>
+  <text x="112" y="520" fill="#818cf8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Web · Mobile · API · Siap Pakai</text>
+</svg>

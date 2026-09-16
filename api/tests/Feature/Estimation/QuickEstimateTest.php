@@ -1,0 +1,192 @@
+<?php
+
+namespace Tests\Feature\Estimation;
+
+use App\Modules\Attendance\Domain\Models\AttendanceLog;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\Sanctum;
+use Tests\Support\CreatesMvpSchema;
+use Tests\TestCase;
+
+class QuickEstimateTest extends TestCase
+{
+    use CreatesMvpSchema;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->setUpMvpSchema();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->tearDownMvpSchema();
+        parent::tearDown();
+    }
+
+    public function test_manager_can_get_quick_estimate_with_dz_deduction(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $manager = new Employee([
+            'email' => 'manager@company.test',
+            'salary_type' => 'fixed',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'status' => 'active',
+            'salary_base' => 0,
+        ])->save();
+
+        $employee = new Employee([
+            'first_name' => 'Ahmed',
+            'last_name' => 'Benali',
+            'email' => 'employee@company.test',
+            'salary_type' => 'hourly',
+            'hourly_rate' => 100,
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        AttendanceLog::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-04-01',
+            'session_number' => 1,
+            'check_in' => Carbon::parse('2026-04-01 08:00:00', 'UTC'),
+            'check_out' => Carbon::parse('2026-04-01 16:00:00', 'UTC'),
+            'hours_worked' => 8.00,
+            'overtime_hours' => 0.00,
+            'status' => 'ontime',
+        ]);
+
+        AttendanceLog::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-04-02',
+            'session_number' => 1,
+            'check_in' => Carbon::parse('2026-04-02 08:00:00', 'UTC'),
+            'check_out' => Carbon::parse('2026-04-02 18:00:00', 'UTC'),
+            'hours_worked' => 10.00,
+            'overtime_hours' => 2.00,
+            'status' => 'ontime',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/employees/'.$employee->id.'/quick-estimate?from=2026-04-01&to=2026-04-05');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.employee_id', $employee->id);
+
+        // gross = (8h*100) + (8h*100 + 2h*100*1.25) = 800 + 1050 = 1850
+        $response->assertJsonPath('data.totals.gross', 1850);
+        // DZ deductions 9%
+        $response->assertJsonPath('data.totals.deductions', 166.5);
+        $response->assertJsonPath('data.totals.net', 1683.5);
+    }
+
+    public function test_employee_cannot_access_quick_estimate(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+            'salary_type' => 'hourly',
+            'hourly_rate' => 50,
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/employees/'.$employee->id.'/quick-estimate?from=2026-04-01&to=2026-04-05');
+        $response->assertForbidden();
+    }
+
+    public function test_quick_estimate_rejects_periods_longer_than_365_days(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        $manager = new Employee([
+            'email' => 'manager@company.test',
+            'salary_type' => 'fixed',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'status' => 'active',
+            'salary_base' => 0,
+        ])->save();
+
+        $employee = new Employee([
+            'email' => 'employee@company.test',
+            'salary_type' => 'hourly',
+            'hourly_rate' => 50,
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/employees/'.$employee->id.'/quick-estimate?from=2025-01-01&to=2026-04-08');
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['to']);
+    }
+}
+

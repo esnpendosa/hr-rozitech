@@ -1,0 +1,44 @@
+import { expect, test } from '@playwright/test'
+
+// TRAVEL-912 (#6417) — Contacts voyageurs : liste, consentements, notification.
+const AUTH_ME = {
+  data: { id: 1, name: 'Super Admin', email: 'admin@leopardo-rh.com', role: 'super_admin' },
+}
+function makeList(body) {
+  return { data: body, meta: { current_page: 1, last_page: 1, per_page: 1000, total: body.length } }
+}
+
+test.describe('Contacts voyageurs travel (TRAVEL-912)', () => {
+  test('liste les contacts et bascule un consentement', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem('admin_token', 'e2e-fake-token')
+    })
+    await page.route(/\/api\/v1\/platform\/auth\/me(\?.*)?$/, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(AUTH_ME) }),
+    )
+    // Le catch-all est enregistré APRÈS les mocks spécifiques : en Playwright la
+    // dernière route gagne, il écrasait donc /platform/auth/me (rôle absent ->
+    // session refusée par le store, #7205). On sert le vrai profil super-admin.
+    await page.route('**/api/v1/**', (route) => {
+      if (/\/platform\/auth\/me/.test(route.request().url())) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(AUTH_ME) })
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: {} }) })
+    })
+    await page.route(/\/api\/v1\/travel\/ping(\?.*)?$/, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) }),
+    )
+    await page.route(/\/api\/v1\/travel\/contacts(\?.*)?$/, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(makeList([
+        { id: 1, first_name: 'Aline', last_name: 'Ngo', email: 'aline@example.com', phone: '+2376...', email_consent_given: true, sms_consent_given: false, whatsapp_consent_given: false },
+      ])) }),
+    )
+    await page.route(/\/api\/v1\/travel\/contacts\/1\/consent(\?.*)?$/, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { id: 1 } }) }),
+    )
+    await page.goto('/travel/content')
+    await page.getByRole('button', { name: 'Contacts' }).click()
+    await expect(page.getByText('aline@example.com')).toBeVisible()
+    await expect(page.getByText('Aline Ngo')).toBeVisible()
+  })
+})

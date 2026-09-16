@@ -1,0 +1,235 @@
+<template>
+  <div class="space-y-6 h-full flex flex-col">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between shrink-0">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900">{{ $t('crm.title', 'Pipeline Commercial') }}</h1>
+        <p class="mt-1 text-sm text-gray-500">
+          {{ $t('crm.subtitle') }}
+        </p>
+      </div>
+      <button class="btn-secondary" :disabled="isLoading" @click="loadPipeline">
+        {{ $t('crm.refresh', 'Actualiser') }}
+      </button>
+    </div>
+
+    <!-- PA2-ADM-004: explicit lead -> trial -> client conversion summary -->
+    <div v-if="!isLoading && !errorMessage" class="grid grid-cols-1 gap-4 sm:grid-cols-3 shrink-0">
+      <div class="card p-4">
+        <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">{{ $t('crm.leadsTotal') }}</p>
+        <p class="mt-1 text-2xl font-black text-slate-900 dark:text-white">{{ meta.total_leads }}</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">{{ $t('crm.leadToTrialRate') }}</p>
+        <p class="mt-1 text-2xl font-black text-emerald-600">{{ formatRate(meta.conversion.lead_to_trial_rate) }}</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">{{ $t('crm.leadToClientRate') }}</p>
+        <p class="mt-1 text-2xl font-black text-blue-600">{{ formatRate(meta.conversion.lead_to_client_rate) }}</p>
+      </div>
+    </div>
+
+    <div v-if="isLoading" class="flex-1 flex items-center justify-center p-6 text-sm text-gray-500">
+      {{ $t('crm.loading') }}
+    </div>
+    <div v-else-if="errorMessage" class="flex-1 p-6 text-sm text-red-600 bg-red-50 rounded-lg">
+      {{ errorMessage }}
+    </div>
+    <div v-else class="flex-1 flex gap-6 overflow-x-auto pb-4">
+      
+      <!-- Colonne: Leads -->
+      <div class="flex-shrink-0 w-80 bg-slate-50 dark:bg-slate-800/30 rounded-xl flex flex-col border border-slate-200 dark:border-slate-800">
+        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center dark:bg-slate-900 rounded-t-xl">
+          <h2 class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-yellow-400"></span>
+            {{ $t('crm.leadsIncoming') }}
+          </h2>
+          <span class="text-xs font-semibold px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-600 dark:text-slate-400">
+            {{ pipeline.leads?.length || 0 }}
+          </span>
+        </div>
+        <div class="flex-1 p-3 space-y-3 overflow-y-auto">
+          <div v-for="item in pipeline.leads" :key="item.id" class="glass-card dark:bg-slate-900 p-4 rounded-lg shadow-sm border border-slate-200 dark:border-slate-800">
+            <h3 class="font-bold text-slate-900 dark:text-white">{{ item.company_name }}</h3>
+            <p class="text-xs text-slate-500 mt-1">{{ item.sector || $t('support.sectorUnknown', 'Secteur non précisé') }}</p>
+            <span class="inline-block mt-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+              {{ formatSource(item.source) }}
+            </span>
+            <p v-if="item.note" class="text-xs text-slate-400 mt-2 line-clamp-2">{{ item.note }}</p>
+            <div class="mt-3 flex items-center justify-between">
+              <span class="text-xs text-slate-400">{{ formatDate(item.created_at) }}</span>
+            </div>
+          </div>
+          <div v-if="!pipeline.leads?.length" class="text-center p-4 text-sm text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+            {{ $t('crm.noLead') }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Colonne: Trials -->
+      <div class="flex-shrink-0 w-80 bg-emerald-50/30 dark:bg-emerald-900/10 rounded-xl flex flex-col border border-emerald-100 dark:border-emerald-900/30">
+        <div class="p-4 border-b border-emerald-100 dark:border-emerald-900/30 flex justify-between items-center dark:bg-slate-900 rounded-t-xl">
+          <h2 class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-emerald-400"></span>
+            {{ $t('crm.columnTrials', 'En Essai (Trial)') }}
+          </h2>
+          <span class="text-xs font-semibold px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-600 dark:text-slate-400">
+            {{ pipeline.trials?.length || 0 }}
+          </span>
+        </div>
+        <div class="flex-1 p-3 space-y-3 overflow-y-auto">
+          <div v-for="item in pipeline.trials" :key="item.id" class="glass-card dark:bg-slate-900 p-4 rounded-lg shadow-sm border border-emerald-100 dark:border-emerald-900/50 hover:border-brand-500 transition-colors cursor-pointer" @click="openCompany(item.company.id)">
+            <h3 class="font-bold text-slate-900 dark:text-white">{{ item.company_name }}</h3>
+            <p class="text-xs text-slate-500 mt-1">{{ item.email }}</p>
+            <span class="inline-block mt-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+              {{ formatSource(item.source) }}
+            </span>
+            <p v-if="item.note" class="text-xs text-slate-400 mt-2 line-clamp-2">{{ item.note }}</p>
+            <div class="mt-3 flex items-center justify-between">
+              <span class="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">{{ item.company.days_left }}{{ $t('crm.daysLeft', 'j restants') }}</span>
+            </div>
+          </div>
+          <div v-if="!pipeline.trials?.length" class="text-center p-4 text-sm text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+            {{ $t('crm.noTrial') }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Colonne: Active (Payant) -->
+      <div class="flex-shrink-0 w-80 bg-blue-50/30 dark:bg-blue-900/10 rounded-xl flex flex-col border border-blue-100 dark:border-blue-900/30">
+        <div class="p-4 border-b border-blue-100 dark:border-blue-900/30 flex justify-between items-center dark:bg-slate-900 rounded-t-xl">
+          <h2 class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-blue-500"></span>
+            {{ $t('crm.columnActive', 'Clients Actifs') }}
+          </h2>
+          <span class="text-xs font-semibold px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-600 dark:text-slate-400">
+            {{ pipeline.active?.length || 0 }}
+          </span>
+        </div>
+        <div class="flex-1 p-3 space-y-3 overflow-y-auto">
+          <div v-for="item in pipeline.active" :key="item.id" class="glass-card dark:bg-slate-900 p-4 rounded-lg shadow-sm border border-blue-100 dark:border-blue-900/50 hover:border-brand-500 transition-colors cursor-pointer" @click="openCompany(item.company.id)">
+            <h3 class="font-bold text-slate-900 dark:text-white">{{ item.company_name }}</h3>
+            <span class="inline-block mt-2 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+              {{ formatSource(item.source) }}
+            </span>
+            <p v-if="item.note" class="text-xs text-slate-400 mt-2 line-clamp-2">{{ item.note }}</p>
+            <div class="mt-3 flex items-center justify-between">
+              <span class="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{{ $t('crm.activeBadge', 'Actif') }}</span>
+            </div>
+          </div>
+          <div v-if="!pipeline.active?.length" class="text-center p-4 text-sm text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+            {{ $t('crm.noClient') }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Colonne: Rejected -->
+      <div class="flex-shrink-0 w-80 bg-slate-100/50 dark:bg-slate-800/50 rounded-xl flex flex-col border border-slate-200 dark:border-slate-700 opacity-75">
+        <div class="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-transparent rounded-t-xl">
+          <h2 class="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-slate-400"></span>
+            {{ $t('crm.columnRejected', 'Rejetés / Expirés') }}
+          </h2>
+          <span class="text-xs font-semibold px-2 py-1 bg-slate-200 dark:bg-slate-700 rounded-full text-slate-600 dark:text-slate-400">
+            {{ pipeline.rejected?.length || 0 }}
+          </span>
+        </div>
+        <div class="flex-1 p-3 space-y-3 overflow-y-auto">
+          <div v-for="item in pipeline.rejected" :key="item.id" class="bg-slate-50 dark:bg-slate-800/80 p-4 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700">
+            <h3 class="font-bold text-slate-600 dark:text-slate-400">{{ item.company_name }}</h3>
+            <p class="text-xs text-slate-400 mt-1">
+              {{ item.company ? item.company.status : item.status }}
+            </p>
+          </div>
+          <div v-if="!pipeline.rejected?.length" class="text-center p-4 text-sm text-slate-400 border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-lg">
+            {{ $t('crm.noHistory') }}
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import api from '@/services/api'
+import { useLocaleStore } from '@/stores/locale'
+import { toIntlLocale, translate } from '@/i18n/index.js'
+
+const router = useRouter()
+const localeStore = useLocaleStore()
+const t = (key, fallback = '') => translate(localeStore.current, key, fallback)
+const isLoading = ref(true)
+const errorMessage = ref('')
+const pipeline = ref({
+  leads: [],
+  trials: [],
+  active: [],
+  rejected: []
+})
+// PA2-ADM-004: conversion summary served alongside the raw pipeline buckets.
+const meta = ref({
+  total_leads: 0,
+  conversion: {
+    lead_to_trial_rate: 0,
+    lead_to_client_rate: 0
+  }
+})
+
+async function loadPipeline() {
+  isLoading.value = true
+  errorMessage.value = ''
+
+  try {
+    const response = await api.get('/platform/crm/pipeline')
+    pipeline.value = response.data?.data || { leads: [], trials: [], active: [], rejected: [] }
+    meta.value = response.data?.meta || {
+      total_leads: 0,
+      conversion: { lead_to_trial_rate: 0, lead_to_client_rate: 0 }
+    }
+  } catch (error) {
+    console.error('Failed to load CRM pipeline:', error)
+    errorMessage.value = t('crm.loadError', 'Impossible de charger le pipeline CRM.')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+function formatRate(rate) {
+  return new Intl.NumberFormat(toIntlLocale(localeStore.current), {
+    style: 'percent',
+    maximumFractionDigits: 1
+  }).format(rate || 0)
+}
+
+function formatSource(source) {
+  const labels = {
+    signup_form: t('crm.sourceSignup', 'Inscription'),
+    demo_form: t('crm.sourceDemo', 'Demande de démo'),
+    contact_form: t('crm.sourceContact', 'Contact'),
+    newsletter_form: t('crm.sourceNewsletter', 'Newsletter'),
+    self_service_trial: t('crm.sourceSelfService', 'Essai self-service'),
+    manager_request: t('crm.sourceManager', 'Demande manager'),
+    direct: t('crm.sourceDirect', 'Direct'),
+  }
+  if (!source) return labels.direct
+  return labels[source] || source
+}
+
+
+function openCompany(companyId) {
+  router.push(`/companies/${companyId}`)
+}
+
+function formatDate(value) {
+  if (!value) return ''
+  return new Intl.DateTimeFormat(toIntlLocale(localeStore.current), {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
+
+onMounted(loadPipeline)
+</script>
+

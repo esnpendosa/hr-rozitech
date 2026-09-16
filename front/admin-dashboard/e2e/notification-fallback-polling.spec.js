@@ -1,0 +1,151 @@
+import { expect, test } from '@playwright/test'
+
+// #4415 : creds de test via env — jamais de littéral prod dans le dépôt (politique #1697).
+const E2E_ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD || 'e2e-fixture-password'
+
+// PA2-COMM-013 — Fallback polling robuste : si le canal push (Socket.IO)
+// n'est pas disponible (proxy/firewall, serveur down, ...), l'admin-dashboard
+// doit continuer a recevoir les notifications via un polling REST regulier
+// de /notifications plutot que de rester silencieusement bloque.
+//
+// Flaky tracking (issue #1575) : ce test dépend du timing de détection
+// d'échec Socket.IO (grace period 8s + retry socket.io). Stabilisation :
+//   - les connexions socket.io sont avortées immédiatement (mock déterministe),
+//   - timeout global du test relevé à 60 s (l'assertion de polling peut
+//     légitimement prendre ~8-30 s),
+//   - retries séparés (3) via describe.configure.
+test.describe.configure({ retries: 3 })
+
+test('falls back to REST polling when the push (Socket.IO) channel is unavailable', async ({ page }) => {
+  // #7303 — sans `VITE_WEBSOCKET_URL` configuré, le store ne tente PLUS de
+  // handshake socket.io (aucun serveur push n'existe : absent de
+  // `render.yaml`, ni Reverb ni Soketi dans le dépôt). On compte les
+  // tentatives pour verrouiller ce comportement : un retour à la dérivation
+  // `wss://<hôte API>` produirait un 404 en console à chaque chargement.
+  let socketAttempts = 0
+  page.on('request', (r) => {
+    if (/socket\.io/.test(r.url())) socketAttempts += 1
+  })
+
+  // Défensif : si une tentative avait lieu malgré tout, on l'avorte pour
+  // garder la détection d'échec déterministe.
+  await page.route('**/socket.io/**', (route) => route.abort())
+  await page.route(/\/socket\.io\/?$/, (route) => route.abort())
+
+  test.setTimeout(60_000)
+
+  await page.route('**/api/v1/platform/auth/login', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          id: 1,
+          name: 'Super Administrateur',
+          email: 'admin@leopardo-rh.com',
+          role: 'super_admin',
+          two_fa_enabled: false,
+        },
+        token: 'platform-admin-token',
+        token_type: 'Bearer',
+      }),
+    })
+  })
+
+  await page.route(/\/api\/v1\/platform\/auth\/me(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          id: 1,
+          name: 'Super Administrateur',
+          email: 'admin@leopardo-rh.com',
+          role: 'super_admin',
+          two_fa_enabled: false,
+        },
+      }),
+    })
+  })
+
+  await page.route(/\/api\/v1\/admin\/dashboard\/stats(\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        totalUsers: 0,
+        totalCompanies: 0,
+        activeSubscriptions: 0,
+        monthlyRevenue: 0,
+        newUsersToday: 0,
+        newCompaniesToday: 0,
+        supportTickets: 0,
+        systemHealth: 'good',
+      }),
+    })
+  })
+
+  await page.route(/\/api\/v1\/admin\/dashboard\/(activities|alerts)(\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    })
+  })
+
+  let notificationsPolled = 0
+  await page.route(/\/api\/v1\/notifications(\?.*)?$/, async (route) => {
+    notificationsPolled += 1
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: [
+          {
+            id: 'notif-1',
+            type: 'system_alert',
+            title: 'Maintenance planifiee',
+            body: 'Une fenetre de maintenance est prevue ce soir.',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ],
+        meta: { unread_count: 1 },
+      }),
+    })
+  })
+
+  // Cockpit plateforme (DashboardView) : 3 appels au mount — sans mock,
+  // le token factice reçoit un 401 réel → logout global → spec cassée.
+  await page.route(/\/api\/v1\/platform\/companies\/health(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { summary: { totalCompanies: 0, activeSubscriptions: 0, monthlyRevenue: 0 }, items: [] } }) })
+  })
+  await page.route(/\/api\/v1\/platform\/metrics\/overview(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: {} }) })
+  })
+  await page.route(/\/api\/v1\/platform\/company-requests(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: [], meta: { total: 0 } }) })
+  })
+
+  await page.goto('/login')
+  await page.locator('#email').fill('admin@leopardo-rh.com')
+  await page.locator('#password').fill(E2E_ADMIN_PASSWORD)
+  await page.getByRole('button', { name: /^Se connecter$/i }).click()
+
+  await expect(page).toHaveURL(/\/$/)
+
+  // No websocket server is reachable in this test environment (dev server
+  // proxy has no socket.io upstream), so Socket.IO will fail to connect and
+  // the store must switch to the polling fallback rather than leaving the
+  // admin without any notification updates. Assert the REST polling first
+  // (the actual contract under test), then the header fallback label — with
+  // generous timeouts since socket failure detection depends on the store's
+  // connect grace period (8s) plus socket.io's own retry timing.
+  await expect.poll(() => notificationsPolled, { timeout: 30000 }).toBeGreaterThan(0)
+  await expect(page.getByText(/Mode secours \(polling\)|D\u00e9connect\u00e9/i)).toBeVisible({ timeout: 30000 })
+
+  // #7303 — aucun handshake socket.io ne doit être tenté sans serveur push
+  // configuré : c'est ce qui produisait « Error during WebSocket handshake:
+  // Unexpected response code: 404 » en console.
+  expect(socketAttempts).toBe(0)
+})

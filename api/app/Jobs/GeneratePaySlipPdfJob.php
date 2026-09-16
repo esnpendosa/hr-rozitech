@@ -1,0 +1,187 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Jobs;
+
+use App\Contracts\Queue\TenantScopedJob;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Jobs\Middleware\EnsureTenantContext;
+use App\Modules\Notification\Infrastructure\Services\PushNotificationService;
+use App\Modules\Payroll\Domain\Models\PayrollRun;
+use App\Modules\Payroll\Domain\Models\PaySlip;
+use App\Support\I18nCatalog;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
+
+/**
+ * Plan 62 — Génération asynchrone des bulletins de paie PDF.
+ *
+ * Dispatched on the `pdf` queue.
+ * Generates a PDF for a single employee's pay slip and notifies them via push.
+ */
+class GeneratePaySlipPdfJob implements ShouldQueue, TenantScopedJob
+{
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
+
+    public int $tries = 3;
+
+    public int $timeout = 120;
+
+    private ?string $resolvedCompanyId = null;
+
+    public function __construct(
+        public readonly int $payrollRunId,
+        public readonly int $employeeId,
+    ) {
+        $this->onQueue('pdf');
+    }
+
+    public function tenantCompanyId(): ?string
+    {
+        if ($this->resolvedCompanyId !== null) {
+            return $this->resolvedCompanyId;
+        }
+
+        /** @var PayrollRun|null $run */
+        $run = PayrollRun::query()->withoutGlobalScopes()->find($this->payrollRunId);
+
+        return $this->resolvedCompanyId = $run?->company_id;
+    }
+
+    /**
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return [new EnsureTenantContext];
+    }
+
+    public function handle(PushNotificationService $pushService): void
+    {
+        /** @var PayrollRun|null $run */
+        $run = PayrollRun::query()->withoutGlobalScopes()->find($this->payrollRunId);
+        if ($run === null) {
+            Log::warning("GeneratePaySlipPdfJob: PayrollRun #{$this->payrollRunId} not found.");
+
+            return;
+        }
+
+        /** @var Employee|null $employee */
+        $employee = Employee::query()->withoutGlobalScopes()->find($this->employeeId);
+        if ($employee === null) {
+            Log::warning("GeneratePaySlipPdfJob: Employee #{$this->employeeId} not found.");
+
+            return;
+        }
+
+        /** @var Company|null $company */
+        $company = Company::query()->find($run->company_id);
+        if ($company === null) {
+            return;
+        }
+
+        /** @var PaySlip|null $slip */
+        $slip = PaySlip::query()
+            ->where('payroll_run_id', $run->id)
+            ->where('employee_id', $employee->id)
+            ->first();
+
+        if ($slip === null) {
+            Log::warning("GeneratePaySlipPdfJob: No PaySlip for employee #{$this->employeeId} in run #{$this->payrollRunId}.");
+
+            return;
+        }
+
+        // Tenant context (search_path + current_company) is already active at
+        // this point thanks to EnsureTenantContext — no need to bind it again.
+        try {
+            // Queued job — runs outside the HTTP request lifecycle, so the
+            // SetLocale middleware never applies here.
+            App::setLocale(I18nCatalog::normalizeLocale(
+                $employee->preferred_language ?? $company->language
+            ));
+
+            // Build PDF HTML via Blade template
+            $html = view('pdf.payslip', [
+                'slip' => $slip,
+                'employee' => $employee,
+                'company' => $company,
+                'run' => $run,
+            ])->render();
+
+            // Generate PDF using dompdf (barryvdh/laravel-dompdf)
+            $pdf = app('dompdf.wrapper');
+            $pdf->loadHTML($html);
+            $binary = $pdf->output();
+
+            // Store: storage/app/payslips/{tenant}/{year}/{month}/{employee_id}.pdf
+            $year = $run->period_end->format('Y');
+            $month = $run->period_end->format('m');
+            $path = "payslips/{$company->id}/{$year}/{$month}/{$employee->id}.pdf";
+
+            Storage::disk('local')->put($path, $binary);
+
+            $slip->update(['pdf_path' => $path]);
+
+            Log::info("GeneratePaySlipPdfJob: PDF generated at {$path}");
+
+            // Notify employee via push notification
+            $this->notifyEmployee($pushService, $employee, $run);
+        } catch (Throwable $e) {
+            Log::error("GeneratePaySlipPdfJob: failed for employee #{$employee->id}: {$e->getMessage()}");
+
+            throw $e;
+        }
+    }
+
+    private function notifyEmployee(PushNotificationService $pushService, Employee $employee, PayrollRun $run): void
+    {
+        try {
+            // PA2-COMM-006 — title/body come from the localized
+            // `notifications.payroll_ready_*` keys, resolved for the
+            // employee's own locale (App::setLocale() above already set it).
+            $period = $run->period_end->format('M Y');
+            // Issue #4010 — la signature de sendToEmployee est
+            // (Employee, string $title, string $body, array $data) : un appel
+            // avec un tableau en 2e position levait un TypeError silencieux
+            // (catch Throwable) → la notification « bulletin prêt » n'était
+            // jamais envoyée.
+            $pushService->sendToEmployee(
+                $employee,
+                (string) trans('notifications.payroll_ready_title'),
+                (string) trans('notifications.payroll_ready_body_with_period', ['period' => $period]),
+                [
+                    'type' => 'pay_slip_ready',
+                    'payroll_run_id' => $run->id,
+                ],
+            );
+        } catch (Throwable $e) {
+            Log::warning("GeneratePaySlipPdfJob: Push notification failed for employee #{$employee->id}: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * #4205 : épuisement des retries — log d'alerte (bulletin PDF).
+     */
+    public function failed(Throwable $e): void
+    {
+        Log::error('GeneratePaySlipPdfJob.failed', [
+            'payroll_run_id' => $this->payrollRunId,
+            'employee_id' => $this->employeeId,
+            'exception' => $e->getMessage(),
+        ]);
+    }
+
+}

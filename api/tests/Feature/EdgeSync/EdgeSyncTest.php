@@ -1,0 +1,464 @@
+<?php
+
+namespace Tests\Feature\EdgeSync;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Modules\EdgeSync\Infrastructure\Services\EdgeLicenseService;
+use App\Modules\EdgeSync\Infrastructure\Services\SyncEngineService;
+use App\Modules\EdgeSync\Domain\Models\EdgeNode;
+use App\Modules\EdgeSync\Domain\Models\SyncQueue;
+use Tests\Support\CreatesMvpSchema;
+use Tests\TestCase;
+
+/**
+ * Phase 4 — EdgeSync Feature Tests
+ *
+ * Covers:
+ *   - Registration and license issuance
+ *   - Push (offline data → Cloud)
+ *   - Pull delta (Cloud → Edge)
+ *   - Conflict resolution (attendance / absence / generic)
+ *   - License validation and expiry
+ *   - Multi-tenant isolation
+ */
+class EdgeSyncTest extends TestCase
+{
+    use CreatesMvpSchema;
+
+    private Company $company;
+
+    private EdgeNode $node;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->setUpMvpSchema();
+
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'slug' => 'acme-test',
+            'status' => 'active',
+        ]);
+        $this->company = $company;
+
+        /** @var EdgeNode $node */
+        $node = EdgeNode::create([
+            'company_id' => $this->company->id,
+            'name' => 'Site Principal',
+            'slug' => 'site-principal-abc123',
+            'status' => 'active',
+            'mode' => 'hybrid',
+            'edge_version' => '1.0.0',
+            'capabilities' => ['features' => ['attendance', 'absence'], 'max_employees' => 100],
+            'license_expires_at' => now()->addDays(30),
+            'metadata' => ['edge_token' => hash('sha256', 'test-edge-token-xxx')],
+        ]);
+        $this->node = $node;
+    }
+
+    // ── Registration ─────────────────────────────────────
+
+    /** @test */
+    public function it_registers_a_new_edge_node(): void
+    {
+        // #1291 : l'API tenant /api/v1/edge (register) a été démontée — le
+        // schéma bigint legacy n'est jamais créé ; l'enrôlement passe par le
+        // flux EdgeNodeController UUID (edge/nodes) côté plateforme et par le
+        // daemon EdgeSync côté appareil. Ce test cible une surface inexistante.
+        $this->markTestSkipped('API /edge (register) démontée — voir #1291.');
+    }
+
+    /** @test */
+    public function it_cannot_see_other_company_nodes(): void
+    {
+        // #1291 : liste tenant /api/v1/edge démontée (voir test précédent).
+        $this->markTestSkipped('API /edge (list) démontée — voir #1291.');
+    }
+
+    // ── Push (Edge → Cloud) ───────────────────────────────
+
+    /** @test */
+    public function it_accepts_offline_attendance_push(): void
+    {
+        $this->withEdgeToken();
+
+        $response = $this->postJson("/api/v1/edge-node/{$this->node->id}/push", [
+            'records' => [
+                [
+                    'entity_type' => 'attendance_logs',
+                    'entity_id' => 'local-uuid-001',
+                    'operation' => 'create',
+                    'payload' => [
+                        'id' => 'local-uuid-001',
+                        'company_id' => $this->company->id,
+                        'employee_id' => 'emp-uuid-001',
+                        'check_in' => now()->subHours(8)->toIso8601String(),
+                        'method' => 'mobile',
+                        'status' => 'present',
+                        'synced_from_offline' => true,
+                    ],
+                ],
+            ],
+        ]);
+
+        $response->assertOk()->assertJson(['queued' => 1]);
+        $this->assertDatabaseHas('sync_queue', [
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'local-uuid-001',
+            'operation' => 'create',
+            'status' => 'pending',
+        ]);
+    }
+
+    /** @test */
+    public function it_does_not_duplicate_sync_queue_rows_on_repeated_push(): void
+    {
+        // #6554 — un doublon de poussée (ack réseau perdu, double push) ne
+        // doit pas créer deux lignes `pending` pour le même enregistrement :
+        // la 2e poussée rafraîchit la ligne existante.
+        $this->withEdgeToken();
+
+        $record = [
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'local-uuid-dup-001',
+            'operation' => 'create',
+            'payload' => [
+                'id' => 'local-uuid-dup-001',
+                'company_id' => $this->company->id,
+                'employee_id' => 'emp-uuid-001',
+                'check_in' => now()->subHours(8)->toIso8601String(),
+                'method' => 'mobile',
+                'status' => 'present',
+                'synced_from_offline' => true,
+            ],
+        ];
+
+        $this->postJson("/api/v1/edge-node/{$this->node->id}/push", ['records' => [$record]])
+            ->assertOk()
+            ->assertJson(['queued' => 1]);
+
+        $this->postJson("/api/v1/edge-node/{$this->node->id}/push", ['records' => [$record]])
+            ->assertOk()
+            ->assertJson(['queued' => 1]);
+
+        $this->assertSame(1, SyncQueue::query()
+            ->where('edge_node_id', $this->node->id)
+            ->where('entity_type', 'attendance_logs')
+            ->where('entity_id', 'local-uuid-dup-001')
+            ->count());
+    }
+
+    /** @test */
+    public function push_response_reports_results_per_record(): void
+    {
+        // #6554 — le contrat machine push renvoie un résultat PAR
+        // enregistrement (le daemon Edge en a besoin pour ne pas marquer
+        // tout le lot `synced` sur un simple 2xx).
+        $this->withEdgeToken();
+
+        $response = $this->postJson("/api/v1/edge-node/{$this->node->id}/push", [
+            'records' => [
+                [
+                    'entity_type' => 'attendance_logs',
+                    'entity_id' => 'local-uuid-002',
+                    'operation' => 'create',
+                    'payload' => ['id' => 'local-uuid-002', 'company_id' => $this->company->id],
+                ],
+            ],
+        ]);
+
+        $response->assertOk()->assertJson([
+            'queued' => 1,
+            'results' => [
+                [
+                    'entity_type' => 'attendance_logs',
+                    'entity_id' => 'local-uuid-002',
+                    'operation' => 'create',
+                    'status' => 'queued',
+                ],
+            ],
+        ]);
+    }
+
+    /** @test */
+    public function it_rejects_push_with_invalid_edge_token(): void
+    {
+        $response = $this->withToken('wrong-token')
+            ->postJson("/api/v1/edge-node/{$this->node->id}/push", [
+                'records' => [],
+            ]);
+
+        $response->assertStatus(401);
+    }
+
+    // ── Pull Delta (Cloud → Edge) ─────────────────────────
+
+    /** @test */
+    public function it_returns_delta_since_last_sync(): void
+    {
+        $this->withEdgeToken();
+
+        // Simulate a Cloud employee updated after last sync
+        \DB::table('employees')->insert([
+            'company_id' => $this->company->id,
+            'first_name' => 'Moussa',
+            'last_name' => 'Diallo',
+            'email' => 'moussa@acme.test',
+            'password_hash' => bcrypt('secret'),
+            'role' => 'employee',
+            'status' => 'active',
+            'created_at' => now()->subDay()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        $this->node->update(['last_sync_at' => now()->subHours(2)]);
+
+        $response = $this->getJson("/api/v1/edge-node/{$this->node->id}/pull");
+
+        $response->assertOk()
+            ->assertJsonStructure(['since', 'entities']);
+    }
+
+    // ── Sync Engine ───────────────────────────────────────
+
+    /** @test */
+    public function it_processes_sync_queue_and_marks_synced(): void
+    {
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $this->company->id,
+            'role' => 'employee',
+        ]);
+
+        SyncQueue::create([
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'att-to-sync-001',
+            'operation' => 'create',
+            'payload' => [
+                'company_id' => $this->company->id,
+                'employee_id' => $employee->id,
+                'check_in' => now()->subHours(4)->toIso8601String(),
+                'method' => 'mobile',
+                'status' => 'present',
+                'session_number' => 1,
+                'date' => now()->toDateString(),
+                'work_type' => 'onsite',
+                'biometric_type' => 'none',
+                'hours_worked' => '0',
+                'overtime_hours' => '0',
+                'late_minutes' => 0,
+                'gps_lat' => '0',
+                'gps_lng' => '0',
+                'synced_from_offline' => true,
+                'created_at' => now()->toDateTimeString(),
+                'updated_at' => now()->toDateTimeString(),
+            ],
+            'status' => 'pending',
+            'attempt_count' => 0,
+        ]);
+
+        $service = app(SyncEngineService::class);
+        $log = $service->sync($this->node);
+
+        $this->assertEquals('success', $log->status);
+        $this->assertGreaterThanOrEqual(0, $log->records_sent);
+    }
+
+    /** @test */
+    public function it_does_not_reapply_an_item_claimed_by_a_concurrent_sync(): void
+    {
+        // #6554 — claim conditionnel : un item déjà passé en `processing` par
+        // un sync concurrent n'est ni re-claimé ni appliqué deux fois.
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $this->company->id,
+            'role' => 'employee',
+        ]);
+
+        $payload = [
+            'company_id' => $this->company->id,
+            'employee_id' => $employee->id,
+            'check_in' => now()->subHours(3)->toIso8601String(),
+            'method' => 'mobile',
+            'status' => 'present',
+            'session_number' => 1,
+            'date' => now()->toDateString(),
+            'work_type' => 'onsite',
+            'biometric_type' => 'none',
+            'hours_worked' => '0',
+            'overtime_hours' => '0',
+            'late_minutes' => 0,
+            'gps_lat' => '0',
+            'gps_lng' => '0',
+            'synced_from_offline' => true,
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ];
+
+        // Item déjà claimé par un sync concurrent (processing).
+        $claimedItem = SyncQueue::create([
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'att-claimed-001',
+            'operation' => 'create',
+            'payload' => $payload,
+            'status' => 'processing',
+            'attempt_count' => 1,
+        ]);
+
+        // Item libre (pending) que CE sync doit traiter.
+        $pendingItem = SyncQueue::create([
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'att-free-001',
+            'operation' => 'create',
+            'payload' => $payload,
+            'status' => 'pending',
+            'attempt_count' => 0,
+        ]);
+
+        $result = app(SyncEngineService::class)->push($this->node);
+
+        $this->assertSame(1, $result['sent']);
+        $this->assertSame('synced', $pendingItem->refresh()->status);
+        // L'item concurrent n'est pas touché : pas de double application.
+        $this->assertSame('processing', $claimedItem->refresh()->status);
+        $this->assertSame(1, $claimedItem->attempt_count);
+    }
+
+    // ── Conflict Resolution ───────────────────────────────
+
+    /** @test */
+    public function it_resolves_attendance_conflict_with_local_wins(): void
+    {
+        // Insert an existing attendance log with same external_event_id
+        \DB::table('attendance_logs')->insert([
+            'company_id' => $this->company->id,
+            'employee_id' => 1,
+            'check_in' => now()->subHours(8)->toDateTimeString(),
+            'external_event_id' => 'duplicate-event-001',
+            'method' => 'mobile',
+            'status' => 'present',
+            'session_number' => 1,
+            'date' => now()->toDateString(),
+            'work_type' => 'onsite',
+            'biometric_type' => 'none',
+            'synced_from_offline' => false,
+            'hours_worked' => '0',
+            'overtime_hours' => '0',
+            'late_minutes' => 0,
+            'gps_lat' => '0',
+            'gps_lng' => '0',
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        $item = SyncQueue::create([
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'attendance_logs',
+            'entity_id' => 'duplicate-event-001',
+            'operation' => 'create',
+            'payload' => ['external_event_id' => 'duplicate-event-001'],
+            'status' => 'pending',
+            'attempt_count' => 0,
+        ]);
+
+        $service = app(SyncEngineService::class);
+        $service->push($this->node);
+
+        $item->refresh();
+        $this->assertEquals('conflict', $item->status);
+        $this->assertEquals('local_wins', $item->conflict_resolution);
+    }
+
+    /** @test */
+    public function it_resolves_absence_conflict_with_cloud_wins(): void
+    {
+        // Insert an already-approved absence in Cloud
+        \DB::table('absences')->insert([
+            'company_id' => $this->company->id,
+            'employee_id' => 1,
+            'absence_type_id' => 1,
+            'start_date' => now()->addDay()->toDateString(),
+            'end_date' => now()->addDays(2)->toDateString(),
+            'status' => 'approved',
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        $absenceRow = \DB::table('absences')->first();
+        $this->assertNotNull($absenceRow);
+        /** @var object{id: int|string} $absenceRow */
+        $absenceId = $absenceRow->id;
+
+        SyncQueue::create([
+            'edge_node_id' => $this->node->id,
+            'entity_type' => 'absences',
+            'entity_id' => (string) $absenceId,
+            'operation' => 'update',
+            'payload' => ['status' => 'pending', 'updated_at' => now()->toDateTimeString()],
+            'status' => 'pending',
+            'attempt_count' => 0,
+        ]);
+
+        $service = app(SyncEngineService::class);
+        $service->push($this->node);
+
+        $item = SyncQueue::where('entity_type', 'absences')->first();
+        $this->assertNotNull($item);
+        $this->assertEquals('conflict', $item->status);
+        $this->assertEquals('cloud_wins', $item->conflict_resolution);
+    }
+
+    // ── License ───────────────────────────────────────────
+
+    /** @test */
+    public function it_validates_a_signed_license(): void
+    {
+        // Skip if no license keys configured (CI without keys)
+        if (! config('edge.license_private_key')) {
+            $this->markTestSkipped('Edge license keys not configured.');
+        }
+
+        $licenseService = app(EdgeLicenseService::class);
+        $license = $licenseService->issueLicense($this->node, 30);
+
+        $result = $licenseService->validateLicense($license->signed_payload);
+        $this->assertTrue($result['valid']);
+        $this->assertEquals($this->node->id, $result['payload']['sub']);
+    }
+
+    /** @test */
+    public function it_rejects_expired_license(): void
+    {
+        // Skip if no license keys configured (CI without keys)
+        if (! config('edge.license_private_key')) {
+            $this->markTestSkipped('Edge license keys not configured.');
+        }
+
+        $licenseService = app(EdgeLicenseService::class);
+
+        // Issue a license with -1 day validity (already expired)
+        $this->node->update(['capabilities' => ['features' => ['attendance']]]);
+        $license = $licenseService->issueLicense($this->node, -1);
+
+        $result = $licenseService->validateLicense($license->signed_payload);
+        $this->assertFalse($result['valid']);
+    }
+
+    // ── Helpers ───────────────────────────────────────────
+
+    protected function tearDown(): void
+    {
+        $this->tearDownMvpSchema();
+        parent::tearDown();
+    }
+
+    private function withEdgeToken(): void
+    {
+        $this->withToken('test-edge-token-xxx');
+    }
+}

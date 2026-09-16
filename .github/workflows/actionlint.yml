@@ -1,0 +1,68 @@
+name: Actionlint
+
+# Audit Plan P4: dedicated lint on PRs touching .github/workflows/**, so a
+# regression like the tests.yml orphaned mobile_* fragment (Audit §1.1) is
+# caught at review time instead of silently shipping dead/broken steps.
+# actionlint bundles shellcheck integration, so `run:` blocks get basic
+# shell linting too.
+#
+# PA2-OPS-003: `pull_request.paths` intentionally removed so this job runs
+# on every PR unconditionally (not just ones touching .github/workflows/**).
+# It was added to `required_status_checks.contexts` on `main` (branch
+# protection) — a required check gated behind a `paths:` filter never posts
+# a status on PRs that don't match those paths, which makes GitHub treat
+# the required check as permanently pending and blocks merging that PR
+# indefinitely. The job itself is a fast static lint over `.github/**`, so
+# running it unconditionally on every PR is cheap.
+#
+# `push` uses the SAME unconditional trigger (issue #2032, complété #2131) :
+# « actionlint (+ shellcheck) » est un check requis sur main. Un push direct
+# sur main qui ne touche pas .github/workflows/** ne déclencherait pas le
+# workflow (paths filter) → le check requis reste pending à vie et main n'est
+# jamais « vert » (même piège que PA2-OPS-003 sur les PR, découvert sur
+# coverage-gate #2105/#2132). Le lint est rapide ; le coût est négligeable.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Issue #2032 : la merge queue GitHub doit valider ce check requis sur le
+  # ref de merge (les path filters ne s'appliquent pas à merge_group).
+  merge_group:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  # Issue #2131 : check REQUIS « actionlint (+ shellcheck) » — sur main, un
+  # push ne doit jamais annuler le run du commit précédent (sinon le dernier
+  # commit de main reste pending 20+ min). Les runs PR gardent l'annulation.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  actionlint:
+    timeout-minutes: 15
+    name: actionlint (+ shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29) : actionlint/shellcheck n'ont pas
+          # besoin des assets LFS — checkout sans LFS.
+          lfs: false
+
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@e0207a28405ecad11953ba625a95d92f7889572a # v1
+        with:
+          fail_level: error
+
+      - name: Workflow paths sanity (issue #3519)
+        # Échoue si une entrée `paths:` d'un workflow ne matche aucun fichier
+        # réel — sinon le workflow ne se déclenche plus jamais (silencieux).
+        run: bash dev-hub/tools/check-workflow-paths.sh

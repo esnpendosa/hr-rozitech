@@ -1,0 +1,1108 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useSsrLang } from '@/modules/vitrine/lib/locale-ssr-provider'
+import { SITE_URL } from '@/lib/site-url'
+// #7307 — chiffres canoniques de la vitrine : une seule source pour toutes les
+// pages et toutes les locales (le nombre de pays de paie était annoncé 21 ici
+// et 6 sur /testimonials).
+import {
+  FREE_TRIAL_DAYS,
+  MOBILE_APPS_COUNT,
+  PAYROLL_COUNTRIES_COUNT,
+  SUPPORTED_LANGUAGES_COUNT,
+} from '../data/vitrine-numbers'
+import {
+  type AppLocale,
+  applyDocumentLocale,
+  getLocaleDirection,
+  getPreferredLocale,
+  normalizeLocale,
+  storePreferredLocale,
+} from '@/lib/i18n'
+
+const LOCALE_EVENT = 'vitrine-locale-changed'
+
+// L'espace client réellement en ligne (issue #1775 : app.leopardo-rh.com ne
+// résout pas — DNS mort). URL centralisée (src/lib/site-url.ts), priorité à
+// NEXT_PUBLIC_SITE_URL.
+const DEMO_APP_URL = `${SITE_URL}/dashboard`
+
+type LocaleOption = {
+  value: AppLocale
+  label: string
+  nativeLabel: string
+}
+
+type HeroStat = {
+  value: number
+  suffix: string
+  label: string
+}
+
+type DemoStat = {
+  label: string
+  value: string
+}
+
+type LandingCopy = {
+  nav: {
+    sections: Array<{ id: string; label: string }>
+    login: string
+    trial: string
+    themeLabel: string
+    menuLabel: string
+    localeLabel: string
+    brandTagline: string
+  }
+  hero: {
+    badge: string
+    badgeNew: string
+    titleTop: string
+    titleBottom: string
+    subtitle: string
+    subtitleHighlight: string
+    subtitleTail: string
+    primaryCta: string
+    secondaryCta: string
+    mobileBadge?: string
+    downloadCta?: string
+    visualAlt?: string
+    stats: HeroStat[]
+  }
+  heroQuickTrial: {
+    placeholder: string
+    submit: string
+    submitting: string
+    legal: string
+    success: string
+    error: string
+  }
+  problem: {
+    badge: string
+    title: string
+    subtitle: string
+    items: Array<{ title: string; description: string }>
+  }
+  solution: {
+    badge: string
+    title: string
+    subtitle: string
+    description: string
+    features: Array<{ title: string; description: string }>
+  }
+  features: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+  }
+  demo: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+    highlights: string[]
+    appUrl: string
+    miniStats: DemoStat[]
+  }
+  pricing: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+    recommended: string
+    currency: string
+    annualSavings: string
+    toggleBilling: string
+  }
+  testimonials: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+  }
+  faq: {
+    badge: string
+    title: string
+    titleHighlight: string
+  }
+  cta: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+    primary: string
+    secondary: string
+  }
+  changelog: {
+    badge: string
+    title: string
+    titleHighlight: string
+    subtitle: string
+    repoNote: string
+  }
+  footer: {
+    description: string
+    sections: Array<{ title: string; links: string[] }>
+    rights: string
+    newsletter: {
+      title: string
+      description: string
+      placeholder: string
+      button: string
+      success: string
+      error: string
+    }
+  }
+  caseStudies: {
+    heroBadge: string
+    /** #AI-SEO : titre/sous-titre du catalogue de liens vers les 12 études. */
+    catalogTitle: string
+    catalogSubtitle: string
+    heroTitle: string
+    heroSubtitle: string
+    heroPrimary: string
+    heroSecondary: string
+    demoBadge: string
+    demoNotice: string
+    challenge: string
+    solution: string
+    employees: string
+    ctaTitle: string
+    ctaDescription: string
+    ctaPrimary: string
+    ctaSecondary: string
+  }
+}
+
+export const vitrineLocaleOptions: LocaleOption[] = [
+  { value: 'id', label: 'Indonesian', nativeLabel: 'Bahasa Indonesia' },
+  { value: 'fr', label: 'French', nativeLabel: 'Français' },
+  { value: 'en', label: 'English', nativeLabel: 'English' },
+  { value: 'tr', label: 'Turkish', nativeLabel: 'Turkce' },
+  { value: 'ar', label: 'Arabic', nativeLabel: 'العربية' },
+]
+
+const landingCopy: Record<AppLocale, LandingCopy> = {
+  id: {
+    nav: {
+      sections: [
+        { id: 'fonctionnalites', label: 'Fitur' },
+        { id: 'tarifs', label: 'Harga' },
+        { id: 'temoignages', label: 'Testimoni' },
+        { id: 'faq', label: 'FAQ' },
+      ],
+      login: 'Masuk',
+      trial: 'Daftar Akun',
+      themeLabel: 'Ganti tema',
+      menuLabel: 'Menu',
+      localeLabel: 'Bahasa',
+      brandTagline: 'Resources Management Integrated Human',
+    },
+    hero: {
+      badge: 'Platform software terintegrasi #1 di Indonesia',
+      badgeNew: 'Terpadu',
+      titleTop: 'Ekosistem software terpadu untuk mendukung',
+      titleBottom: 'pertumbuhan bisnis dan profesional',
+      subtitle: 'Akselerasikan pertumbuhan bisnis dengan automasi operasional, integrasi tanpa hambatan, absensi GPS & biometrik presisi, serta intelligent reporting berbasis cloud dari RMIH.',
+      subtitleHighlight: 'Ekosistem software terpadu',
+      subtitleTail: 'mendukung pertumbuhan bisnis dan profesional di seluruh Indonesia.',
+      mobileBadge: 'Tersedia di Ponsel',
+      downloadCta: 'Unduh Aplikasi',
+      visualAlt: 'Tangkapan layar dasbor RMIH',
+      primaryCta: 'Mulai Uji Coba Gratis',
+      secondaryCta: 'Pelajari ekosistem RMIH ↓',
+      stats: [
+        { value: 100, suffix: '%', label: 'Standar Indonesia' },
+        { value: 4, suffix: ' Metode', label: 'Absensi Presensi' },
+        { value: FREE_TRIAL_DAYS, suffix: ' Hari', label: 'Uji Coba Gratis' },
+        { value: MOBILE_APPS_COUNT, suffix: '', label: 'Aplikasi Mobile' },
+      ],
+    },
+    heroQuickTrial: {
+      placeholder: 'nama@perusahaan.com',
+      submit: 'Coba Sekarang',
+      submitting: 'Mengirim...',
+      legal: 'Hanya email. Akses uji coba disiapkan langsung tanpa kartu kredit atau kata sandi rumit.',
+      success: 'Permintaan diterima! Tim RMIH akan menghubungi Anda dalam waktu 24 jam kerja.',
+      error: 'Tidak dapat mengirim permintaan saat ini.',
+    },
+    problem: {
+      badge: 'Tantangan Bisnis',
+      title: 'Lelah dengan pengelolaan absensi & personalia manual?',
+      subtitle: 'Catatan kertas, kekeliruan perhitungan gaji, dan sulitnya memantau tim lapangan menghambat perkembangan bisnis Anda.',
+      items: [
+        { title: 'Kekeliruan Data Absensi', description: 'Input manual dan lupa absen menghabiskan banyak jam kerja sia-sia setiap minggu.' },
+        { title: 'Kurangnya Visibilitas Lapangan', description: 'Sulit memastikan kehadiran dan lokasi tim di lapangan secara real-time.' },
+        { title: 'Perhitungan Gaji Rumit', description: 'Rekapitulasi lembur, potongan, dan tunjangan manual rentan terhadap salah hitung.' },
+        { title: 'Berkas Karyawan Berceceran', description: 'Kontrak kerja dan dokumen penting tersimpan terpencar di chat dan map kertas.' },
+      ],
+    },
+    solution: {
+      badge: 'Solusi RMIH',
+      title: 'Sistem Operasi Cerdas untuk',
+      subtitle: 'Operasional Lapangan Anda.',
+      description: 'RMIH mengintegrasikan seluruh alur kerja operasional ke dalam satu platform mobile-first yang praktis dan intuitif.',
+      features: [
+        { title: 'Absensi Biometrik & GPS', description: 'Validasi kehadiran aman lewat mesin ZKTeco, QR Code, dan GPS mobile.' },
+        { title: 'Penggajian Otomatis', description: 'Hitung slip gaji dan komponen insentif dalam 1 klik tanpa risiko salah rumus.' },
+        { title: 'Pantauan Real-Time', description: 'Dasbor analitik langsung untuk pengambilan keputusan yang cepat dan akurat.' },
+        { title: 'Portal Mandiri Karyawan (Self-Service)', description: 'Karyawan dapat mengajukan izin, cuti, dan melihat slip gaji langsung dari ponsel.' },
+      ],
+    },
+    features: {
+      badge: 'Fitur Utama',
+      title: 'Semua yang dibutuhkan tim',
+      titleHighlight: 'perusahaan Anda',
+      subtitle: 'Solusi HR lengkap untuk mempermudah operasional kerja di kantor maupun di lapangan.',
+    },
+    demo: {
+      badge: 'Antarmuka Modern',
+      title: 'Pengalaman kerja yang',
+      titleHighlight: 'cepat & mudah',
+      subtitle: 'Rasakan kemudahan antarmuka yang dirancang untuk efisiensi, kejelasan data, dan produktivitas harian.',
+      highlights: [
+        'Dasbor eksekutif real-time',
+        'Laporan cerdas otomatis',
+        'Pengalaman native multi-device',
+        'Notifikasi absensi & pengingat tugas',
+        'Integrasi mesin absensi ZKTeco',
+      ],
+      appUrl: DEMO_APP_URL,
+      miniStats: [
+        { label: 'Karyawan', value: '247' },
+        { label: 'Hadir Hari Ini', value: '231' },
+        { label: 'Keamanan Data', value: '100%' },
+      ],
+    },
+    pricing: {
+      badge: 'Paket & Harga',
+      title: 'Paket dirancang',
+      titleHighlight: 'sesuai skala bisnis',
+      subtitle: 'Mulai dengan uji coba gratis, lalu pilih paket berdasarkan jumlah karyawan aktif.',
+      recommended: 'Rekomendasi',
+      currency: 'Rp',
+      annualSavings: 'Hemat hingga 17%',
+      toggleBilling: 'Pilihan periode pembayaran',
+    },
+    testimonials: {
+      badge: 'Testimoni',
+      title: 'Dipercaya oleh',
+      titleHighlight: 'berbagai tim bisnis',
+      subtitle: 'Perusahaan modern menggunakan RMIH untuk mengelola operasional lapangan secara efisien.',
+    },
+    faq: {
+      badge: 'FAQ',
+      title: 'Pertanyaan umum',
+      titleHighlight: 'seputar RMIH',
+    },
+    cta: {
+      badge: 'Siap untuk Operasional Lapangan',
+      title: 'Siap mengubah manajemen',
+      titleHighlight: 'SDM perusahaan Anda?',
+      subtitle: 'Mulai uji coba gratis 14 hari sekarang. Tanpa kartu kredit. Setup siap digunakan dalam 5 menit.',
+      primary: 'Mulai Uji Coba Gratis',
+      secondary: 'Jadwalkan Demo',
+    },
+    changelog: {
+      badge: 'Produk',
+      title: 'Catatan',
+      titleHighlight: 'Rilis Pembaruan',
+      subtitle: 'Pembaruan dan peningkatan fitur platform terbaru.',
+      repoNote: 'Riwayat lengkap tersedia di catatan sistem.',
+    },
+    footer: {
+      description: 'Platform HR & Operasional Perusahaan Mobile-First untuk mengelola karyawan di kantor, lapangan, maupun remote.',
+      sections: [
+        { title: 'Produk', links: ['Fitur', 'Harga', 'Integrasi', 'API', 'Catatan Rilis', 'RMIH untuk Windows', 'Tentang Kami', 'Video'] },
+        { title: 'Bantuan', links: ['Dokumentasi', 'Panduan', 'Blog', 'Hubungi Kami', 'Komunitas'] },
+        { title: 'Aplikasi Mobile', links: ['Karyawan (Android)', 'Karyawan (iOS)', 'Manajer (Android)', 'Manajer (iOS)', 'Admin Platform (Android)'] },
+        { title: 'Legal', links: ['Kebijakan Privasi', 'Ketentuan Layanan', 'Keamanan Data', 'GDPR'] },
+      ],
+      rights: 'Hak cipta dilindungi undang-undang.',
+      newsletter: {
+        title: 'Buletin HR',
+        description: 'Dapatkan tips HR dan info pembaruan fitur terbaru.',
+        placeholder: 'email@perusahaan.com',
+        button: 'Langganan',
+        success: 'Berhasil berlangganan!',
+        error: 'Terjadi kesalahan. Silakan coba lagi.',
+      },
+    },
+    caseStudies: {
+      heroBadge: 'Kisah Sukses',
+      catalogTitle: 'Studi kasus per bidang usaha',
+      catalogSubtitle: 'Contoh penerapan nyata: absensi lapangan, penggajian, dan operasional lintas sektor.',
+      heroTitle: 'Studi Kasus Klien',
+      heroSubtitle: 'Bagaimana bisnis meningkatkan efisiensi operasional bersama RMIH',
+      heroPrimary: 'Mulai Gratis',
+      heroSecondary: 'Lihat Testimoni',
+      demoBadge: 'Contoh Ilustratif',
+      demoNotice: 'Studi kasus ini adalah ilustrasi penerapan fitur dalam skenario operasional nyata.',
+      challenge: 'Tantangan',
+      solution: 'Solusi',
+      employees: 'karyawan',
+      ctaTitle: 'Bisnis Anda bisa menjadi yang berikutnya',
+      ctaDescription: 'Rasakan kemudahan RMIH dengan uji coba gratis 14 hari.',
+      ctaPrimary: 'Coba Gratis 14 Hari',
+      ctaSecondary: 'Minta Demo',
+    },
+  },
+  fr: {
+    nav: {
+      sections: [
+        { id: 'fonctionnalites', label: 'Fonctionnalités' },
+        { id: 'tarifs', label: 'Tarifs' },
+        { id: 'temoignages', label: 'Temoignages' },
+        { id: 'faq', label: 'FAQ' },
+      ],
+      login: 'Connexion',
+      trial: 'Creer un compte',
+      themeLabel: 'Changer le theme',
+      menuLabel: 'Menu',
+      localeLabel: 'Langue',
+      brandTagline: 'Resources Management Integrated Human',
+    },
+    hero: {
+      badge: 'Logiciel RH et opérations pour PME terrain',
+      badgeNew: 'Nouveau',
+      titleTop: 'Vos employés, leurs pointages, leur paie —',
+      titleBottom: 'dans une seule application.',
+      subtitle: 'RMIH est le logiciel de gestion du personnel des PME terrain : il remplace Excel, WhatsApp et le papier par une seule application — présence, absences, plannings, paie, documents et pilotage, du mobile au bureau.',
+      subtitleHighlight: 'Le cockpit mobile de votre entreprise',
+      subtitleTail: 'qui relie terrain, RH, managers et direction.',
+      mobileBadge: 'Disponible sur mobile',
+      downloadCta: 'Telecharger les apps',
+      visualAlt: 'Capture du tableau de bord admin RMIH',
+      primaryCta: 'Creer un compte',
+      secondaryCta: 'Voir la demo',
+      stats: [
+        { value: PAYROLL_COUNTRIES_COUNT, suffix: '', label: 'Pays couverts (paie)' },
+        { value: SUPPORTED_LANGUAGES_COUNT, suffix: '', label: 'Langues (FR/EN/AR/TR)' },
+        { value: FREE_TRIAL_DAYS, suffix: 'j', label: 'Essai gratuit' },
+        { value: MOBILE_APPS_COUNT, suffix: '', label: 'Apps mobiles' },
+      ],
+    },
+    heroQuickTrial: {
+      placeholder: 'email@entreprise.com',
+      submit: 'Tester maintenant',
+      submitting: 'Envoi...',
+      legal: 'Email uniquement. Notre equipe prepare un essai adapte, sans mot de passe ni carte bancaire.',
+      success: "Demande recue. L'equipe RMIH vous contacte sous 24h ouvrables.",
+      error: "Impossible d'envoyer la demande pour le moment.",
+    },
+    problem: {
+      badge: 'Le constat',
+      title: 'La gestion RH traditionnelle vous freine ?',
+      subtitle: 'Les feuilles de presence papier, les erreurs de paie et le manque de visibilite sur le terrain ralentissent votre croissance.',
+      items: [
+        { title: 'Pointage manuel et erreurs', description: 'Les oublis et les saisies manuelles coutent des heures precieuses chaque semaine.' },
+        { title: 'Opacité du terrain', description: 'Difficile de savoir qui est présent et sur quelle tâche en temps reel.' },
+        { title: 'Complexite de la paie', description: 'Le calcul des variables de paie est un casse-tete mensuel sujet aux erreurs.' },
+        { title: 'Documents eparpilles', description: 'Les contrats et justificatifs sont perdus dans des emails ou des classeurs.' },
+      ],
+    },
+    solution: {
+      badge: 'La solution RMIH',
+      title: 'Un systeme d\'exploitation pour',
+      subtitle: 'vos opérations terrain.',
+      description: 'RMIH unifie tout votre flux opérationnel dans une plateforme moderne, mobile-first et intuitive.',
+      features: [
+        { title: 'Pointage Biometrique & Mobile', description: 'Securisez les entrees avec ZKTeco, QR code ou GPS mobile.' },
+        { title: 'Automatisation de la Paie', description: 'Generez les variables de paie en un clic, sans risque d\'erreur.' },
+        { title: 'Visibilite en Temps Reel', description: 'Dashboards dynamiques pour une prise de decision immediate.' },
+        { title: 'Self-Service Employe', description: 'Donnez de l\'autonomie a vos equipes avec une application dediee.' },
+      ],
+    },
+    features: {
+      badge: 'Fonctionnalités',
+      title: 'Tout ce dont vous avez',
+      titleHighlight: 'besoin',
+      subtitle: "Une suite complete d'outils RH concue pour simplifier chaque aspect de votre quotidien.",
+    },
+    demo: {
+      badge: 'Interface moderne',
+      title: 'Une experience',
+      titleHighlight: 'revolutionnaire',
+      subtitle: 'Decouvrez une interface pensee pour la productivite et la clarte.',
+      highlights: [
+        'Dashboard executif en temps reel',
+        'Rapports automatises avec IA',
+        'Multi-support web et mobile',
+        'Notifications intelligentes',
+        'Compatible bornes ZKTeco',
+      ],
+      appUrl: DEMO_APP_URL,
+      miniStats: [
+        { label: 'Employés', value: '247' },
+        { label: 'Présents', value: '231' },
+        { label: 'Sécurité', value: '100%' },
+      ],
+    },
+    pricing: {
+      badge: 'Tarifs',
+      title: 'Des offres adaptees a',
+      titleHighlight: 'votre echelle',
+      subtitle: 'Commencez avec un pilote gratuit, puis payez selon vos effectifs actifs et vos besoins terrain.',
+      recommended: 'Recommandé',
+      currency: 'EUR',
+      annualSavings: "Jusqu'a 17% d'economie",
+      toggleBilling: "Basculer la période de facturation",
+    },
+    testimonials: {
+      badge: 'Temoignages',
+      title: 'Ils nous font',
+      titleHighlight: 'confiance',
+      subtitle: 'Les premiers pilotes utilisent RMIH pour unifier terrain, managers et admin plateforme sans multiplier les outils.',
+    },
+    faq: {
+      badge: 'FAQ',
+      title: 'Questions',
+      titleHighlight: 'frequentes',
+    },
+    cta: {
+      badge: 'Pret pour les pilotes terrain',
+      title: 'Pret a transformer',
+      titleHighlight: 'votre gestion RH ?',
+      subtitle: 'Commencez votre essai gratuit de 14 jours. Aucune carte de credit requise. Configuration en moins de 5 minutes.',
+      primary: 'Commencer gratuitement',
+      secondary: 'Demander une demo',
+    },
+    changelog: {
+      badge: 'Produit',
+      title: 'Journal des',
+      titleHighlight: 'versions',
+      subtitle: 'Dernieres livraisons majeures de la plateforme (extrait editorialise).',
+      repoNote: 'Historique detaille : fichier CHANGELOG.md a la racine du depot.',
+    },
+    footer: {
+      description: "Mobile-First Company OS pour gérer votre personnel sur le terrain, en bureau et à distance. Employee, Manager et Platform Admin disponibles sur mobile.",
+      sections: [
+        { title: 'Produit', links: ['Fonctionnalités', 'Tarifs', 'Intégrations', 'API', 'Changelog', 'RMIH for Windows', 'À propos', 'Vidéos'] },
+        { title: 'Ressources', links: ['Documentation', 'Guides', 'Blog', 'Contact', 'Communauté'] },
+        { title: 'Applications mobiles', links: ['Employee (Android)', 'Employee (iOS)', 'Manager (Android)', 'Manager (iOS)', 'Platform Admin (Android)'] },
+        { title: 'Legal', links: ['Confidentialité', 'CGU', 'Mentions légales', 'RGPD'] },
+      ],
+      rights: 'Tous droits reserves.',
+      newsletter: {
+        title: 'Newsletter',
+        description: 'Recevez nos conseils RH et mises à jour produit.',
+        placeholder: 'votre@email.com',
+        button: 'S\'abonner',
+        success: 'Inscription réussie !',
+        error: 'Erreur. Veuillez réessayer.',
+      },
+    },
+    caseStudies: {
+      heroBadge: 'Succes Clients',
+      catalogTitle: 'Études de cas par métier',
+      catalogSubtitle: "Douze cas d'usage détaillés : pointage, paie, documents et marketing, secteur par secteur.",
+      heroTitle: 'Etudes de Cas Clients',
+      heroSubtitle: 'Comment nos clients ont transforme leur gestion RH avec RMIH',
+      heroPrimary: 'Démarrer gratuitement',
+      heroSecondary: 'Voir les temoignages',
+      demoBadge: 'Etude illustrative',
+      demoNotice: 'Ces etudes de cas sont des exemples illustratifs (donnees fictives) pour montrer les cas d\'usage de la plateforme.',
+      challenge: 'Le defi',
+      solution: 'La solution',
+      employees: 'employes',
+      ctaTitle: 'Votre entreprise pourrait être la prochaine',
+      ctaDescription: 'Decouvrez RMIH avec un essai gratuit de 14 jours.',
+      ctaPrimary: 'Essai gratuit 14 jours',
+      ctaSecondary: 'Demander une demo',
+    },
+  },
+  en: {
+    nav: {
+      sections: [
+        { id: 'fonctionnalites', label: 'Features' },
+        { id: 'tarifs', label: 'Pricing' },
+        { id: 'temoignages', label: 'Testimonials' },
+        { id: 'faq', label: 'FAQ' },
+      ],
+      login: 'Sign in',
+      trial: 'Sign up',
+      themeLabel: 'Toggle theme',
+      menuLabel: 'Menu',
+      localeLabel: 'Language',
+      brandTagline: 'Resources Management Integrated Human',
+    },
+    hero: {
+      badge: 'HR & operations software for field SMBs',
+      badgeNew: 'New',
+      titleTop: 'Your employees, their time tracking, their payroll —',
+      titleBottom: 'in one single app.',
+      subtitle: 'RMIH is the HR management software for field teams: it replaces Excel, WhatsApp and paper with one app — attendance, leave, scheduling, payroll, documents and control, from mobile to desktop.',
+      subtitleHighlight: 'The mobile cockpit of your company',
+      subtitleTail: 'connecting field staff, HR, managers and leadership.',
+      mobileBadge: 'Available on mobile',
+      downloadCta: 'Download the apps',
+      visualAlt: 'RMIH admin dashboard screenshot',
+      primaryCta: 'Create an account',
+      secondaryCta: 'Watch demo',
+      stats: [
+        { value: PAYROLL_COUNTRIES_COUNT, suffix: '', label: 'Payroll countries' },
+        { value: SUPPORTED_LANGUAGES_COUNT, suffix: '', label: 'Languages (FR/EN/AR/TR)' },
+        { value: FREE_TRIAL_DAYS, suffix: 'd', label: 'Free trial' },
+        { value: MOBILE_APPS_COUNT, suffix: '', label: 'Mobile apps' },
+      ],
+    },
+    heroQuickTrial: {
+      placeholder: 'work@email.com',
+      submit: 'Try now',
+      submitting: 'Sending...',
+      legal: 'Email only. Our team prepares the right trial access, no password or card required.',
+      success: 'Request received. The RMIH team will contact you within 24 business hours.',
+      error: 'Unable to send the request right now.',
+    },
+    problem: {
+      badge: 'The Reality',
+      title: 'Tired of outdated HR management?',
+      subtitle: 'Paper timesheets, payroll errors, and lack of field visibility are holding your business back.',
+      items: [
+        { title: 'Manual Tracking Errors', description: 'Manual entries and forgotten clock-ins cost hours of administrative work every week.' },
+        { title: 'Field Opacity', description: 'It is hard to know who is present, where, and on what task in real-time.' },
+        { title: 'Payroll Complexity', description: 'Calculating monthly payroll variables is a manual headache prone to mistakes.' },
+        { title: 'Scattered Documents', description: 'Contracts and justifications are lost across emails, chats, and physical folders.' },
+      ],
+    },
+    solution: {
+      badge: 'The RMIH Solution',
+      title: 'An operating system for',
+      subtitle: 'your field operations.',
+      description: 'RMIH unifies your entire operational workflow into a modern, mobile-first, and intuitive platform.',
+      features: [
+        { title: 'Biometric & Mobile Clock-in', description: 'Secure entries with ZKTeco hardware, QR codes, or mobile GPS.' },
+        { title: 'Payroll Automation', description: 'Generate payroll variables in one click, eliminating manual error risks.' },
+        { title: 'Real-Time Visibility', description: 'Dynamic dashboards for immediate operational decision-making.' },
+        { title: 'Employee Self-Service', description: 'Empower your teams with a dedicated app for requests and documents.' },
+      ],
+    },
+    features: {
+      badge: 'Features',
+      title: 'Everything your team',
+      titleHighlight: 'needs',
+      subtitle: 'A complete HR suite designed to simplify each operational workflow across web, mobile, and field teams.',
+    },
+    demo: {
+      badge: 'Modern interface',
+      title: 'An experience built for',
+      titleHighlight: 'speed',
+      subtitle: 'Discover an interface shaped for productivity, visibility, and daily operational clarity.',
+      highlights: [
+        'Real-time executive dashboard',
+        'AI-assisted automated reports',
+        'Native multi-device experience',
+        'Smart notifications',
+        'ZKTeco-ready attendance',
+      ],
+      appUrl: DEMO_APP_URL,
+      miniStats: [
+        { label: 'Employees', value: '247' },
+        { label: 'Present', value: '231' },
+        { label: 'Security', value: '100%' },
+      ],
+    },
+    pricing: {
+      badge: 'Pricing',
+      title: 'Plans built',
+      titleHighlight: 'for real rollout',
+      subtitle: 'Start with a free pilot, then pay based on active employees and field operations needs.',
+      recommended: 'Recommended',
+      currency: 'EUR',
+      annualSavings: "Save up to 17%",
+      toggleBilling: "Toggle billing period",
+    },
+    testimonials: {
+      badge: 'Testimonials',
+      title: 'Trusted by',
+      titleHighlight: 'growing teams',
+      subtitle: 'Early pilots use RMIH to connect field teams, managers and platform admins without multiplying tools.',
+    },
+    faq: {
+      badge: 'FAQ',
+      title: 'Frequently asked',
+      titleHighlight: 'questions',
+    },
+    cta: {
+      badge: 'Ready for field pilots',
+      title: 'Ready to transform',
+      titleHighlight: 'your HR operations?',
+      subtitle: 'Launch your 14-day free trial. No credit card required. Production setup in under five minutes.',
+      primary: 'Start for free',
+      secondary: 'Request a demo',
+    },
+    changelog: {
+      badge: 'Product',
+      title: 'Release',
+      titleHighlight: 'notes',
+      subtitle: 'Major platform updates (curated excerpt).',
+      repoNote: 'Full history: CHANGELOG.md at the repository root.',
+    },
+    footer: {
+      description: 'Mobile-First Company OS for managing your workforce in the field, at the office and remotely. Employee, Manager and Platform Admin available on mobile.',
+      sections: [
+        { title: 'Product', links: ['Features', 'Pricing', 'Integrations', 'API', 'Changelog', 'RMIH for Windows', 'About', 'Videos'] },
+        { title: 'Resources', links: ['Documentation', 'Guides', 'Blog', 'Contact', 'Community'] },
+        { title: 'Mobile Apps', links: ['Employee (Android)', 'Employee (iOS)', 'Manager (Android)', 'Manager (iOS)', 'Platform Admin (Android)'] },
+        { title: 'Legal', links: ['Privacy', 'Terms', 'Legal notice', 'GDPR'] },
+      ],
+      rights: 'All rights reserved.',
+      newsletter: {
+        title: 'Newsletter',
+        description: 'Get our HR tips and product updates.',
+        placeholder: 'your@email.com',
+        button: 'Subscribe',
+        success: 'Successfully subscribed!',
+        error: 'Error. Please try again.',
+      },
+    },
+    caseStudies: {
+      heroBadge: 'Success Stories',
+      catalogTitle: 'Case studies by use case',
+      catalogSubtitle: 'Twelve detailed use cases: attendance, payroll, documents and marketing, sector by sector.',
+      heroTitle: 'Client Case Studies',
+      heroSubtitle: 'How our clients transformed their HR management with RMIH',
+      heroPrimary: 'Start for free',
+      heroSecondary: 'See testimonials',
+      demoBadge: 'Illustrative example',
+      demoNotice: 'These case studies are illustrative examples (fictional data) showing platform use cases.',
+      challenge: 'The challenge',
+      solution: 'The solution',
+      employees: 'employees',
+      ctaTitle: 'Your company could be next',
+      ctaDescription: 'Discover RMIH with a free 14-day trial.',
+      ctaPrimary: 'Free 14-day trial',
+      ctaSecondary: 'Request a demo',
+    },
+  },
+  tr: {
+    nav: {
+      sections: [
+        { id: 'fonctionnalites', label: 'Ozellikler' },
+        { id: 'tarifs', label: 'Fiyatlar' },
+        { id: 'temoignages', label: 'Musteriler' },
+        { id: 'faq', label: 'SSS' },
+      ],
+      login: 'Giris yap',
+      trial: 'Ucretsiz dene',
+      themeLabel: 'Temayi degistir',
+      menuLabel: 'Menu',
+      localeLabel: 'Dil',
+      brandTagline: 'Resources Management Integrated Human',
+    },
+    hero: {
+      badge: 'Saha KOBİleri icin IK ve operasyon yazilimi',
+      badgeNew: 'Yeni',
+      titleTop: 'Calisanlariniz, giris-cikislari, bordrolari —',
+      titleBottom: 'tek bir uygulamada.',
+      subtitle: 'RMIH IK, saha ekipleri icin IK yonetim yazilimidir: Excel, WhatsApp ve kagidi tek bir uygulamayla degistirir — yoklama, izinler, planlama, bordro, belgeler ve yonetim, mobilden masaustune.',
+      subtitleHighlight: 'Employee, Manager, Platform Admin',
+      subtitleTail: 'agir ERP olmadan saha pilotu baslatmaniz icin.',
+      mobileBadge: 'Mobilde kullanilabilir',
+      downloadCta: 'Uygulamalari indir',
+      visualAlt: 'RMIH IK yonetici paneli ekran goruntusu',
+      primaryCta: '14 gun ucretsiz deneyin',
+      secondaryCta: 'Demoyu izle',
+      stats: [
+        { value: PAYROLL_COUNTRIES_COUNT, suffix: '', label: 'Bordro ulkesi' },
+        { value: SUPPORTED_LANGUAGES_COUNT, suffix: '', label: 'Dil (FR/EN/AR/TR)' },
+        { value: FREE_TRIAL_DAYS, suffix: 'g', label: 'Ucretsiz deneme' },
+        { value: MOBILE_APPS_COUNT, suffix: '', label: 'Mobil uygulama' },
+      ],
+    },
+    heroQuickTrial: {
+      placeholder: 'is@eposta.com',
+      submit: 'Hemen dene',
+      submitting: 'Gonderiliyor...',
+      legal: 'Sadece e-posta. Ekibimiz sifre veya kart istemeden uygun deneme erisimini hazirlar.',
+      success: 'Talep alindi. RMIH ekibi 24 is saati icinde size ulasir.',
+      error: 'Talep su anda gonderilemiyor.',
+    },
+    problem: {
+      badge: 'Gercekler',
+      title: 'Eski usul IK yonetiminden yoruldunuz mu?',
+      subtitle: 'Kagit puantajlar, bordro hatalari ve saha gorunurlugu eksikligi buyumenizi engelliyor.',
+      items: [
+        { title: 'Manuel Takip Hatalari', description: 'Unutulan girisler ve manuel kayitlar her hafta saatlerce zaman kaybettirir.' },
+        { title: 'Saha Opasitesi', description: 'Kimin nerede, hangi gorevde oldugunu gercek zamanli bilmek zordur.' },
+        { title: 'Bordro Karmasasi', description: 'Bordro degiskenlerini hesaplamak hatalara acik, yorucu bir surectir.' },
+        { title: 'Daginik Belgeler', description: 'Sozlesmeler ve belgeler e-postalar veya klasorler arasinda kaybolur.' },
+      ],
+    },
+    solution: {
+      badge: 'RMIH Cozumu',
+      title: 'Saha operasyonlariniz icin',
+      subtitle: 'bir isletim sistemi.',
+      description: 'RMIH, tum operasyonel akisinizi modern, mobil oncelikli ve sezgisel bir platformda birlestirir.',
+      features: [
+        { title: 'Biyometrik ve Mobil Yoklama', description: 'ZKTeco, QR kod veya mobil GPS ile girisleri guvence altina alin.' },
+        { title: 'Bordro Otomasyonu', description: 'Bordro degiskenlerini tek tikla, hata riski olmadan olusturun.' },
+        { title: 'Gercek Zamanli Gorunurluk', description: 'Anlik karar verme icin dinamik yonetici panelleri.' },
+        { title: 'Calisan Oz-Hizmet', description: 'Ekiplerinize talepler ve belgeler icin ozel bir uygulama sunun.' },
+      ],
+    },
+    features: {
+      badge: 'Ozellikler',
+      title: 'Ekibinizin ihtiyac duydugu',
+      titleHighlight: 'her sey',
+      subtitle: 'Web, mobil ve saha ekipleri icin gunluk IK operasyonlarini sadeleştiren kapsamli arac paketi.',
+    },
+    demo: {
+      badge: 'Modern arayuz',
+      title: 'Hiz icin tasarlanmis',
+      titleHighlight: 'bir deneyim',
+      subtitle: 'Uretkenlik, gorunurluk ve saha kullanimi icin tasarlanmis arayuzu kesfedin.',
+      highlights: [
+        'Gercek zamanli yonetici paneli',
+        'Yapay zekali otomatik raporlar',
+        'Cok cihazli yerel deneyim',
+        'Akilli bildirimler',
+        'ZKTeco uyumlu takip',
+      ],
+      appUrl: DEMO_APP_URL,
+      miniStats: [
+        { label: 'Calisan', value: '247' },
+        { label: 'Mevcut', value: '231' },
+        { label: 'Guvenlik', value: '100%' },
+      ],
+    },
+    pricing: {
+      badge: 'Fiyatlar',
+      title: 'Gercek kurulum',
+      titleHighlight: 'icin paketler',
+      subtitle: 'Ucretsiz pilotla baslayin, sonra aktif calisan ve saha ihtiyaclarina gore odeyin.',
+      recommended: 'Onerilen',
+      currency: 'EUR',
+      annualSavings: "%17'ye varan tasarruf",
+      toggleBilling: "Faturalama dönemini değiştir",
+    },
+    testimonials: {
+      badge: 'Musteriler',
+      title: 'Buyuyen ekiplerin',
+      titleHighlight: 'tercihi',
+      subtitle: 'Ilk pilotlar RMIH ile saha ekiplerini, yoneticileri ve platform adminini tek akista birlestiriyor.',
+    },
+    faq: {
+      badge: 'SSS',
+      title: 'Sik sorulan',
+      titleHighlight: 'sorular',
+    },
+    cta: {
+      badge: 'Saha pilotlari icin hazir',
+      title: 'IK sureclerini',
+      titleHighlight: 'donusturmeye hazir misiniz?',
+      subtitle: '14 gun ucretsiz deneyin. Kredi karti gerekmez. Kurulum bes dakikadan kisa surer.',
+      primary: 'Ucretsiz basla',
+      secondary: 'Demo iste',
+    },
+    changelog: {
+      badge: 'Urun',
+      title: 'Surum',
+      titleHighlight: 'gunlugu',
+      subtitle: 'Onemli platform guncellemeleri (ozet).',
+      repoNote: 'Tam gecmis: depodaki CHANGELOG.md dosyasi.',
+    },
+    footer: {
+      description: 'Saha, ofis ve uzaktan calisanlarinizi yonetmek icin Mobile-First Company OS. Employee, Manager ve Platform Admin mobilde kullanilabilir.',
+      sections: [
+        { title: 'Urun', links: ['Ozellikler', 'Fiyatlar', 'Entegrasyonlar', 'API', 'Degisiklikler', 'Windows icin RMIH', 'Hakkında', 'Videolar'] },
+        { title: 'Kaynaklar', links: ['Dokumantasyon', 'Rehberler', 'Blog', 'Iletisim', 'Topluluk'] },
+        { title: 'Mobil Uygulamalar', links: ['Employee (Android)', 'Employee (iOS)', 'Manager (Android)', 'Manager (iOS)', 'Platform Admin (Android)'] },
+        { title: 'Yasal', links: ['Gizlilik', 'Kullanim Kosullari', 'Yasal Bildirim', 'KVKK/GDPR'] },
+      ],
+      rights: 'Tum haklari saklidir.',
+      newsletter: {
+        title: 'Bülten',
+        description: 'İK ipuçlarımızı ve ürün güncellemelerimizi alın.',
+        placeholder: 'eposta@adresiniz.com',
+        button: 'Abone ol',
+        success: 'Başarıyla abone oldunuz!',
+        error: 'Hata. Lütfen tekrar deneyin.',
+      },
+    },
+    caseStudies: {
+      heroBadge: 'Basari Hikayeleri',
+      catalogTitle: 'Kullanım senaryosuna göre vaka çalışmaları',
+      catalogSubtitle: 'On iki ayrıntılı kullanım senaryosu: yoklama, bordro, belgeler ve pazarlama — sektör sektör.',
+      heroTitle: 'Musteri Vaka Calismalari',
+      heroSubtitle: 'Musterilerimiz RMIH ile insan kaynaklari yonetimini nasil donusturdu',
+      heroPrimary: 'Ucretsiz baslayin',
+      heroSecondary: 'Gorusleri goruntule',
+      demoBadge: 'Ornek calisma',
+      demoNotice: 'Bu vaka calismalari, platformun kullanim senaryolarini gosteren orneklerdir (kurgusal veriler).',
+      challenge: 'Zorluk',
+      solution: 'Cozum',
+      employees: 'calisan',
+      ctaTitle: 'Sirketiniz siradaki olabilir',
+      ctaDescription: 'RMIH\'yi 14 gunluk ucretsiz deneme ile kesfedin.',
+      ctaPrimary: '14 gunluk ucretsiz deneme',
+      ctaSecondary: 'Demo talep edin',
+    },
+  },
+  ar: {
+    nav: {
+      sections: [
+        { id: 'fonctionnalites', label: 'الميزات' },
+        { id: 'tarifs', label: 'الاسعار' },
+        { id: 'temoignages', label: 'العملاء' },
+        { id: 'faq', label: 'الاسئلة' },
+      ],
+      login: 'تسجيل الدخول',
+      trial: 'تجربة مجانية',
+      themeLabel: 'تبديل السمة',
+      menuLabel: 'القائمة',
+      localeLabel: 'اللغة',
+      brandTagline: 'Resources Management Integrated Human',
+    },
+    hero: {
+      badge: 'برنامج الموارد البشرية والعمليات للشركات الميدانية',
+      badgeNew: 'جديد',
+      titleTop: 'موظفوك، حضورهم، رواتبهم —',
+      titleBottom: 'في تطبيق واحد.',
+      subtitle: 'روزيتك للموارد البشرية هو برنامج إدارة الموظفين لفرق الميدان: يستبدل Excel وواتساب والورق بتطبيق واحد — الحضور، الإجازات، الجداول، الرواتب، الوثائق والإدارة، من الجوال إلى الحاسوب.',
+      subtitleHighlight: 'Employee, Manager, Platform Admin',
+      subtitleTail: 'لتشغيل تجربة ميدانية بدون نظام ERP ثقيل.',
+      mobileBadge: 'متاح على الجوال',
+      downloadCta: 'تحميل التطبيقات',
+      visualAlt: 'لقطة شاشة للوحة تحكم الإدارة في روزيتك للموارد البشرية',
+      primaryCta: 'ابدأ تجربة 14 يوما',
+      secondaryCta: 'شاهد العرض',
+      stats: [
+        { value: PAYROLL_COUNTRIES_COUNT, suffix: '', label: 'دول الرواتب' },
+        { value: SUPPORTED_LANGUAGES_COUNT, suffix: '', label: 'لغات (FR/EN/AR/TR)' },
+        { value: FREE_TRIAL_DAYS, suffix: 'يومًا', label: 'تجربة مجانية' },
+        { value: MOBILE_APPS_COUNT, suffix: '', label: 'تطبيقات جوال' },
+      ],
+    },
+    heroQuickTrial: {
+      placeholder: 'email@company.com',
+      submit: 'جرّب الآن',
+      submitting: 'جار الإرسال...',
+      legal: 'البريد فقط. نجهز تجربة مناسبة بدون كلمة مرور أو بطاقة دفع.',
+      success: 'تم استلام الطلب. سيتواصل معك فريق RMIH خلال 24 ساعة عمل.',
+      error: 'تعذر إرسال الطلب الآن.',
+    },
+    problem: {
+      badge: 'الواقع',
+      title: 'هل تعبت من إدارة الموارد البشرية التقليدية؟',
+      subtitle: 'تؤدي سجلات الحضور الورقية وأخطاء الرواتب ونقص الرؤية الميدانية إلى إبطاء نموك.',
+      items: [
+        { title: 'أخطاء التتبع اليدوي', description: 'تستغرق عمليات الإدخال اليدوي المنسية ساعات ثمينة كل أسبوع.' },
+        { title: 'عدم الوضوح الميداني', description: 'من الصعب معرفة من هو حاضر وفي أي مهمة في الوقت الفعلي.' },
+        { title: 'تعقيد الرواتب', description: 'يعد حساب متغيرات الرواتب شهرياً صداعاً عرضة للأخطاء.' },
+        { title: 'وثائق مبعثرة', description: 'تضيع العقود والمبررات في رسائل البريد الإلكتروني أو المجلدات.' },
+      ],
+    },
+    solution: {
+      badge: 'حل ليوباردو',
+      title: 'نظام تشغيل لعملياتك',
+      subtitle: 'الميدانية.',
+      description: 'يجمع ليوباردو تدفق عملك التشغيلي بالكامل في منصة حديثة وسهلة الاستخدام تركز على الجوال.',
+      features: [
+        { title: 'الحضور البيومتري والجوال', description: 'تأمين المداخل عبر ZKTeco أو QR code أو GPS الجوال.' },
+        { title: 'أتمتة الرواتب', description: 'إنشاء متغيرات الرواتب بنقرة واحدة، دون مخاطر الأخطاء.' },
+        { title: 'رؤية في الوقت الفعلي', description: 'لوحات تحكم ديناميكية لاتخاذ قرارات فورية.' },
+        { title: 'الخدمة الذاتية للموظف', description: 'امنح فرقك استقلالية من خلال تطبيق مخصص للطلبات والوثائق.' },
+      ],
+    },
+    features: {
+      badge: 'الميزات',
+      title: 'كل ما يحتاجه فريقك',
+      titleHighlight: 'في مكان واحد',
+      subtitle: 'مجموعة متكاملة من ادوات الموارد البشرية للويب والجوال والعمل الميداني.',
+    },
+    demo: {
+      badge: 'واجهة حديثة',
+      title: 'تجربة مصممة',
+      titleHighlight: 'للانتاجية',
+      subtitle: 'اكتشف واجهة تساعدك على الرؤية الفورية وسرعة التنفيذ في العمليات اليومية.',
+      highlights: [
+        'لوحة تحكم مباشرة',
+        'تقارير مؤتمتة بالذكاء الاصطناعي',
+        'تجربة اصلية على كل الاجهزة',
+        'اشعارات ذكية',
+        'تكامل جاهز مع ZKTeco',
+      ],
+      appUrl: DEMO_APP_URL,
+      miniStats: [
+        { label: 'الموظفون', value: '247' },
+        { label: 'الحاضرون', value: '231' },
+        { label: 'الامان', value: '100%' },
+      ],
+    },
+    pricing: {
+      badge: 'الاسعار',
+      title: 'باقات',
+      titleHighlight: 'لإطلاق حقيقي',
+      subtitle: 'ابدأ بتشغيل تجريبي مجاني ثم ادفع حسب الموظفين النشطين واحتياجات الميدان.',
+      recommended: 'موصى به',
+      currency: 'EUR',
+      annualSavings: 'وفّر حتى 17%',
+      toggleBilling: 'بدّل فترة الفوترة',
+    },
+    testimonials: {
+      badge: 'العملاء',
+      title: 'موثوق من قبل',
+      titleHighlight: 'الفرق النامية',
+      subtitle: 'تستخدم الفرق التجريبية RMIH لربط الميدان والمديرين وإدارة المنصة دون أدوات متفرقة.',
+    },
+    faq: {
+      badge: 'الاسئلة الشائعة',
+      title: 'الاسئلة',
+      titleHighlight: 'المتكررة',
+    },
+    cta: {
+      badge: 'جاهز للتشغيل الميداني',
+      title: 'هل انت مستعد',
+      titleHighlight: 'لتطوير عمليات الموارد البشرية؟',
+      subtitle: 'ابدأ تجربة مجانية لمدة 14 يوما بدون بطاقة ائتمان. التشغيل يتم خلال اقل من خمس دقائق.',
+      primary: 'ابدأ مجانا',
+      secondary: 'اطلب عرضا',
+    },
+    changelog: {
+      badge: 'المنتج',
+      title: 'سجل',
+      titleHighlight: 'الاصدارات',
+      subtitle: 'اهم تحديثات المنصة (مختارات تحريرية).',
+      repoNote: 'السجل الكامل في ملف CHANGELOG.md في جذر المستودع.',
+    },
+    footer: {
+      description: 'Mobile-First Company OS لإدارة فريقك في الميدان والمكتب وعن بُعد. Employee وManager وPlatform Admin متاحة على الجوال.',
+      sections: [
+        { title: 'المنتج', links: ['الميزات', 'الاسعار', 'التكاملات', 'API', 'سجل التغييرات', 'روزيتك لويندوز', 'من نحن', 'فيديوهات'] },
+        { title: 'الموارد', links: ['التوثيق', 'أدلة', 'المدونة', 'اتصل بنا', 'المجتمع'] },
+        { title: 'تطبيقات الجوال', links: ['Employee (Android)', 'Employee (iOS)', 'Manager (Android)', 'Manager (iOS)', 'Platform Admin (Android)'] },
+        { title: 'قانوني', links: ['الخصوصية', 'الشروط', 'الاشعارات القانونية', 'GDPR'] },
+      ],
+      rights: 'جميع الحقوق محفوظة.',
+      newsletter: {
+        title: 'النشرة الإخبارية',
+        description: 'احصل على نصائح الموارد البشرية وتحديثات المنتج.',
+        placeholder: 'بريدك@الإلكتروني.com',
+        button: 'اشتراك',
+        success: 'تم الاشتراك بنجاح!',
+        error: 'خطأ. يرجى المحاولة مرة أخرى.',
+      },
+    },
+    caseStudies: {
+      heroBadge: 'قصص نجاح',
+      catalogTitle: 'دراسات الحالة حسب حالة الاستخدام',
+      catalogSubtitle: 'اثنتا عشرة حالة استخدام مفصّلة: الحضور والرواتب والمستندات والتسويق، قطاعًا بقطاع.',
+      heroTitle: 'دراسات حالة العملاء',
+      heroSubtitle: 'كيف غيّر عملاؤنا إدارة الموارد البشرية مع RMIH',
+      heroPrimary: 'ابدأ مجاناً',
+      heroSecondary: 'شاهد الشهادات',
+      demoBadge: 'مثال توضيحي',
+      demoNotice: 'دراسات الحالة هذه أمثلة توضيحية (بيانات افتراضية) لعرض حالات استخدام المنصة.',
+      challenge: 'التحدي',
+      solution: 'الحل',
+      employees: 'موظف',
+      ctaTitle: 'شركتك يمكن أن تكون التالية',
+      ctaDescription: 'اكتشف RMIH مع تجربة مجانية لمدة 14 يوماً.',
+      ctaPrimary: 'تجربة مجانية 14 يوماً',
+      ctaSecondary: 'اطلب عرضاً توضيحياً',
+    },
+  },
+}
+
+// #3246 — preuve sociale honnête. Aucun client payant à ce jour
+// (PILOTAGE.md « Clients payants | 0 ») : tout contenu « client » de la
+// vitrine est illustratif. Ces libellés sont consommés par TestimonialCard,
+// TestimonialHighlight et MiniCaseStudies pour marquer explicitement les
+// citations/cas comme des exemples (voir TESTIMONIALS_ARE_DEMO).
+// Régression 2026-08-15 : le merge #3561 a écrasé ce bloc (conflit de
+// rebase) → rétabli tel quel.
+export const ILLUSTRATIVE_EXAMPLE_LABEL: Record<AppLocale, string> = {
+  id: 'Contoh ilustrasi',
+  fr: 'Exemple illustratif',
+  en: 'Illustrative example',
+  tr: 'Temsili örnek',
+  ar: 'مثال توضيحي',
+}
+
+export const ILLUSTRATIVE_EXAMPLE_SUFFIX: Record<AppLocale, string> = {
+  id: '(contoh)',
+  fr: '(exemple)',
+  en: '(example)',
+  tr: '(örnek)',
+  ar: '(مثال)',
+}
+
+export function getIllustrativeExampleLabel(locale: AppLocale): string {
+  return ILLUSTRATIVE_EXAMPLE_LABEL[locale] ?? ILLUSTRATIVE_EXAMPLE_LABEL.fr
+}
+
+export function getIllustrativeExampleSuffix(locale: AppLocale): string {
+  return ILLUSTRATIVE_EXAMPLE_SUFFIX[locale] ?? ILLUSTRATIVE_EXAMPLE_SUFFIX.fr
+}
+
+export function getCurrentLocale(): AppLocale {
+  if (typeof window === 'undefined') {
+    return 'id'
+  }
+
+  const urlLocale = new URLSearchParams(window.location.search).get('lang')
+    ?? new URLSearchParams(window.location.search).get('locale')
+
+  if (urlLocale) {
+    const normalized = normalizeLocale(urlLocale)
+    storePreferredLocale(normalized)
+    return normalized
+  }
+
+  return normalizeLocale(getPreferredLocale())
+}
+
+function broadcastLocaleChange(): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new Event(LOCALE_EVENT))
+}
+
+export function setVitrineLocale(locale: AppLocale): void {
+  storePreferredLocale(locale)
+  applyDocumentLocale(locale, locale === 'ar')
+  broadcastLocaleChange()
+}
+
+export function useVitrineLocale() {
+  // Hydratation (bug vitrine 2026-08-15) : le premier rendu client doit
+  // matcher le SSR — on initialise sur la langue SSR (Accept-Language,
+  // fournie par LocaleSsrProvider depuis le RootLayout) puis on applique la
+  // vraie préférence (localStorage / navigator.language) après montage dans
+  // l'effet. Avant ce fix, le client hydratait avec getPreferredLocale()
+  // (navigator.language) pendant que le SSR rendait 'fr' → mismatch →
+  // erreur React #418 → interactivité morte pour tout visiteur non-FR.
+  const ssrLang = useSsrLang()
+  const [locale, setLocaleState] = useState<AppLocale>(() => normalizeLocale(ssrLang))
+
+  useEffect(() => {
+    const syncLocale = () => {
+      const nextLocale = getCurrentLocale()
+      setLocaleState(nextLocale)
+      applyDocumentLocale(nextLocale, nextLocale === 'ar')
+    }
+
+    syncLocale()
+    window.addEventListener('storage', syncLocale)
+    window.addEventListener(LOCALE_EVENT, syncLocale)
+
+    return () => {
+      window.removeEventListener('storage', syncLocale)
+      window.removeEventListener(LOCALE_EVENT, syncLocale)
+    }
+  }, [])
+
+  const copy = useMemo(() => landingCopy[locale] ?? landingCopy.id, [locale])
+  const direction = getLocaleDirection(locale, locale === 'ar')
+
+  return {
+    locale,
+    copy,
+    direction,
+    options: vitrineLocaleOptions,
+    setLocale: (nextLocale: AppLocale) => setVitrineLocale(nextLocale),
+  }
+}

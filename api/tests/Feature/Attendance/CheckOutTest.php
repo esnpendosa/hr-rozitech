@@ -1,0 +1,121 @@
+<?php
+
+namespace Tests\Feature\Attendance;
+
+use App\Modules\Attendance\Domain\Models\AttendanceLog;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Modules\Planning\Domain\Models\Schedule;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\Sanctum;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class CheckOutTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    public function test_cannot_check_out_without_check_in(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'currency' => 'DZD',
+            'timezone' => 'UTC',
+        ]);
+
+        $employee = new Employee([
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'employee@a.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->postJson('/api/v1/attendance/check-out');
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('error', 'MISSING_CHECK_IN');
+    }
+
+    public function test_employee_can_check_out_and_hours_are_calculated(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'plan_id' => 1,
+            'subscription_start' => '2026-01-01',
+            'subscription_end' => '2027-01-01',
+            'language' => 'fr',
+            'currency' => 'DZD',
+            'timezone' => 'UTC',
+        ]);
+
+        $schedule = Schedule::query()->create([
+            'company_id' => $company->id,
+            'name' => 'Day',
+            'start_time' => '08:00:00',
+            'end_time' => '17:00:00',
+            'late_tolerance_minutes' => 15,
+            'overtime_threshold_daily' => 8.0,
+            'is_default' => true,
+        ]);
+
+        $employee = new Employee([
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'schedule_id' => $schedule->id,
+            'email' => 'employee@a.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($employee);
+
+        $this->travelTo(Carbon::parse('2026-04-04 08:00:00', 'UTC'));
+        $checkIn = $this->postJson('/api/v1/attendance/check-in');
+        $checkIn->assertStatus(201);
+
+        $this->travelTo(Carbon::parse('2026-04-04 17:00:00', 'UTC'));
+        $checkOut = $this->postJson('/api/v1/attendance/check-out');
+
+        $checkOut->assertOk();
+        $checkOut->assertJsonPath('data.hours_worked', '8.00');
+        $checkOut->assertJsonPath('data.overtime_hours', '0.00');
+
+        $log = AttendanceLog::query()->firstOrFail();
+        $this->assertSame('8.00', $log->hours_worked);
+        $this->assertSame('0.00', $log->overtime_hours);
+        $this->assertSame('2026-04-04 17:00:00', $log->check_out->setTimezone('UTC')->format('Y-m-d H:i:s'));
+    }
+}
+

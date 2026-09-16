@@ -1,0 +1,237 @@
+<?php
+
+use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+
+Artisan::command('inspire', function () {
+    $this->comment(Inspiring::quote());
+})->purpose('Display an inspiring quote');
+
+Artisan::command(
+    'leopardo:migrate {--fresh : Drop all tables before migrating} {--seed : Run base seeders after migrating} {--demo : Also seed DemoCompanySeeder (local/dev only)}',
+    function () {
+        $fresh = (bool) $this->option('fresh');
+        $seed = (bool) $this->option('seed');
+        $demo = (bool) $this->option('demo');
+
+        if ($fresh) {
+            $this->warn('--fresh : suppression du schema public et shared_tenants');
+            if (DB::getDriverName() === 'pgsql') {
+                DB::statement('DROP SCHEMA IF EXISTS shared_tenants CASCADE');
+                DB::statement('DROP SCHEMA public CASCADE');
+                DB::statement('CREATE SCHEMA public');
+                DB::statement('CREATE SCHEMA shared_tenants');
+            } else {
+                $this->call('migrate:fresh', ['--force' => true]);
+            }
+        }
+
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('CREATE SCHEMA IF NOT EXISTS public');
+            DB::statement('CREATE SCHEMA IF NOT EXISTS shared_tenants');
+
+            // La table migrations doit vivre dans public (pas shared_tenants).
+            config(['database.connections.pgsql.search_path' => 'public']);
+            DB::purge('pgsql');
+            DB::reconnect('pgsql');
+            DB::statement('SET search_path TO public');
+        }
+
+        $this->info('Migrations schema public...');
+        $publicCode = $this->call('migrate', [
+            '--path' => 'database/migrations/public',
+            '--force' => true,
+        ]);
+
+        if ($publicCode !== 0) {
+            $this->error('Echec des migrations public.');
+
+            return $publicCode;
+        }
+
+        if (DB::getDriverName() === 'pgsql') {
+            // Keep tenant migrations on the tenant schema only: some public
+            // tables have tenant-like names and can make Schema::hasTable()
+            // skip creating the real shared_tenants table.
+            config(['database.connections.pgsql.search_path' => 'shared_tenants']);
+            DB::purge('pgsql');
+            DB::reconnect('pgsql');
+            DB::statement('SET search_path TO shared_tenants');
+        }
+
+        $this->info('Migrations schema shared_tenants...');
+        $tenantCode = $this->call('migrate', [
+            '--path' => 'database/migrations/tenant',
+            '--force' => true,
+        ]);
+
+        if ($tenantCode !== 0) {
+            $this->error('Echec des migrations tenant.');
+
+            return $tenantCode;
+        }
+
+        if ($seed) {
+            $this->info('Seeders de base...');
+            if (DB::getDriverName() === 'pgsql') {
+                config(['database.connections.pgsql.search_path' => 'shared_tenants,public']);
+                DB::purge('pgsql');
+                DB::reconnect('pgsql');
+                DB::statement('SET search_path TO shared_tenants,public');
+            }
+
+            $seedCode = $this->call('db:seed', [
+                '--class' => 'Database\\Seeders\\DatabaseSeeder',
+                '--force' => true,
+            ]);
+
+            if ($seedCode !== 0) {
+                return $seedCode;
+            }
+        }
+
+        if ($demo) {
+            $this->info('Seed des donnees de demo...');
+            if (DB::getDriverName() === 'pgsql') {
+                config(['database.connections.pgsql.search_path' => 'shared_tenants,public']);
+                DB::purge('pgsql');
+                DB::reconnect('pgsql');
+                DB::statement('SET search_path TO shared_tenants,public');
+            }
+
+            $this->call('db:seed', [
+                '--class' => 'Database\\Seeders\\DemoCompanySeeder',
+                '--force' => true,
+            ]);
+        }
+
+        $this->info('Leopardo migrate : OK');
+
+        return 0;
+    }
+)->purpose('Run both public and tenant migrations (and optionally seeders) in one shot.');
+
+// ──────────────────────────────────────────────
+// Scheduled Jobs
+// ──────────────────────────────────────────────
+use Illuminate\Support\Facades\Schedule;
+
+Schedule::command('billing:check-trials')->daily()->at('08:00');
+Schedule::command('billing:check-overdue')->daily()->at('09:00');
+Schedule::command('app:send-drip-emails')->daily()->at('10:00');
+Schedule::command('billing:generate-invoices')->monthlyOn(1, '02:00');
+Schedule::command('leave:accrue')->monthlyOn(1, '03:00');
+Schedule::command('leave:carry-forward --year='.(now()->year - 1))->yearlyOn(1, 1, '04:00');
+Schedule::command('contracts:alert-expiring')->daily()->at('07:00');
+// Digest hebdomadaire manager (issue #5695) — chaque lundi à 07:00.
+Schedule::command('manager:weekly-digest')->weeklyOn(1, '07:00');
+Schedule::command('fuel:alerts-dispatch')->daily()->at('06:30');
+// Fermeture automatique unique (ADR-0016 Phase 4, #5355) : pointages sans
+// check-out + sessions GPS orphelines — une seule commande, même cycle.
+Schedule::command('attendance:auto-close --threshold=12 --hours=14')
+    ->hourly()
+    ->withoutOverlapping()
+    ->onOneServer();
+// Supervision queue (issue #5282) : le driver actif peut être `redis` ou
+// `database` (prod 0 €). La détection < 15 min est garantie côté CI par
+// `.github/workflows/queue-supervision.yml` (cron 5 min) ; ce schedule couvre
+// les environnements où un scheduler tourne (worker dédié, local).
+Schedule::command('queue:health-check')
+    ->everyFiveMinutes()
+    ->when(fn (): bool => in_array(config('queue.default'), ['redis', 'database'], true))
+    ->withoutOverlapping();
+
+Schedule::command('growth:approve-commissions')
+    ->daily()
+    ->at('04:00');
+
+// Module Marketing — publication des social_posts planifies devenus dus
+Schedule::command('marketing:publish-scheduled-posts')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// PA2-COMM-011 — publish scheduled company announcements that are due
+Schedule::command('announcements:publish-scheduled')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// BC-24 TRAVEL — dispatch des événements d'outbox TravelAgency (#6066,
+// pattern crm:outbox-dispatch #5741) : consommation asynchrone idempotente.
+Schedule::command('travel:outbox-dispatch')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// BC-24 TRAVEL — synthèse mensuelle des ventes pour Accounting (#6069) :
+// période glissante = mois précédent, événement rejouable et idempotent.
+Schedule::command('travel:settle-sales')
+    ->monthlyOn(1, '02:30')
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// BC-24 TRAVEL — expiration des réservations pending (#6070) : annulation
+// + libération des sièges + événement (idempotent, log borné).
+Schedule::command('travel:expire-pending-bookings')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// BC-24 TRAVEL — expiration des annonces validées (#6111) : durée de
+// validité dépassée → invisible (idempotent).
+Schedule::command('travel:expire-adverts')
+    ->hourly()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// CRM V1 (issue #5720) — relances internes des tâches en retard, idempotentes
+// (table crm_task_reminders, UNIQUE task_id+remind_date).
+Schedule::command('crm:tasks:send-overdue-reminders')
+    ->everyThirtyMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+Schedule::command('growth:archive-clicks --days=90')
+    ->weekly();
+
+// RGPD / Loi 18-07 — rétention des audit logs (#5439 : par entreprise via
+// CompanySetting `audit_retention_months`, défaut 36 mois — voir
+// docs/security/POLITIQUE_RETENTION_DOCUMENTS.md, issue #1474).
+Schedule::command('audit:purge')
+    ->weekly()
+    ->onOneServer();
+
+// Spec S-1 (#1661) — RGPD / Loi 18-07 : purge des templates biométriques
+// expirés (24 mois après fin de contrat / consentement — voir
+// docs/security/POLITIQUE_RETENTION_DOCUMENTS.md v2).
+Schedule::command('biometric:purge-expired')
+    ->weekly()
+    ->onOneServer();
+
+Artisan::command('super-admin:reset-password {email} {password}', function (string $email, string $password) {
+    DB::statement('SET search_path TO public');
+
+    $affected = DB::table('super_admins')
+        ->where('email', $email)
+        ->update([
+            'password_hash' => Hash::make($password),
+        ]);
+
+    if ($affected === 0) {
+        $this->error("Aucun super admin trouvé pour {$email}");
+
+        return 1;
+    }
+
+    $this->info("Mot de passe super admin mis à jour pour {$email}");
+
+    return 0;
+})->purpose('Reset a super admin password safely');
+
+// Issue #1812 — rappel annuel : fêtes islamiques de l'année suivante à
+// confirmer avant la clôture (novembre).
+Schedule::command('islamic:check-unconfirmed')
+    ->yearlyOn(11, 15, '09:00');

@@ -1,0 +1,23 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "Backend Coverage (PHP 8.4 + PostgreSQL 16)",
+      "PHPStan \u2014 Strict (Core/Modules/Shared, level 8)",
+      "Module Structure Validator",
+      "Frontend \u2014 ESLint + TypeScript",
+      "actionlint (+ shellcheck)"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": null,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false
+  },
+  "required_merge_queue": {
+    "enabled": false
+  },
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}

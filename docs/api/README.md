@@ -1,0 +1,61 @@
+# API Reference — Leopardo RH
+
+Leopardo RH provides a robust, RESTful API that powers all our official clients (Web, Mobile, Kiosk) and allows for third-party integrations.
+
+## 🔑 Authentication
+
+All API requests require a **Bearer Token** obtained via the login endpoint.
+
+- **Base URL:** `https://gestionemployerbackend.onrender.com/api/v1`
+- **Format:** `application/json`
+
+> ⚠️ (Audit doc 2026-07-19) `api.leopardo-rh.com` ci-dessous n'a jamais ete configure/DNS-resolu en production ;
+> c'est un domaine custom cible mentionne dans `docs/GESTION_PROJET/RAPPORT_DEPLOIEMENT_RENDER.md` (todo non fait).
+> Utiliser la vraie Base URL ci-dessus (`gestionemployerbackend.onrender.com`) pour toute requete reelle.
+
+```bash
+curl -X GET "https://gestionemployerbackend.onrender.com/api/v1/employees" \
+     -H "Authorization: Bearer {YOUR_TOKEN}" \
+     -H "Accept: application/json"
+```
+
+## 🏗 API Specification
+
+We use **OpenAPI 3.0** as our source of truth for API contracts.
+
+- 📄 **[OpenAPI YAML](../../api/openapi.yaml)** — View the full technical specification (canonical source).
+  - Also accessible at `/docs/openapi.yaml` on the API server.
+- 🧪 **[Postman Collection](../../postman/leopardo_hr.postman_collection.json)**
+
+## 📦 Core Endpoints
+
+### 🏢 Multi-Tenant Context
+Every request is automatically scoped to the authenticated user's tenant (company). No manual `tenant_id` is required in the headers once authenticated.
+
+### 👤 Employee Management
+- `GET /employees` — List all employees.
+- `POST /employees` — Create a new employee record.
+- `GET /employees/{id}` — Retrieve detailed profile.
+
+### 🕒 Attendance & Kiosk
+- `POST /attendance/check-in` — Register start of work (GPS/Biometric).
+- `POST /attendance/check-out` — Register end of work.
+- `GET /kiosks/{deviceCode}/roster` — Fetch daily roster for a ZKTeco device (device token required).
+
+### 💰 Payroll & Finance
+- `GET /employees/{id}/quick-estimate` — Get an AI-driven salary estimation for an employee (also `GET /me/quick-estimate`).
+- `POST /payroll-runs/{id}/calculate` — Calculate a payroll run (`validate` / `lock` for the closing steps).
+
+> ⚠️ (Audit doc 2026-08-31, #6582) : les endpoints listés ci-dessus ont été
+> corrigés pour refléter les routes réelles (`/kiosks/{deviceCode}/roster`, `/employees/{id}/quick-estimate`, `/payroll-runs/{id}/calculate`). La source de vérité reste `api/openapi.yaml`.
+
+## 🚦 Rate Limiting & Versioning
+
+- **Version:** Current stable is `v1`.
+- **Limits:** 60 requests per minute per IP for public endpoints; higher limits for authenticated tenants.
+
+---
+
+*For detailed mobile-specific integration, see:*
+- [Mobile Setup Guide](../mobile/README.md)
+- [Web Implementation](../web/README.md)

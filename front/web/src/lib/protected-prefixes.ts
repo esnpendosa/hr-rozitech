@@ -1,0 +1,59 @@
+/**
+ * Source de vérité unique des préfixes de routes session-protégées (issue #3377).
+ *
+ * Consommateurs :
+ * - `src/proxy.ts` — matcher (ex-`middleware`, #7305) (redirection login si cookie absent/invalide).
+ *   ⚠️ Next.js exige des littéraux statiquement analysables dans `config.matcher` :
+ *   le middleware garde sa liste littérale, le test `protected-prefixes.test.ts`
+ *   garantit qu'elle ne dérive pas de cette source.
+ * - `src/app/robots.ts` — disallow pour tous les bots (y compris Googlebot/Bingbot,
+ *   dont le groupe dédié ÉCRASE le groupe `*` dans la spec robots.txt).
+ *
+ * Toute nouvelle zone protégée ajoutée au middleware DOIT être ajoutée ici —
+ * le test de régression casse sinon.
+ */
+export const PROTECTED_PREFIXES = [
+  '/dashboard',
+  '/absences',
+  '/attendance',
+  // Sous-route géo du pointage (issue #5407) : données GPS fraîches —
+  // exclue du pré-cache sw.js (protégée comme /attendance/* par le middleware).
+  '/attendance/geo',
+  '/billing',
+  '/contracts',
+  '/employees',
+  '/partner',
+  '/payroll',
+  '/reports',
+  '/training',
+  '/settings',
+  '/social',
+  '/social-marketing',
+  // BC-25 Restaurant — portail client (/restaurant + sous-routes kitchen/pos/
+  // stock/…). La vitrine « Je suis restaurateur » vit sur /restaurateur (la
+  // collision de routes est traitée dans proxy.ts : visiteurs anonymes de
+  // /restaurant redirigés vers la vitrine, session valide → hub applicatif).
+  '/restaurant',
+  // BC-27 SHOWCASE — gestion du site vitrine du tenant (création 1-clic,
+  // sections, thème, publication). Le site PUBLIC rendu vit sous
+  // `/vitrine/{slug}` (hors de cette liste : il est public par nature).
+  '/showcase',
+] as const;
+
+/**
+ * Préfixes vitrine dont le middleware normalise `?lang=` en en-tête
+ * `x-vitrine-lang` pour les layouts (issue #4004). Source unique distincte de
+ * PROTECTED_PREFIXES : ces routes sont PUBLIQUES (aucun gate de session, pas
+ * de robots.txt disallow) — seuls les chemins dynamiques (sous-routes) ont
+ * besoin du wildcard.
+ */
+export const VITRINE_LANG_PREFIXES = [
+  '/blog',
+  '/guides',
+  '/case-studies',
+  '/checkout',
+  // Portail client des documents partagés (issue #5233) : route PUBLIQUE
+  // (le token de partage est la credential, pattern CabinetShare #1817) —
+  // le middleware normalise `?lang=` / Accept-Language pour un SSR localisé.
+  '/documents',
+] as const;

@@ -1,0 +1,292 @@
+import { expect, installAuthenticatedSession, test, type AuthenticatedUser } from './fixtures/authenticated';
+import type { Page } from '@playwright/test';
+
+type AnalyticsWindow = Window & {
+  __LEOPARDO_ANALYTICS_EVENTS__?: Array<{
+    name: string;
+    timestamp: string;
+    properties: Record<string, string | number | boolean | null>;
+  }>;
+};
+
+const baseUser: AuthenticatedUser = {
+  id: 101,
+  first_name: 'Fatima',
+  last_name: 'Meziane',
+  email: 'fatima.meziane@techcorp-algerie.dz',
+  role: 'manager',
+  manager_role: 'principal',
+  language: 'fr',
+  is_rtl: false,
+};
+
+async function seedSession(page: Page, overrides: Record<string, unknown> = {}) {
+  await page.addInitScript(() => {
+    (window as AnalyticsWindow).__LEOPARDO_ANALYTICS_EVENTS__ = [];
+  });
+
+  const companyMetadata = { onboarding_completed: true };
+  const userToStore: Partial<AuthenticatedUser> = {
+    ...baseUser,
+    ...overrides,
+    company: overrides.company
+      ? {
+          ...(overrides.company as object),
+          metadata: {
+            ...((overrides.company as Record<string, unknown>)?.metadata ?? {}),
+            ...companyMetadata,
+          },
+        }
+      : {
+          metadata: companyMetadata,
+        },
+  };
+
+  await installAuthenticatedSession(page, { user: userToStore });
+}
+
+async function analyticsEvents(page: Page) {
+  return page.evaluate(() => (window as AnalyticsWindow).__LEOPARDO_ANALYTICS_EVENTS__ ?? []);
+}
+
+test.describe('Client web feature gates', () => {
+  test('included module stays accessible from the client workspace', async ({ authenticatedPage: page }) => {
+    await page.route('**/api/v1/employees?per_page=12', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 501,
+              first_name: 'Nadia',
+              last_name: 'Kaci',
+              email: 'nadia.kaci@techcorp-algerie.dz',
+              role: 'employee',
+              status: 'active',
+              matricule: 'EMP-501',
+            },
+          ],
+          meta: { total: 1 },
+        }),
+      });
+    });
+
+    // #7321 : /employees charge aussi les départements. Sans ce mock la
+    // requête part sur le vrai réseau et l'assertion sur la liste peut
+    // tomber avant son rendu (test non déterministe).
+    await page.route('**/api/v1/departments**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [], meta: { total: 0 } }),
+      });
+    });
+
+    await seedSession(page, {
+      capabilities: {
+        employees: true,
+        payroll: false,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          employees: true,
+          payroll: false,
+        },
+      },
+    });
+
+    await page.goto('/employees', { waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL(/\/employees$/);
+    await expect(page.locator('body')).toContainText('Total équipe');
+    await expect(page.locator('body')).toContainText('Nadia Kaci');
+  });
+
+  test('locked module shows an upgrade message instead of rendering a broken page', async ({ authenticatedPage: page }) => {
+    await seedSession(page, {
+      capabilities: {
+        employees: true,
+        payroll: false,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          employees: true,
+          payroll: false,
+        },
+      },
+    });
+
+    await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL(/\/payroll$/);
+    await expect(page.getByTestId('feature-locked-panel')).toBeVisible();
+    await expect(page.getByText('Module non inclus').first()).toBeVisible();
+    await expect(page.locator('body')).toContainText("Ce module n'est pas inclus dans votre plan actuel.");
+    await expect(page.locator('body')).toContainText("Demander l'activation");
+    await expect(page.locator('body')).not.toContainText('Gestion des bulletins de paie et cycles de paie');
+
+    const events = await analyticsEvents(page);
+    const blockedEvent = events.find((event) => event.name === 'feature_blocked');
+    expect(blockedEvent?.properties.module).toBe('payroll');
+    expect(blockedEvent?.properties.reason).toBe('feature_locked');
+  });
+
+  test('trial module is visible as trial and remains usable', async ({ authenticatedPage: page }) => {
+    await seedSession(page, {
+      capabilities: {
+        reports: 'trial',
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          reports: 'trial',
+        },
+      },
+    });
+
+    await page.goto('/reports', { waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL(/\/reports$/);
+    await expect(page.getByText('Trial').first()).toBeVisible();
+    await expect(page.locator('body')).toContainText('Générez et téléchargez vos rapports RH');
+  });
+
+  test('employee role cannot open manager payroll even if the feature exists', async ({ authenticatedPage: page }) => {
+    await seedSession(page, {
+      role: 'employee',
+      manager_role: null,
+      capabilities: {
+        payroll: true,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          payroll: true,
+        },
+      },
+    });
+
+    await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
+
+    await expect(page.getByTestId('feature-locked-panel')).toBeVisible();
+    await expect(page.getByText('Module non inclus').first()).toBeVisible();
+    await expect(page.locator('body')).toContainText("Votre rôle actuel ne permet pas d'accéder à ce module.");
+    const events = await analyticsEvents(page);
+    expect(events.find((event) => event.name === 'feature_blocked')?.properties.reason).toBe('role_locked');
+  });
+
+  test('marketing manager can access the marketing module', async ({ authenticatedPage: page }) => {
+    await page.route('**/api/v1/marketing/social-account', async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: 'SOCIAL_ACCOUNT_NOT_FOUND',
+          message: "Aucun compte social connecte pour l'entreprise.",
+        }),
+      });
+    });
+    await page.route('**/api/v1/marketing/social-posts**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [], meta: { current_page: 1, last_page: 1 } }),
+      });
+    });
+
+    await seedSession(page, {
+      manager_role: 'marketing',
+      capabilities: {
+        marketing: true,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          marketing: true,
+        },
+      },
+    });
+
+    await page.goto('/social-marketing', { waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL(/\/social-marketing$/);
+    await expect(page.locator('body')).toContainText('Connecter mon compte');
+    await expect(page.locator('body')).not.toContainText('Module non inclus');
+  });
+
+  test('marketing manager can access the social calendar page', async ({ authenticatedPage: page }) => {
+    await page.route('**/api/v1/marketing/social-account', async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: 'SOCIAL_ACCOUNT_NOT_FOUND',
+          message: "Aucun compte social connecte pour l'entreprise.",
+        }),
+      });
+    });
+    await page.route('**/api/v1/marketing/social-posts**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [], meta: { current_page: 1, last_page: 1 } }),
+      });
+    });
+
+    await seedSession(page, {
+      manager_role: 'marketing',
+      capabilities: {
+        marketing: true,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          marketing: true,
+        },
+      },
+    });
+
+    await page.goto('/social', { waitUntil: 'domcontentloaded' });
+
+    await expect(page).toHaveURL(/\/social$/);
+    await expect(page.locator('body')).toContainText('Calendrier Marketing');
+    await expect(page.locator('body')).not.toContainText('Module non inclus');
+
+    // The marketing sub-nav lets the marketer switch to the list view without
+    // losing the module's feature-gated access.
+    await page.getByRole('navigation', { name: 'Navigation Marketing' }).getByRole('link', { name: 'Liste & compte' }).click();
+    await expect(page).toHaveURL(/\/social-marketing$/);
+  });
+
+  test('non-marketing manager role is locked out of the marketing module', async ({ authenticatedPage: page }) => {
+    await seedSession(page, {
+      manager_role: 'rh',
+      capabilities: {
+        marketing: true,
+      },
+      company: {
+        id: 'company-1',
+        name: 'TechCorp Algerie SARL',
+        features: {
+          marketing: true,
+        },
+      },
+    });
+
+    await page.goto('/social-marketing', { waitUntil: 'domcontentloaded' });
+
+    await expect(page.getByTestId('feature-locked-panel')).toBeVisible();
+    await expect(page.getByText('Module non inclus').first()).toBeVisible();
+    const events = await analyticsEvents(page);
+    expect(events.find((event) => event.name === 'feature_blocked')?.properties.reason).toBe('role_locked');
+  });
+});

@@ -1,0 +1,186 @@
+# RBAC Route Matrix
+
+Date: 2026-05-14
+
+This matrix maps the current API route surfaces to the roles allowed by the route middleware, controller policies, and feature gates. It is a security audit artifact: update it whenever a route group, middleware, policy, or monetized module changes.
+
+## Role Legend
+
+| Key | Role / guard | Scope |
+|---|---|---|
+| SA | `auth:super_admin_api` | Global platform administration only. |
+| P | tenant manager with `manager_role=principal` | Full tenant administration, subject to company status and tenant middleware. |
+| RH | tenant manager with `manager_role=rh` | HR lifecycle, employees, absences, documents, privacy operations. |
+| DEPT | tenant manager with `manager_role=dept` | Department-scoped reads and approvals where controller policy allows it. |
+| FIN | tenant manager with `manager_role=comptable` | Payroll, billing, bank exports, finance reads where policy allows it. |
+| SUP | tenant manager with `manager_role=superviseur` | Team attendance, tasks, camera operations where policy allows it. |
+| EMP | tenant employee | Self-service only unless a controller policy grants more. |
+| PUBLIC | no authenticated user | Public onboarding, health, payment webhooks, kiosk/public token endpoints. |
+
+## Global Route Guards
+
+| Surface | Prefix / routes | Primary middleware | Allowed roles | Notes / evidence |
+|---|---|---|---|---|
+| Health and metrics | `/api/v1/health`, `/health/live`, `/health/ready`, `/metrics` | none, public probes | PUBLIC | Health probes are intentionally public for Render and monitors. |
+| Tenant auth | `/api/v1/auth/*` login/register/google | `throttle:auth-sensitive` | PUBLIC | Login lockout and sensitive limiter are covered by auth/rate-limit tests. |
+| Platform auth | `/api/v1/platform/auth/login` | `throttle:auth-sensitive` | PUBLIC | Creates `super_admin_api` session; 2FA may return `202 TWO_FA_REQUIRED`. |
+| Public onboarding | `/api/v1/onboarding/invitation/*` | `throttle:10,1` | PUBLIC | Token-bound onboarding only. |
+| Tenant authenticated base | `/api/v1/auth/me`, profile, privacy, features, company requests, onboarding checklist, `/api/v1/auth/refresh-token` | `throttle:api`, `auth:sanctum`, `tenant` | P, RH, DEPT, FIN, SUP, EMP | `tenant` must resolve company and reject suspended/archived contexts before controller access. Token refresh rotates Sanctum token preserving abilities. |
+| Launch readiness | `/api/v1/launch-readiness` | `throttle:api`, `auth:sanctum`, `tenant`, controller RBAC | P, RH | Go-live cockpit tenant. Employees and non-RH managers stay forbidden. |
+| Platform administration | `/api/v1/platform/*` except login | `auth:super_admin_api`, `throttle:platform-sensitive` | SA | Includes companies, plans, health, subscriptions, feature flags, company requests, metrics overview, platform-wide announcements (PA2-COMM-005). |
+| AI gateway | `/api/v1/ai/chat`, `/voice/*`, `/agent/*` | `auth:sanctum`, `tenant`, `AIFeatureCheck`, `AITenantInjector`, `AIRateLimiter`, `throttle:ai-sensitive` | P, RH, DEPT, FIN, SUP, EMP with AI feature | Voice and agent routes remain experimental and rate-limited. |
+| AI analytics | `/api/v1/ai/analytics/*` | AI base middleware + `EnsureAIAnalyticsAccess` | P, RH | Security test should keep non-principal/non-RH managers and employees out. |
+| Payment webhooks | `/api/v1/webhooks/stripe`, `/webhooks/chargily` | none route auth, controller signature validation | PUBLIC providers | Covered by webhook signature tests; unknown payloads must stay idempotent. |
+| Kiosk device endpoints | `/api/v1/kiosks/{deviceCode}/roster|punch|sync` + extensions `employee-info`, `announcements`, `leave-balance`, `qr-punch` | `throttle:api`, device token in controller (`X-Kiosk-Token`) | PUBLIC device token | Device token is not a user role and must not bypass tenant scoping. (Issue #2757 — les 4 extensions device token-only étaient absentes de la matrice.) |
+| Camera public/internal endpoints | `/api/v1/internal/camera-token/verify`, `/api/v1/view/cam` | throttles + bearer/public token validation | PUBLIC token | No Sanctum session; access is token-bound. |
+
+## Tenant Module Matrix
+
+| Module / route family | P | RH | DEPT | FIN | SUP | EMP | Enforcement notes |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| Employees `/employees*` | RW role/RH admin | RW except role/RH changes | R limited | R limited | R limited | self R | Employee policies and tenant filters must protect sensitive fields and cross-tenant reads. `role` / `manager_role` changes are principal-only and manager promotion to `principal` remains platform-owned. |
+| Attendance `/attendance*` | RW | RW | R department | - | R team | self RW check-in/out | `Attendance*Test` covers self access, manager access, and 403 cases. |
+| Attendance manager reports `/attendance/anomalies`, `/attendance/monthly-report` | R | R | R scoped | R finance | R team | - | Existing tests assert employee 403 for anomalies/monthly report. |
+| Attendance corrections `/attendance/corrections*` | RW approve/reject | RW approve/reject | - | - | - | create only | `CorrectionWorkflowTest` covers manager decision, employee 403 on queue and tenant isolation. |
+| Absences `/absences*` | RW approve/reject | RW approve/reject | approve scoped | - | approve scoped | create/self read/cancel | `Absence*Test` suites cover employee and manager paths. |
+| Salary advances `/salary-advances*` | RW approve/reject/resolve-dispute | R workflow | - | RW disbursement/review/resolve-dispute | - | create/self read/confirm-received/dispute | `SalaryAdvanceSecurityTest` covers tenant isolation and forbidden access. PA2-PAY-015: only the advance owner can open a dispute (`/dispute`), only a manager can resolve one (`/resolve-dispute`). |
+| Payroll legacy `/payrolls*` | RW | R | - | RW | - | self where exposed | Groupe `throttle:api, auth:sanctum, tenant, throttle:api-plan` (`routes/modules/rh.php`) — PAS de `throttle:payroll-sensitive` (correction doc #2757, la mention était erronée) ; écritures policy-gated. |
+| Payroll engine `/salary-*`, `/tax-slabs`, `/social-contributions`, `/payroll-runs`, `/bank-exports` | RW | R | - | RW | - | self payslips only | Self-service payslip routes are `/me/pay-slips*`; manager routes must not leak across tenant/FK chains. F-11 (#1541) : `POST /payroll-runs/{run}/validate` (étape 1), `POST /payroll-runs/{run}/lock` + `POST /payroll-runs/{run}/unlock` (étape 2, raison obligatoire) — réservés principal/comptable (`api.manager:principal,comptable`) ; `cancel` refusé si verrouillé ; audit trail `payroll_run_validated/locked/unlocked`. Tests : `PayrollRunClosingApiTest`. Issue #5246 : guards controller alignés sur le contrat route (défense en profondeur — `hasManagerRole('principal','comptable')` sur validate/lock/unlock) ; tests : `PayrollValidationRbacTest` (rh refusé sur toute la chaîne INSUFFICIENT_ROLE, comptable/principal OK, employé 403, cross-tenant 404, audit trail). |
+| Payroll engine `/salary-*`, `/tax-slabs`, `/social-contributions`, `/payroll-runs`, `/bank-exports` | RW | R | - | RW | - | self payslips only | Self-service payslip routes are `/me/pay-slips*`; manager routes must not leak across tenant/FK chains. F-10 (#1540) : `GET /payroll-runs/{run}/journal` (journal de paie CSV, bulletins validés + totaux) — principal/comptable, isolation tenant. Tests : `PayrollJournalApiTest`. |
+| Payroll engine `/salary-*`, `/tax-slabs`, `/social-contributions`, `/payroll-runs`, `/bank-exports` | RW | R | - | RW | - | self payslips only | Self-service payslip routes are `/me/pay-slips*`; manager routes must not leak across tenant/FK chains. F-20 (#1550) : `GET /payroll-runs/{run}/anomalies` (rapport pré-clôture lecture seule : doublons, incohérences, variance brut, écarts pointage→paie) — principal/comptable. Tests : `PayrollAttendanceAnomalyApiTest`. |
+| Accounting `/accounting/contacts`, `/accounting/settings` (Phase A mergée) | RW | - | - | RW | - | - | Comptabilité #5226 : groupe `throttle:api, auth:sanctum, token.refresh, tenant, throttle:api-plan` + `api.manager:comptable,principal` (`routes/modules/accounting.php`). Marketing : lecture par lead via `/marketing/leads/{lead}/contact` (#5231). Matrice dédiée : `docs/security/RBAC_ACCOUNTING_MATRIX.md`. Tests : `AccountingContactCrudTest`, `AccountingSettingsTest`. |
+| Accounting `/accounting/contacts`, `/accounting/settings` (Phase A mergée) | RW | - | - | RW | - | - |
+| CRM client V1 `/crm/search` (#5719), `/crm/tasks*` + `/crm/accounts/{id}/timeline` (#5720), `/crm/dashboard/*` (#5721) | R | R | - | - | - | - | Groupe `throttle:api, auth:sanctum, token.refresh, tenant, throttle:api-plan` + `api.manager:principal,rh,marketing` (`routes/modules/crm_v1.php`) + Policy `crm.search`. Recherche tenant-scoped accounts/contacts (scope BelongsToCompany, `company_id` non nullable) ; aucun tri/SQL libre (filtres allowlistés) ; rôle marketing autorisé (équipe commerciale tenant). Tests : `CrmSearchTest`. | Comptabilité #5226 : groupe `throttle:api, auth:sanctum, token.refresh, tenant, throttle:api-plan` + `api.manager:comptable,principal` (`routes/modules/accounting.php`). Marketing : lecture par lead via `/marketing/leads/{lead}/contact` (#5231). Matrice dédiée : `docs/security/RBAC_ACCOUNTING_MATRIX.md`. Tests : `AccountingContactCrudTest`, `AccountingSettingsTest`. |
+| Payroll engine `/salary-*`, `/tax-slabs`, `/social-contributions`, `/payroll-runs`, `/bank-exports` | RW | R | - | RW | - | self payslips only | Self-service payslip routes are `/me/pay-slips*`; manager routes must not leak across tenant/FK chains. F-10 (#1540) : `GET /payroll-runs/{run}/journal` (journal de paie CSV, bulletins validés + totaux) — principal/comptable, isolation tenant. Tests : `PayrollJournalApiTest`. |
+| HR referentials `/departments`, `/positions`, `/sites`, `/schedules` | RW | RW | R scoped | R | R scoped | - | Direct mutations should stay principal/RH unless policy explicitly broadens. |
+| Notifications `/notifications*`, `/notification-preferences` | self | self | self | self | self | self | Notification resources and channel preferences must be actor-scoped; communication audit events are tenant-scoped. |
+| Announcements `/announcements*` (PA2-COMM-004, PA2-COMM-011) | RW any audience, publish/cancel any draft/scheduled | RW any audience, publish/cancel any draft/scheduled | RW own department/team only, publish/cancel own drafts/scheduled only | - | RW own team only, publish/cancel own drafts/scheduled only | read scoped (published company/own dept/direct/self-authored, any status if self-authored), no create/publish/cancel | `AnnouncementController::authorizeAudience` fails closed: only P/RH can target `company`; DEPT/SUP may only target their own department/direct reports; delete is author-only or P/RH. `authorizeModeration` (publish/cancel) is author-only or P/RH. Index scopes non-authored rows to `published` status only unless the actor is P/RH (who also see other authors' draft/scheduled/cancelled rows for moderation), plus company-wide + actor's own department/direct-target/self-authored rows of any status. Draft/scheduled rows created via `store` with `status`/`scheduled_at`; fan-out only happens on publish (immediate, manual `POST .../publish`, or due via `announcements:publish-scheduled`). |
+| Communication analytics `/communication/analytics` | R | R | - | - | - | - | Tenant-scoped aggregates from `communication_events`; only managers principal/RH can inspect failure rates and channel usage. |
+| Projects/tasks `/projects*`, `/tasks*` | RW | RW | RW scoped | - | RW team | assigned/self | Task comments are actor-scoped and tenant-scoped. |
+| Evaluations `/evaluations*` | RW | RW | R scoped | - | R scoped | self acknowledge/read | `EvaluationSecurityTest` covers cross-tenant and forbidden actions. |
+| Leave policies/balances `/leave-*`, `/me/leave-balances` | RW | RW | R scoped | - | R scoped | self R | `LeavePolicyApiTest` covers role and company scoping. |
+| Contracts `/contracts*`, `/me/contracts` | RW | RW | R scoped | R | R scoped | self R | Contract document/PDF access must be policy-gated. |
+| Employee documents `/employee-documents*`, `/me/documents` | RW | RW | - | - | - | self R | Écriture principal/rh uniquement (FormRequests `Store/UpdateEmployeeDocumentRequest`), lecture manager scopée tenant (filtres `employee_id`/`type`), employé = SON dossier via `GET /me/documents` (lecture seule). Isolation cross-tenant 404 (BelongsToCompany fail-closed #3727). Tests : `EmployeeDocumentTest` (#5326, G3). |
+| Recruitment `/recruitment*` | RW | RW | R scoped | - | R scoped | - | Candidate actions must validate employee/interviewer tenant. |
+| Training `/training*`, `/me/trainings*` | RW | RW | R scoped | - | R scoped | enroll/self R | Self-enroll is limited to authenticated employee tenant. |
+| Loans `/loans*`, `/me/loans*` | RW approve | R workflow | - | RW disburse | - | create/self R | Similar sensitivity to salary advances. |
+| Expense claims `/expense-claims*` | RW approve/reject | R workflow | approve scoped | RW finance review | - | create/self submit | Expense items are FK-isolated; extend `FkChainTenantIsolationTest` when adding queries. |
+| Org chart `/org-chart*` | R | R | R scoped | R | R team | self chain | Must not expose other tenant employee graph. |
+| Reports `/reports*` | R | R | R scoped | R payroll/cost | R team | - | Reports must apply company and role scope before aggregates. |
+| Tenant webhooks `/webhooks*` | RW | RW | - | - | - | - | Events/list/config are tenant admin surfaces; test schema includes webhook tables. |
+| Audit logs `/audit-logs*` | R | R sensitive HR | - | R finance events | - | - | Logs are sensitive; future expansion should add explicit policy tests. |
+| Approval workflows `/approval-*`, `/approvals*` | RW | RW | approve scoped | approve finance | approve team | requester only | Approval decisions are FK-isolated via request/workflow parent. |
+| Billing `/billing*` | RW | - | - | RW | - | - | `BillingControllerTest` covers tenant isolation and employee denial. |
+| Onboarding setup `/onboarding-setup*` | RW | RW | R/W self onboarding | R/W self onboarding | R/W self onboarding | R/W self onboarding | T118 : tout employé authentifié du tenant complète son onboarding (checklist/progress/complete/skip) — plus de 403 `api.manager` pour un non-manager (décision 2026-08-15, `api/routes/modules/billing.php`). Distinct de l'invitation publique et de `/onboarding/checklist`. |
+| Feature flag matrix `/feature-flags/matrix` | R only tenant view | R only tenant view | R only tenant view | R only tenant view | R only tenant view | R only tenant view | Matrix writes must remain platform-owned; `FeatureFlagControllerTest` guards tenant writes. |
+| Dashboard `/dashboard/*` | R | R | R scoped | R finance | R team | self where exposed | Keep aggregates tenant-scoped. |
+| Exports `/export/employees`, `/export/attendance` | R | R | R scoped | R finance | R team | - | Exports trigger sensitive data audit logs where HR data is included. |
+| Cameras `/cameras*` | RW | R as policy allows | R scoped | - | R/RW team as policy allows | token/self none | Requires `module.cameras`; internal permissions are principal-only per route comments/controller policy. |
+| User account linking `/user/*`, `/employees/link-user` | P/RH for linking | P/RH for linking | - | - | - | self account | `auth:user_api` and tenant linking must not cross company boundaries. |
+
+## Required Test Evidence
+
+| Security concern | Existing evidence | Gap to close next |
+|---|---|---|
+| Admin middleware does not allow every manager | `api/tests/Feature/Security/AdminMiddlewareRbacTest.php` | Add route-level regression if a new `admin` group appears. |
+| AI analytics restricted to P/RH | `EnsureAIAnalyticsAccess` middleware and AI route group | Keep a focused Feature test for P/RH allowed and DEPT/SUP/EMP forbidden. |
+| Cross-tenant model access | `TenantModelIsolationTest`, `CrossTenantValidationTest`, `IndexCrossTenantValidationTest`, `FkChainTenantIsolationTest` | Extend when adding models without direct `company_id`. |
+| Payroll/billing sensitive data | `BillingControllerTest`, payroll integration tests, `SensitiveRateLimitTest` | Add role matrix tests for payroll engine manager roles. |
+| Attendance manager scope | `AttendanceAnomaliesTest`, `AttendanceMonthlyReportTest`, attendance CRUD tests | Add department/supervisor positive-scope tests where policies mature. |
+
+| Planning optimization endpoints | `PlanningOptimizationTest` | Scoped to `company_id` via tenant middleware; auth required. |
+
+## Change Rule
+
+Any PR adding or moving protected routes must update this matrix, the matching scenario registry, and at least one Feature/security test when the allowed role set changes.
+
+### SSO Routes (added 2026-05-17, Iteration 11)
+
+| Route | Principal | RH | Dept Mgr | Finance | Supervisor | Employee | Notes |
+|---|---|---|---|---|---|---|---|
+| SSO providers `GET /sso/providers` | Public | Public | Public | Public | Public | Public | No auth required. |
+| SSO status `GET /sso/status` | R | - | - | - | - | - | Principal only. |
+| SSO configure `POST /sso/configure` | RW | - | - | - | - | - | Principal only. |
+| SSO disable `DELETE /sso/disable` | RW | - | - | - | - | - | Principal only. |
+| SSO SAML callback `POST /sso/saml/{id}/callback` | Public | Public | Public | Public | Public | Public | IdP callback, no auth. |
+| SSO OIDC callback `GET /sso/oidc/{id}/callback` | Public | Public | Public | Public | Public | Public | IdP callback, no auth. |
+
+### Prediction Routes (added 2026-05-17, Iteration 10)
+
+| Route | Principal | RH | Dept Mgr | Finance | Supervisor | Employee | Notes |
+|---|---|---|---|---|---|---|---|
+| Predictions turnover `GET /predictions/turnover` | R | R | - | - | - | - | P/RH via `hasManagerRole`. |
+| Predictions absenteeism `GET /predictions/absenteeism` | R | R | - | - | - | - | P/RH via `hasManagerRole`. |
+| Predictions notifications `GET /predictions/notifications` | R | R | - | - | - | - | P/RH via `hasManagerRole`. |
+
+## Model Policies (Plan 23 — Iteration 5)
+
+| Model | Policy Class | viewAny | view | create | update | delete | approve/reject | Notes |
+|---|---|---|---|---|---|---|---|---|
+| Absence | AbsencePolicy | ALL | owner+managers | active employees | — | owner (pending only) | managers | Employee sees own; managers see all in company |
+| Contract | ContractPolicy | managers | owner+managers | P, RH | P, RH | — | — | activate/terminate/renew restricted to P, RH |
+| Department | DepartmentPolicy | ALL | same company | managers | managers | P, RH | — | |
+| Position | PositionPolicy | ALL | same company | managers | managers | P, RH | — | |
+| Schedule | SchedulePolicy | ALL | same company | managers | managers | P, RH | — | |
+| Site | SitePolicy | ALL | same company | managers | managers | P | — | Delete restricted to principal only |
+| ApprovalRequest | ApprovalRequestPolicy | ALL | requester+managers | active employees | — | — | managers (pending only) | |
+| EmployeeLoan | LoanPolicy | ALL | owner+managers | active employees | — | — | P, FIN | disburse also P, FIN |
+| ExpenseClaim | ExpenseClaimPolicy | ALL | owner+managers | active employees | — | owner (draft only) | P, FIN, RH | |
+| Invoice | InvoicePolicy | P, FIN | P, FIN | P | — | — | — | pay restricted to P |
+| WebhookEndpoint | WebhookEndpointPolicy | P | P (same company) | P | P (same company) | P (same company) | — | Platform integration, principal-only |
+
+### API Manager Middleware (added 2026-05-24, API Consolidation)
+
+New `api.manager` middleware (`EnsureApiManagerMiddleware`) enforces route-level RBAC for API endpoints. Supports both `api.manager` (any manager) and `api.manager:principal,rh` (specific roles).
+
+| Route Group | Middleware | Principal | RH | Dept | Finance | Supervisor | Employee | Notes |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| Dashboard `/dashboard/*` | `api.manager` | R | R | R | R | R | - | Any manager via `api.manager`. |
+| Exports `/export/*` | `api.manager:principal,rh,comptable` | R | R | - | R | - | - | P/RH/FIN only. |
+| Billing `/billing/*` | `api.manager:principal` | RW | - | - | - | - | - | Principal only. |
+| Feature flags write | `api.manager:principal` | RW | - | - | - | - | - | Read open to all auth. |
+| Onboarding setup | `api.manager` | RW | RW | RW | RW | RW | - | Any manager. |
+| Payroll engine (mgr) | `api.manager:principal,comptable` | RW | - | - | RW | - | - | P/FIN only. |
+| Payroll self-service `/me/pay-slips` | none (auth+tenant) | R | R | R | R | R | R | Own pay slips. |
+| HR extended self-service `/me/*` | none (auth+tenant) | R | R | R | R | R | R | Own contracts/trainings/loans. |
+| Contracts/Recruitment/Training/Loans CRUD | `api.manager` | RW | RW | RW | RW | RW | - | Any manager. |
+| Reports/Webhooks/Audit/Predictions | `api.manager` + controller policies where present | R | R | R | R | R | - | Any tenant manager can access report surfaces covered by existing feature tests. |
+| Payroll engine `/payroll-runs/{run}/declarations/cnss-ci|ipres-sn` (#1830) | R | - | - | RW | - | - | CEDEAO #1830 : déclarations sociales CI (CNSS, plafond 1 647 315 XOF) et SN (IPRES/CSS, T1 432k + T2 cadres) en CSV, réservées aux managers principal/comptable ; 422 si pays du run incohérent ; 404 cross-tenant. Tests : `CiSnDeclarationTest`. |
+| Payroll engine `/payroll-runs/{run}/declarations/cnps-cm` (#1823) | R | - | - | RW | - | - | CEMAC/CM #1823 : déclaration CNPS mensuelle DAS (CSV) réservée aux managers principal/comptable ; plafond 750 000 XAF appliqué sur l'assiette, AT 2 % non plafonnée, ligne TOTAUX ; 404 cross-tenant. Tests : `CnpsDeclarationTest`. |
+| Payroll engine `/social-declarations/das-dz` + `/payroll-runs/{run}/bordereau` (#5243) | R | - | - | RW | - | - | Paie DZ #5243 : DAS annuelle (CSV, agrégée des bulletins validés des runs DZ de l'année — NIS, mois, brut, CNAS 9/26 %, IRG, net + TOTAUX) et bordereau par run (totaux par cotisation + récapitulatif), réservés aux managers principal/comptable ; 422 si run non-DZ (bordereau) ; 404 cross-tenant ; audit `payroll.das_declaration` / `payroll.bordereau`. Tests : `DzLegalExportsTest`. |
+| Payroll engine `/payroll-runs/{run}/regularize` + `/regularizations` (#1818) | W/R | R | - | W/R | - | - | DZ-DEPTH #1818 : seul un run `locked` est régularisable (422 sinon) ; création d'un run `type=regularization` lié par `original_run_id`, motif obligatoire tracé (`payroll_run_regularization_created`) ; le run original n'est jamais modifié. Tests : `PayrollRegularizationTest`. |
+| Accounting `/accounting/contacts*`, `/accounting/settings`, `/accounting/currency/convert` (#5270) | `api.manager:comptable,principal` | RW | - | - | RW | - | - | Module Comptabilité : CRUD contacts client/fournisseur, paramétrage comptable (une ligne par entreprise) et conversion multi-devises (calcul pur, taux manuel requis entre devises différentes) — comptable (CRUD complet) et principal (paramétrage + lecture) ; employé ordinaire et marketing refusés (403). Isolation tenant via trait BelongsToCompany (fail-closed #3727). Tests : `AccountingContactCrudTest`, `AccountingSettingsTest`, `AccountingMultiCurrencyTest`. |
+| Payroll engine `/payroll/audit` + `/payroll/audit/{correlationId}` (#1874) | R | R | - | - | - | - | Audit immuable des calculs de paie (runs + simulations) : lecture seule, isolation tenant stricte (404/0 hors société), RBAC manager principal/RH via `PayrollAuditPolicy` (pattern #1917). Platform admin : `GET /admin/payroll/audit[...]` (cross-tenant, filtre `company_id`). Aucun secret dans les snapshots (agrégats uniquement). Tests : `PayrollAuditTest`. |
+
+| Accounting `/accounting/audit-logs` (#5273) | R | - | - | R | - | - | Audit trail scope module (evenements accounting.*, append-only) — lecture reservee aux managers principal/comptable (le global `/audit-logs` reste principal-only) ; isolation tenant. Tests : `AccountingAuditRetentionTest`. |
+| Accounting `/accounting/documents*` (#5223) | R | - | - | RW | - | - | Comptabilité Phase A : documents (facture, proforma, devis, avoir, irsaliye, reçu) — liste/création/workflow (send, payments, cancel, credit-note, next-number) réservés aux managers principal/comptable ; isolation tenant 404 ; audit `accounting.document_*`. Tests : `AccountingDocumentWorkflowTest`, `AccountingDocumentNumberingTest`. |
+### Console super-admin vs routes tenant — décision #4189 (2026-08-16)
+
+Le dashboard super-admin (`front/admin-dashboard`) utilise un token `super_admin_api`
+qui ne s'authentifie PAS sur les routes tenant (`auth:sanctum` + `tenant` +
+`sanctum` super_admin_api). Conséquence historique : un 401 tenant déclenchait la
+destruction de session admin (intercepteur `services/api.js`).
+
+**Décision** (option b + c du ticket) :
+- Les appels tenant depuis l'admin passent par `_skipAuthRedirect: true` + état
+  d'erreur local honnête — **jamais** de session kill silencieuse (règle générale).
+- Les surfaces avec équivalent admin réel utilisent l'endpoint admin :
+  `/v1/admin/fleet/alerts` (PlatformAdminFleetAlertController) pour les alertes.
+- Le listing véhicules `/v1/vehicles` (tenant) reste affiché en état « non
+  disponible » pour le super-admin — un endpoint `/admin/fleet/vehicles`
+  cross-tenant pourra être ajouté quand la donnée agrégée existera côté plateforme.
+- Test de régression : `front/admin-dashboard/e2e/fleet-no-session-kill.spec.js`
+  (ouvrir /fleet connecté → pas de redirect /login).
+
+| FuelStation relevés `/api/v1/fuel-station/stations/{station}/pumps/{pump}/meters/{meter}/readings` (+ intervals), corrections `/fuel-station/meter-readings/{reading}/corrections`, revues `/fuel-station/meter-intervals/{interval}/review` (FUEL-004, #5798) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; corrections/revues : `api.manager` | P, RH, opérateur (lecture relevés /me) | Relevés cumulés idempotents (idempotency_key, delta, rollover, anomalie), corrections versionnées et auditables. Solution inactive → 403. Tests : `FuelMeterReadingTest`. |
+| FuelStation shifts `/api/v1/fuel-station/shifts` (+ assignments), self-service `/fuel-station/me/shifts`, présence `/fuel-station/me/presence` + `/fuel-station/shifts/{shift}/presence`, caisse `/fuel-station/cash-sessions` (+ mouvements, clôture), ventes `/fuel-station/sales` (FUEL-005..008, #5799-5802) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; CRUD manager : `api.manager` | P, RH, opérateur (self-service) | Shifts tenant-scopés, chevauchements contrôlés, présence via Attendance, clôture de caisse idempotente + approbation, ventes liées shift/session. Solution inactive → 403. Tests : `FuelShiftApiTest`, `FuelPresenceApiTest`, `FuelCashSessionApiTest`, `FuelSaleApiTest`. |
+| EduManager campus `/api/v1/edu-manager/campuses`, années `/edu-manager/academic-years`, matières `/edu-manager/subjects`, élèves `/edu-manager/students`, classes `/edu-manager/classes` (+ affectations `/classes/{class}/teachers`), admissions `/edu-manager/admissions` (+ `/convert`), présence `/edu-manager/classes/{class}/attendances` (+ `/correct`), créneaux `/edu-manager/course-slots`, évaluations `/edu-manager/assessments` (+ `/grades`, `/publish`, `/correct`), bulletins `/edu-manager/report-cards` (+ `/generate`, `/validate`, `/publish`) (EDU-010, #5826) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; Policies EduManager (EDU-009) | P, RH, enseignant (SES classes via `EduAccess`) | PII scolaires jamais hors tenant ; admissions/élèves/bulletins = direction ; notes confidentielles ; corrections versionnées ; admission → élève idempotente avec consentement. Solution inactive → 403 EDU_SOLUTION_INACTIVE. Tests : `EduApiTest`, services EduManager. |
+| CRM channels `/api/v1/crm/channels`, `/crm/channels/{channel}`, `/crm/channels/{channel}/send`, `/crm/channels/{channel}/messages`, `/crm/channels/{channel}/conversations` (#5725/#5727) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan`, `api.manager:principal,rh` | P, RH | Configuration des canaux de communication (WhatsApp/SMS/email), envoi de messages (consentement + quota), consultation messages/conversations. Isolation tenant `BelongsToCompany` (fail-closed #3727) + lookup public pour les webhooks. Webhooks `/crm/webhooks/whatsapp` publics mais signature HMAC fail-closed (401/503). Tests : `CrmChannelCrudTest`, `CrmChannelSendTest`, `CrmWhatsAppWebhookTest`. |
+| CRM channel observability `/api/v1/crm/channels/{channel}/observability` (#5727) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan`, `api.manager:principal,rh` | P, RH | Aggrégats coûts/erreurs par canal (aucune donnée personnelle). Isolation tenant. Tests : `CrmChannelAdapterTest`. |
+| CRM automations `/api/v1/crm/automations`, `/crm/automations/{automation}*`, `/crm/automations/emergency-stop`, `/crm/automations/events/{event}` (#5728) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan`, `api.manager:principal,rh` | P, RH | Règles event/conditions/actions bornées (whitelists), simulation sans effet, arrêt d'urgence tenant, dispatch événements. Isolation tenant. Tests : `CrmAutomationTest`. |
+| CRM exports & read models `/api/v1/crm/exports`, `/crm/exports/{export}`, `/crm/exports/{export}/download`, `/crm/read-models` (#5729) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan`, `api.manager:principal,rh` | P, RH | Exports CSV asynchrones tenant-scoped (colonnes allowlistées, accès expirant `expires_at`, cleanup quotidien `crm:exports:cleanup`), read models analytiques recalculables (aucune donnée personnelle). Isolation tenant `BelongsToCompany` (fail-closed #3727). Tests : `CrmExportTest`. |
+
+| FuelStation relevés `/api/v1/fuel-station/stations/{station}/pumps/{pump}/meters/{meter}/readings` (+ intervals), corrections `/fuel-station/meter-readings/{reading}/corrections`, revues `/fuel-station/meter-intervals/{interval}/review` (FUEL-004, #5798) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; corrections/revues : `api.manager` | P, RH, opérateur (lecture relevés /me) | Relevés cumulés idempotents (idempotency_key, delta, rollover, anomalie), corrections versionnées et auditables. Solution inactive → 403. Tests : `FuelMeterReadingTest`. |
+| FuelStation shifts `/api/v1/fuel-station/shifts` (+ assignments), self-service `/fuel-station/me/shifts`, présence `/fuel-station/me/presence` + `/fuel-station/shifts/{shift}/presence`, caisse `/fuel-station/cash-sessions` (+ mouvements, clôture), ventes `/fuel-station/sales` (FUEL-005..008, #5799-5802) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; CRUD manager : `api.manager` | P, RH, opérateur (self-service) | Shifts tenant-scopés, chevauchements contrôlés, présence via Attendance, clôture de caisse idempotente + approbation, ventes liées shift/session. Solution inactive → 403. Tests : `FuelShiftApiTest`, `FuelPresenceApiTest`, `FuelCashSessionApiTest`, `FuelSaleApiTest`. |
+| EduManager campus `/api/v1/edu-manager/campuses`, années `/edu-manager/academic-years`, matières `/edu-manager/subjects`, élèves `/edu-manager/students`, classes `/edu-manager/classes` (+ affectations `/classes/{class}/teachers`), admissions `/edu-manager/admissions` (+ `/convert`), présence `/edu-manager/classes/{class}/attendances` (+ `/correct`), créneaux `/edu-manager/course-slots`, évaluations `/edu-manager/assessments` (+ `/grades`, `/publish`, `/correct`), bulletins `/edu-manager/report-cards` (+ `/generate`, `/validate`, `/publish`) (EDU-010, #5826) | `throttle:api`, `auth:sanctum`, `token.refresh`, `tenant`, `throttle:api-plan` ; Policies EduManager (EDU-009) | P, RH, enseignant (SES classes via `EduAccess`) | PII scolaires jamais hors tenant ; admissions/élèves/bulletins = direction ; notes confidentielles ; corrections versionnées ; admission → élève idempotente avec consentement. Solution inactive → 403 EDU_SOLUTION_INACTIVE. Tests : `EduApiTest`, services EduManager. |
+

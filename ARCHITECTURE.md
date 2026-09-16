@@ -1,0 +1,197 @@
+# Architecture — Leopardo HR
+
+> Ce document est la référence d'onboarding pour la structure du monorepo.
+
+## Vue d'ensemble
+
+Leopardo HR est un monorepo multi-stack couvrant :
+
+```
+leopardo-hr/
+├── api/                    # Backend Laravel (PHP 8.4) — cœur métier HRMS
+├── front/
+│   ├── web/                # Next.js 16 — landing page + dashboard SaaS (déployé sur Vercel)
+│   ├── web-offline/        # Next.js — PWA offline-first pour le bridge Edge (http://leopardo.local)
+│   ├── admin-dashboard/    # Vue.js 3 — interface super-admin plateforme
+│   ├── mobile_apps/        # Flutter — 7 apps + 1 package partagé (voir melos.yaml)
+│   │   ├── leopardo_core/            # Package partagé (design system, services)
+│   │   ├── leopardo_employee/        # App employé
+│   │   ├── leopardo_manager/         # App manager/RH
+│   │   ├── leopardo_hr/              # App RH dédiée
+│   │   ├── leopardo_marketing/       # App marketing/communication
+│   │   ├── leopardo_accounting/      # App comptabilité
+│   │   ├── leopardo_platform_admin/  # App admin plateforme
+│   │   └── leopardo_travel_agent/    # App agent/vendeur TravelAgency (TRAVEL-701/810)
+│   └── zkteco-kiosk/       # Kiosque HTML/JS pour pointage biométrique
+├── edge/                   # Bridge on-prem ZKTeco <-> cloud (Caddy, supervisord, install.sh)
+├── shared/
+│   ├── i18n/               # Traductions partagées (fr, en, ar, tr)
+│   └── mediaForMarketing/  # Assets marketing bruts
+├── dev-hub/                # Outils/SDK/scripts pour développeurs et intégrateurs externes (inclut dev-hub/openapi/v1.yaml, miroir généré depuis api/openapi.yaml — source canonique — par dev-hub/tools/generate-openapi-sdk.mjs, vérifié en CI par openapi-ci.yml)
+├── docs/                   # Documentation technique et stratégique
+├── scripts/                # Scripts utilitaires racine (bootstrap, capture screenshots, cleanup)
+├── postman/                # Collection Postman de l'API
+├── examples/               # Exemples d'usage du SDK
+├── assets/              # Visuels marketing/README en archive (Git LFS — voir assets/README.md)
+├── site/                   # (statique GitHub Pages versionné dans main — site/gh-pages, cf. pages-deploy.yml)
+└── .github/workflows/      # 54 pipelines CI/CD (vérifié 2026-09-05 — cartographie dans .github/workflows/README.md)
+```
+
+> Cet arbre doit rester synchronisé avec la structure réelle du repo. En cas de doute, vérifier avec `find . -maxdepth 2 -not -path '*/node_modules/*'`.
+
+## Backend — Domain-Driven Design
+
+Le backend suit une **architecture modulaire DDD** avec deux couches en cours d'unification :
+
+### Modules DDD (cible — `api/app/Modules/`)
+Chaque module respecte la structure :
+```
+Modules/<Name>/
+├── Application/
+│   ├── Actions/        # Cas d'usage (Command pattern)
+│   └── DTOs/           # Objets de transfert internes
+├── Domain/
+│   ├── Models/         # Entités Eloquent de domaine
+│   ├── Exceptions/     # Exceptions métier
+│   └── Contracts/      # Interfaces de domaine
+├── Infrastructure/
+│   └── Services/       # Implémentations, intégrations externes
+├── Interfaces/
+│   └── Api/V1/         # Controllers + Requests + Resources
+└── Providers/          # ServiceProvider du module
+```
+
+
+Modules actifs (27, sous `api/app/Modules/`) : `Absence`, `Accounting`, `Attendance`, `Billing`, `Cabinet`, `Cameras`, `Catalog`, `CRM`, `Delivery`, `EdgeSync`, `EduManager`, `Expense`, `Fleet`, `FuelStation`, `Growth`, `HR`, `Marketing`, `Notification`, `Onboarding`, `Payroll`, `Planning`, `Platform`, `Recruitment`, `Restaurant`, `RestaurantManager`, `Showcase`, `TravelAgency` (ordre alphabétique, vérifié `ls api/app/Modules`) + socle transversal `Core/Auth`, `Core/Tenant`, `Core/Feature` (sous `api/app/Core/`, qui contient aussi `AI`, `Http`, `Notifications`, `Privacy`, `Seed`, `Solutions`).
+
+
+
+
+
+
+
+
+
+
+
+> Décompte vérifié via `ls api/app/Modules | wc -l`. Voir `docs/ARCHITECTURE_STATUS.md` pour l'état couche-par-couche (Domain/Application/Infrastructure/Interfaces/Providers/Tests) de chaque module.
+
+### Règle de contribution backend
+> **Tout nouveau code métier va dans `api/app/Modules/`.**
+> `api/app/Http/Controllers/Api/V1/` a été intégralement supprimé (90 controllers legacy, PR #824, 2026-07-01). `api/app/Services/` a été **intégralement supprimé** (2026-08-11, #1728) : les 17 derniers shims backward-compat ont été retirés, tous les consommateurs référencent les canoniques (`App\Core\…` / `App\Modules\…`). Voir `api/ARCHITECTURE.md` pour le détail exact.
+> `api/app/Models/` a été supprimé (migration DDD terminée) — tout nouveau modèle va dans le module DDD concerné sous `api/app/Modules/<Name>/Domain/Models/`.
+> Voir `api/ARCHITECTURE.md` pour la liste complète et les TODOs restants.
+
+### Code partagé transversal (`api/app/Shared/`)
+
+Les éléments utilisés par plusieurs modules vivent dans `api/app/Shared/` :
+
+```
+app/Shared/
+├── DTOs/
+│   └── PaginationDTO.php          # DTO pagination générique
+├── Traits/
+│   ├── BelongsToCompany.php       # Scope tenant + auto-fill company_id
+│   └── Auditable.php              # Journalisation création/modification/suppression
+├── Attributes/
+│   ├── ApiFeature.php             # Métadonnées de feature API
+│   ├── RequiresPermission.php     # Permission requise sur une méthode
+│   └── MobileCompatible.php       # Compatibilité mobile min/max version
+├── Enums/
+│   └── ApiError.php               # Codes d'erreur API standardisés
+└── Exceptions/
+    └── DomainException.php        # Exception métier de base
+```
+
+> Les `app/Traits/`, `app/Attributes/` et `app/Enums/` résidus sont des shims de backward-compat pointant vers `Shared/`. Ne pas y écrire de nouveau code.
+
+### Gestion des tenants (`app/Core/Tenant/`)
+
+```
+app/Core/Tenant/
+└── TenantManager.php          # Singleton — activer/désactiver le contexte company
+```
+
+| Méthode | Rôle |
+|---------|------|
+| `setTenant(Company)` | Active le tenant, met à jour PostgreSQL `search_path` |
+| `resetToPrevious()` | Restaure le contexte précédent |
+| `withinTenant(Company, Closure)` | Exécute une callback dans un contexte isolé |
+| `current()` | Retourne la company active ou null |
+| `hasTenant()` | True si un tenant est actif |
+| `clearTenant()` | Réinitialise sans restaurer (utile tests/artisan) |
+
+> L'alias `App\Services\TenantManager` a été supprimé (#1494/#1728). Injecter `App\Core\Tenant\TenantManager` dans le nouveau code.
+
+### Migration class aliases — état au 2026-09-05 (vérifié)
+
+`app/Models/`, `app/DTOs/`, `app/Traits/`, `app/Attributes/`, `app/Enums/`,
+`app/Services/`, `app/Http/Controllers/Api/V1/` et `app/Http/Requests/` sont
+**intégralement supprimés** — aucun shim restant. Vérifié le 2026-09-05 :
+0 référence `use App\Traits\`, `App\Attributes\`, `App\Enums\`, `App\Models\`,
+`App\Services\`, `App\DTOs\` ou `App\Http\Controllers\Api\V1\` dans `app/`,
+`tests/` et `routes/`. Les canoniques vivent dans `app/Shared/` et dans les
+modules DDD (`App\Modules\<Nom>\...`). Tout nouveau code va directement au canonique.
+
+## Mobile — Flutter
+
+- `leopardo_core` est le package fondation partagé par toutes les apps.
+- `leopardo_employee`, `leopardo_manager` et `leopardo_hr` utilisent le pattern **Feature-first** avec `data/`, `providers/`, `screens/`.
+- Apps présentes dans le dépôt (8 dossiers, cf. `melos.yaml` et `front/mobile_apps/README.md`) : `leopardo_core` (package partagé), `leopardo_employee`, `leopardo_manager`, `leopardo_hr`, `leopardo_marketing`, `leopardo_accounting`, `leopardo_platform_admin`, `leopardo_travel_agent`. Le mobile historique (`front/mobile/`) a été retiré du dépôt.
+
+## i18n
+
+Les traductions vivent dans `shared/i18n/locales/{fr,en,ar,tr}.json`.
+Des scripts de synchronisation (`shared/i18n/sync/`) propagent les clés vers le backend Laravel (`api/lang/`) et le mobile (`.arb`).
+
+## CI/CD
+
+Voir `.github/workflows/` et `docs/ARCHITECTURE_CICD.md`.
+
+Les pipelines principaux :
+- `tests.yml` — tests backend PHPUnit/Pest + lint/build `front/admin-dashboard`
+- `web-ci.yml` — lint + build `front/admin-dashboard` (Vue.js/Vite, dashboard plateforme)
+- `web-marketing-ci.yml` — lint + build `front/web` (Next.js, vitrine publique)
+- `mobile-apps-ci.yml` — build Flutter (`front/mobile_apps/*`)
+- `deploy-main.yml` — déploiement production
+
+## Infrastructure & résilience (0 €)
+
+> Décisions 2026-08-21 (#5204/#5205/#5206/#5207) — fournisseurs : Upstash (Redis),
+> Neon (PostgreSQL), GitHub Actions (worker de secours), Render/Vercel/Cloudflare Pages (hosting).
+
+- **Queue** : driver `database` (table `jobs` en PostgreSQL) — zéro quota. Deux consommateurs :
+  le worker en arrière-plan du conteneur web Render (latence) et le drain GitHub Actions
+  (`queue-worker-fallback.yml`, cron `*/5`, repo public = minutes illimitées). Pas de
+  split-brain : chaque job est verrouillé par PostgreSQL (`SELECT FOR UPDATE SKIP LOCKED`).
+- **Cache / Session** : commande `infra:probe-availability` (ping Redis) exécutée par
+  `api/docker-entrypoint.sh` **avant** `config:cache` → `redis` si Upstash répond, sinon `file`
+  (fallback sans quota). Retour automatique sur Redis au redéploiement.
+- **Emails** : transport Mailgun HTTP API (port 443) — l'egress Render bloque le SMTP sortant
+  (#5139). En sandbox, livraison limitée aux destinataires whitelistés (phase pilote) ; passage
+  prévu sur Resend (natif Laravel, 3 000/mois gratuits) à l'achat du domaine.
+- **Domaine** : `leopardo-rh.com` non acheté (état assumé) — URLs gratuites officielles :
+  `docs/ops/DEPLOYMENT_URLS.md`.
+
+## Conventions
+
+Voir `CONVENTIONS.md` pour les règles de nommage, commits, branches et PR.
+
+## Résolveur unique des règles pays (MULTI-PAYS #1868)
+
+Le point d'entrée UNIQUE pour résoudre les règles de paie d'un pays est
+`App\Modules\Payroll\Infrastructure\Services\CountryRulesResolver`
+(registre pays → `CountryRulesInterface` construit par
+`CountryRulesResolver::defaultRulesMap()`, y compris les zones CEMAC et
+CEDEAO éclatées par État membre).
+
+- `resolve(code, ?companyId, ?asOf)` applique les scopes entreprise
+  (`forCompany`) et période d'effet (`asOf`) ; un pays inconnu lève
+  `UnsupportedCountryRulesException` (422) — **aucun fallback silencieux
+  vers DZ ou une autre juridiction** ; une incohérence de contexte
+  (`countryCode()` ≠ code demandé) lève
+  `CountryRulesContextMismatchException`.
+- `PayrollCalculator` délègue sa résolution au résolveur
+  (`getRules()` + `rulesResolver()`).
+- Interdit : tables de taux locales dans les contrôleurs/services
+  (`COUNTRY_RATES`/`CEMAC_RATES`/fallbacks `?? new AlgeriaPayrollRules`).

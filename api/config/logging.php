@@ -1,0 +1,210 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Logging\RedactingJsonFormatter;
+use Monolog\Formatter\JsonFormatter;
+use Monolog\Formatter\LineFormatter;
+use Monolog\Handler\NullHandler;
+use Monolog\Handler\SlackWebhookHandler;
+use Monolog\Handler\StreamHandler;
+use Monolog\Handler\SyslogUdpHandler;
+use Monolog\Processor\PsrLogMessageProcessor;
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Log Channel
+    |--------------------------------------------------------------------------
+    |
+    | This option defines the default log channel that is utilized to write
+    | messages to your logs. The value provided here should match one of
+    | the channels present in the list of "channels" configured below.
+    |
+    */
+
+    'default' => env('LOG_CHANNEL', 'stack'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Deprecations Log Channel
+    |--------------------------------------------------------------------------
+    |
+    | This option controls the log channel that should be used to log warnings
+    | regarding deprecated PHP and library features. This allows you to get
+    | your application ready for upcoming major versions of dependencies.
+    |
+    */
+
+    'deprecations' => [
+        'channel' => env('LOG_DEPRECATIONS_CHANNEL', 'null'),
+        'trace' => env('LOG_DEPRECATIONS_TRACE', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Log Channels
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure the log channels for your application. Laravel
+    | utilizes the Monolog PHP logging library, which includes a variety
+    | of powerful log handlers and formatters that you're free to use.
+    |
+    | Available drivers: "single", "daily", "slack", "syslog",
+    |                    "errorlog", "monolog", "custom", "stack"
+    |
+    */
+
+    'channels' => [
+
+        'stack' => [
+            'driver' => 'stack',
+            'channels' => explode(',', env('LOG_STACK', 'single')),
+            'ignore_exceptions' => false,
+        ],
+
+        // BC-15 FUEL (FUEL-020, #5814) : observabilité du domaine FuelStation.
+        'fuel-station' => [
+            'driver' => 'stack',
+            'channels' => ['fuel-station-file'],
+            'ignore_exceptions' => false,
+        ],
+
+        'fuel-station-file' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/fuel-station.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'days' => 14,
+            'formatter' => LineFormatter::class,
+        ],
+
+        'single' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/laravel.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+            // #6551 (audit-secu M5) : le canal par défaut (stack→single) n'avait
+            // aucune rédaction — les Log::error($e->getMessage()) des jobs
+            // (QueryException) écrivaient SQL + bindings (bcrypt, montants)
+            // en clair. Même processeur que le canal structured (MAT-009).
+            'processors' => [\App\Logging\PiiRedactionProcessor::class],
+        ],
+
+        'daily' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/laravel.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'days' => env('LOG_DAILY_DAYS', 14),
+            'replace_placeholders' => true,
+            // #6551 — même rédaction PII que `single` (canal alternatif du stack).
+            'processors' => [\App\Logging\PiiRedactionProcessor::class],
+        ],
+
+        'slack' => [
+            'driver' => 'slack',
+            'url' => env('LOG_SLACK_WEBHOOK_URL'),
+            'username' => env('LOG_SLACK_USERNAME', 'Laravel Log'),
+            'emoji' => env('LOG_SLACK_EMOJI', ':boom:'),
+            'level' => env('LOG_LEVEL', 'critical'),
+            'replace_placeholders' => true,
+        ],
+
+        'papertrail' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'handler' => env('LOG_PAPERTRAIL_HANDLER', SyslogUdpHandler::class),
+            'handler_with' => [
+                'host' => env('PAPERTRAIL_URL'),
+                'port' => env('PAPERTRAIL_PORT'),
+                'connectionString' => 'tls://'.env('PAPERTRAIL_URL').':'.env('PAPERTRAIL_PORT'),
+            ],
+            'processors' => [PsrLogMessageProcessor::class],
+        ],
+
+        'stderr' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'handler' => StreamHandler::class,
+            'formatter' => env('LOG_STDERR_FORMATTER'),
+            'with' => [
+                'stream' => 'php://stderr',
+            ],
+            'processors' => [PsrLogMessageProcessor::class],
+        ],
+
+        'syslog' => [
+            'driver' => 'syslog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'facility' => env('LOG_SYSLOG_FACILITY', LOG_USER),
+            'replace_placeholders' => true,
+        ],
+
+        'errorlog' => [
+            'driver' => 'errorlog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+        ],
+
+        'null' => [
+            'driver' => 'monolog',
+            'handler' => NullHandler::class,
+        ],
+
+        'emergency' => [
+            'path' => storage_path('logs/laravel.log'),
+        ],
+
+        'structured' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/structured.log'),
+            'level' => env('LOG_LEVEL', 'info'),
+            'days' => env('LOG_DAILY_DAYS', 14),
+            'replace_placeholders' => true,
+            // MAT-009 (#5867) : redaction PII/secrets au moment de la
+            // sérialisation (lazy — aucune résolution anticipée du canal).
+            'formatter' => RedactingJsonFormatter::class,
+        ],
+
+        'audit' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/audit.log'),
+            'level' => 'info',
+            'days' => 90,
+            'replace_placeholders' => true,
+            'formatter' => JsonFormatter::class,
+        ],
+
+        // BIO-008 (#6773) : observabilité biométrique — canal dédié avec les
+        // mêmes garanties de rédaction que l'audit (aucun payload biométrique).
+        'biometric' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/biometric.log'),
+            'level' => 'info',
+            'days' => 90,
+            'replace_placeholders' => true,
+            'formatter' => JsonFormatter::class,
+        ],
+
+        'discord' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_DISCORD_LEVEL', 'error'),
+            'handler' => SlackWebhookHandler::class,
+            'handler_with' => [
+                'webhookUrl' => env('LOG_DISCORD_WEBHOOK_URL'),
+                'channel' => null,
+                'username' => env('LOG_DISCORD_USERNAME', 'Leopardo Alerts'),
+                'useShortAttachment' => true,
+                'includeContextAndExtra' => true,
+            ],
+        ],
+
+        'sentry' => [
+            'driver' => 'sentry',
+            'level' => env('LOG_SENTRY_LEVEL', 'error'),
+            'bubble' => true,
+        ],
+
+    ],
+
+];

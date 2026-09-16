@@ -1,0 +1,269 @@
+# 📑 PILOTAGE — LEOPARDO RH
+# PROGRAM_VERSION = 4.24.0 | 2026-08-11
+# CE FICHIER EST LA SEULE SOURCE DE VÉRITÉ OPÉRATIONNELLE
+
+> ⚠️ **ARCHIVÉ (issue #6698, 2026-09-02)** — ce document n'est PLUS la source de
+> vérité opérationnelle. La gestion de projet active se fait **exclusivement via
+> GitHub Issues / GitHub Projects** (AGENTS.md, « NOUVELLE MÉTHODE DE GESTION DE
+> PROJET »). Sources canoniques à la place de ce fichier :
+> - backlog & affectations : **GitHub Issues** (labels BC, milestone « Audit & mise en ordre ») ;
+> - roadmap produit : `docs/REFERENTIEL_PRODUIT/ROADMAP.md` ;
+> - plan 60 jours : `PLAN_60_JOURS.md` (racine) + gate de scope `docs/GOUVERNANCE/FREEZE_SCOPE_60J.md` ;
+> - règles de travail : `AGENTS.md` (racine) ;
+> - exploitation : `docs/ops/` et `dev-hub/`.
+> Ce fichier est conservé pour traçabilité historique (versions 4.x) ; il peut
+> diverger du code livré — ne pas s'y référer pour une décision.
+
+# 📑 PILOTAGE — LEOPARDO RH
+# PROGRAM_VERSION = 4.24.0 | 2026-08-11
+# CE FICHIER EST LA SEULE SOURCE DE VÉRITÉ OPÉRATIONNELLE
+# Statut des anciens fichiers : voir section "Gouvernance documentaire"
+
+> ⚠️ **Avertissement — divergence scope vs code livré**
+> La section « SCOPE MVP VERROUILLÉ » ci-dessous décrit le périmètre
+> initialement figé. Le code sur `main` **a dépassé ce périmètre** :
+> multitenancy mode `schema` activé, 6 sous-rôles manager (`principal`,
+> `rh`, `dept`, `comptable`, `superviseur`, `employee`), plusieurs pages
+> Blade, hébergement cible **Render** (voir `.github/workflows/deploy-main.yml`).
+> Tant que la décision produit n'est pas prise pour aligner ce document
+> sur la réalité, se référer à `docs/REFERENTIEL_PRODUIT/ROADMAP.md` + `docs/REFERENTIEL_PRODUIT/AUDIT_v2_v3_COMPLIANCE.md`
+> pour l'état réel. Voir aussi `docs/GESTION_PROJET/CORRECTIONS.md`.
+
+> ⚠️ **Mise à jour gouvernance (2026-07-26, non encore reflétée dans PROGRAM_VERSION ci-dessus)**
+> Depuis le 2026-07-26, la gestion de projet active se fait **exclusivement via GitHub Issues et
+> GitHub Projects** (voir `AGENTS.md`, section « NOUVELLE MÉTHODE DE GESTION DE PROJET »).
+> `docs/PLAN_ACTION2/` est **clos/obsolète** (voir son propre `README.md`) — ne pas le lire pour y
+> chercher du travail, malgré la mention « Plan d'action actif » encore présente plus bas dans ce
+> fichier au moment de la rédaction de cet avertissement. Voir tableau « GOUVERNANCE DOCUMENTAIRE ».
+
+---
+
+## CONVENTION DE VERSIONING
+
+```
+VERSION  = 4.24.0    → Version globale du projet/pilotage (ce fichier fait foi — alignée sur PROGRAM_VERSION, 2026-08-17)
+
+                              Doit rester synchrone avec :
+                                - CHANGELOG.md (dernière entrée)
+                                - api/config/app.php → 'version'
+                                - GET /api/v1/health → champ "version"
+DOC_VERSION      = propre   → Chaque doc technique garde sa version interne
+                              (ex: ERD v2.0, API v2.1, SQL v1.1)
+CODE_VERSION     = 0.1.0    → Version release applicative (Release MVP)
+
+Règle :
+- PROGRAM_VERSION est la SEULE version de référence pour l'état du projet
+- Les DOC_VERSION techniques ne remplacent JAMAIS PROGRAM_VERSION
+- CODE_VERSION sera gérée par git tag lors des releases
+- PROGRAM_VERSION change quand : scope modifié, gouvernance modifiée, phase changée
+```
+
+---
+
+## LE PROJET EN 1 PHRASE
+
+**Leopardo RH** = Mobile-First Company OS pour PME terrain (5-250 employés).
+8 surfaces frontend, 87 modèles, contrôleurs API dans `app/Modules/` (plus de controllers legacy `Api/V1/`), déployé en production.
+
+---
+
+## ÉTAT ACTUEL
+
+```
+Date MAJ       : 2026-08-17 (revue PM — réconciliation des compteurs)
+Version        : 4.24.0
+Phase active   : LOT P0/P1/P3 — Solidification & Scale (clés à configurer sur Render)
+Dernière release: 2026-08-11 — [4.24.0] (voir CHANGELOG.md) ; des changements docs-only postérieurs
+                  non tagués vivent sous `## [Unreleased]` en tête de CHANGELOG.md
+Accomplis      :
+  ✅ Exports comptables CSV (Journal, Livre de paie, OD)
+  ✅ Templates sectoriels BTP + Sécurité (ApplySectorTemplate)
+  ✅ ApiTokenController self-service (Sanctum tokens pour managers)
+  ✅ Offline sync mobile réactif au retour réseau (sync_service.dart)
+  ✅ SelfServiceTrialController — provisioning sandbox <30s avec OTP
+  ✅ StripeService + BillingController — Checkout + CustomerPortal
+  ✅ PlatformCrmPipelineController — pipeline lead→trial→actif
+  ✅ Sentry Laravel DSN prêt dans composer.json
+  🔑 À faire : renseigner les clés sur Render (voir docs/deployment/KEYS_A_CONFIGURER.md)
+Objectif 30j   : 3-5 clients payants, MRR 150-250€
+```
+
+---
+
+## SURFACES DU PRODUIT
+
+| Surface | Stack | Déploiement | Statut |
+|---------|-------|-------------|--------|
+| API Backend | Laravel 12 (^12.60) / PHP 8.4 / PostgreSQL 16 | Render | ✅ Production |
+| Admin Dashboard | Vue 3 + Vite + Tailwind | Cloudflare Pages | ✅ Production |
+| Vitrine Web | Next.js + TypeScript + Tailwind | Vercel | ✅ Production |
+| App Employee | Flutter/Dart | Firebase App Distribution | ✅ Distribution |
+| App Manager | Flutter/Dart | Firebase App Distribution | ✅ Distribution |
+| App Platform Admin | Flutter/Dart | Firebase App Distribution | ✅ Distribution |
+| Core Mobile Partagé | Flutter package (`leopardo_core`) | — | ✅ Actif |
+| Kiosque ZKTeco | HTML/JS | — | 🚧 Prototype |
+
+---
+
+## ARCHITECTURE PRODUCTION
+
+```
+API           : gestionemployerbackend.onrender.com (Render Web Service)
+Vitrine       : gestionemployer-backend.vercel.app (Vercel) — `leopardo-hr.vercel.app` renvoyait 404
+                (verifie 2026-07-21) et a ete retire ; `leopardo.com` n'est PAS possede pour ce
+                produit (nom de domaine tiers), voir `docs/archive/PLAN_ACTION2/02_BACKLOG_ATOMIQUE.md`
+                tickets PA2-MKT-008/PA2-OPS-004 et `docs/DEPLOYMENT_PRODUCTION.md`
+Admin         : Cloudflare Pages
+BDD           : PostgreSQL 16 (Render managed)
+Cache/Queues  : Upstash Redis (TLS) — queues: default, pdf, notifications, payroll, webhooks
+Push          : Firebase Cloud Messaging (HTTP v1)
+Distribution  : Firebase App Distribution (3 apps)
+CI/CD         : GitHub Actions (40 workflows)
+Auth          : Sanctum (tokens opaques) + 2FA super-admin
+Multitenancy  : Shared schema PostgreSQL (shared_tenants)
+```
+
+---
+
+## INVENTAIRE TECHNIQUE
+
+| Composant | Quantité |
+|-----------|----------|
+| Modèles Eloquent | 111 (vérifié `Domain/Models`, 17/08/2026) |
+| Contrôleurs API V1 | 0 (supprimés — PR #824, 2026-07-01) |
+| Services métier | 43 |
+| Jobs asynchrones | 9 |
+| Migrations (tenant + public) | 59 |
+| Tests Feature | 462 fichiers (1 917 tests au dernier run 15/08/2026) |
+| OpenAPI spec | 632 KB |
+| Workflows CI/CD | 40 |
+| Plans d'action livrés | 72 |
+| Scripts de validation | 27 |
+| Couverture backend | 71,11 % (gate bloquante ≥ 65 %) |
+
+---
+
+## PLANS D'ACTION — HISTORIQUE
+
+| Plage | Thème | Statut |
+|-------|-------|--------|
+| Plans 01-12 | Architecture, API, paie, IA, véhicules, CI/CD, GTM | ✅ Livré |
+| Plans 13-17 | Consolidation, solidification, couverture | ✅ Livré |
+| Plans 18-24 | Expérience client, communication, readiness, i18n | ✅ Livré |
+| Plans 25-29 | Mobile multi-app, release, excellence, platform admin | ✅ Livré |
+| Plans 30-56 | Attendance, tâches, QR, dashboard, schedules, UX | ✅ Livré |
+| Plans 57-65 | API docs, branding, double validation, PDF async | ✅ Livré |
+| Plans 66-72 | Cartographie, audit final, lancement, market launch | ✅ Livré |
+| **LOT P0** | **Conversion commerciale** | **🚧 En cours** |
+
+---
+
+## PRIORITÉS COURANTES
+
+### 🔴 P0 — Conversion Commerciale (immédiat)
+- Self-service trial provisioning (signup → tenant en < 30s)
+- Intégration Stripe Checkout (plans Starter/Business)
+- Page pricing fonctionnelle avec CTA paiement
+- Pipeline CRM dans admin dashboard
+- Email de bienvenue avec credentials
+
+### 🟡 P1 — Solidification Produit
+- Device QA sur appareils physiques (Samsung, Xiaomi, Huawei)
+- Templates sectoriels BTP / Sécurité privée
+- Exports comptables CSV/Excel
+- Réduction phpstan-baseline (-500 erreurs)
+
+### 🟢 P2 — Expérience Premier Client
+- Wizard onboarding guidé in-app
+- Email drip séquence trial → payant
+- Stress test k6 endpoints critiques
+
+### 🔵 P3 — Scale Technique
+- Webhooks signés production
+- Offline-first avancé (pointage sans réseau)
+- Monitoring Sentry/Datadog
+
+---
+
+## CIBLES COMMERCIALES
+
+| Métrique | Actuel | Cible 30j | Cible 90j | Cible 6 mois |
+|----------|--------|-----------|-----------|--------------|
+| MRR | 0€ | 150-250€ | 1 000-1 500€ | 5 000-7 000€ |
+| Clients payants | 0 | 3-5 | 20-30 | 100-150 |
+| Churn mensuel | N/A | < 10% | < 5% | < 4% |
+| Conversion trial→payant | N/A | 15-25% | 20-30% | 25%+ |
+
+---
+
+## MARCHÉ CIBLE
+
+**Positionnement :** Mobile-First Company OS for Field Teams in Emerging Markets
+
+**Marchés prioritaires :**
+1. Maghreb (DZ, MA, TN) — #1
+2. Afrique de l'Ouest (SN, CI) — #2
+3. Turquie — #3
+
+**Secteurs prioritaires :**
+1. Sécurité privée (pointage multi-sites, conformité)
+2. BTP / Construction (suivi chantier, temps réel)
+
+**Pricing (Maghreb) :**
+- Gratuit : 0€ (≤5 employés)
+- Starter : 39€/mois (5-50 employés)
+- Business : 119€/mois (50-250 employés)
+- Enterprise : Sur devis (250+ employés)
+
+---
+
+## RÈGLES ABSOLUES
+
+```
+1.  SCOPE       → Pas de nouveau module tant que P0 (premier client payant) n'est pas atteint.
+2.  HORODATAGE  → now() côté serveur. JAMAIS le timestamp du client.
+3.  TENANT      → Global Scope BelongsToCompany. JAMAIS de WHERE company_id dans les controllers.
+4.  TESTS       → Écrire les tests AVANT le code. Couverture ≥ 60%.
+5.  CI          → GitHub Actions est la source de vérité. Ne pas insister sur les checks locaux.
+6.  DEPLOY      → Render deploy hook + healthcheck 30×20s + rollback automatique.
+7.  MOBILE      → StartupGate obligatoire. runApp() avant tout await. Pas de page noire.
+8.  PARSING     → requestWithRetry + extractDataList/extractDataMap sur tous les appels API mobiles.
+9.  CHANGELOG   → Chaque changement = entrée CHANGELOG.md.
+10. AGENTS.md   → Chaque leçon opérationnelle = mise à jour AGENTS.md.
+```
+
+---
+
+## DOCUMENTS DE RÉFÉRENCE
+
+| # | Document | Usage |
+|---|----------|-------|
+| 1 | `PILOTAGE.md` (ce fichier) | État projet, priorités, règles |
+| 2 | `AGENTS.md` | Règles opérationnelles agents (156 KB) |
+| 3 | `CHANGELOG.md` | Historique des changements (1,8 MB — à archiver selon règle < 150 Ko, issue #1729) |
+| 4 | `docs/GOTO_MARKET/LEOPARDO_STRATEGIC_ANALYSIS.md` | Analyse stratégique complète |
+| 5 | `docs/CONTEXT/` | Contexte produit/technique/opérationnel |
+| 6 | `docs/archive/PLAN_ACTION/` | 72 plans d'action livrés |
+| 7 | `docs/GOTO_MARKET/` | Stratégie commerciale |
+| 8 | `api/openapi.yaml` | Spécification API (632 KB) |
+
+---
+
+## GOUVERNANCE DOCUMENTAIRE
+
+> Référencée depuis l'en-tête de ce fichier — cette section clarifie la hiérarchie
+> des sources de vérité pour lever l'ambiguïté notée dans l'avertissement en tête
+> de document (« divergence scope vs code livré »).
+
+| Sujet | Source de vérité | Notes |
+|---|---|---|
+| Priorités/phase courante, règles opérationnelles | `PILOTAGE.md` (ce fichier) | Ne remplace jamais l'état réel du code pour le scope/tenancy |
+| **Scope réel livré** (dépasse le MVP verrouillé décrit ci-dessous) | `docs/REFERENTIEL_PRODUIT/ROADMAP.md` + `docs/REFERENTIEL_PRODUIT/AUDIT_v2_v3_COMPLIANCE.md` | À consulter en priorité sur la section « SCOPE MVP VERROUILLÉ » de ce fichier, qui décrit un périmètre initial déjà dépassé |
+| Architecture backend (modules DDD, conventions, TODOs) | `api/ARCHITECTURE.md` | |
+| Architecture système/monorepo | `docs/architecture/ARCHITECTURE.md` + `ARCHITECTURE.md` (racine) | |
+| Plans d'action historiques (01-72, tous livrés) | `docs/archive/PLAN_ACTION/` | **Clos** — conservé pour traçabilité, voir bandeau dans `00_SOMMAIRE.md` |
+| Gestion de projet active (depuis 2026-07-26) | **GitHub Issues + GitHub Projects** | `docs/PLAN_ACTION2/` (130 tickets PA2, actif du 2026-06-13 au 2026-07-26) est désormais **clos/obsolète** — voir `docs/PLAN_ACTION2/README.md` et la section « NOUVELLE MÉTHODE DE GESTION DE PROJET » d'`AGENTS.md`. Ne pas y chercher de travail ni y créer de nouveaux tickets ; utiliser `gh issue list` |
+| Rapports de validation/QA datés | `docs/validation/*_YYYY_MM_DD.md` | Snapshots figés, jamais mis à jour — voir `docs/validation/README.md` |
+| Contrat API | `api/openapi.yaml` | Spec canonique (référencée par `dev-hub/sdk/MANIFEST.json`). Le second fichier `openapi/openapi.yaml` (racine) qui divergeait a été supprimé (voir `chore(monorepo): fix duplicated mobile CI, dedupe OpenAPI spec...` #840) ; `api/openapi.yaml` est désormais la seule spec présente dans le repo. |
+
+**Règle** : en cas de contradiction entre `PILOTAGE.md` et un document listé ci-dessus sur son sujet propre, le document spécialisé prime pour l'état réel — `PILOTAGE.md` reste la référence pour les priorités/règles opérationnelles.

@@ -1,0 +1,49 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Resources\Api\V1;
+
+use App\Modules\Payroll\Domain\Models\PayrollRun;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+/**
+ * @mixin PayrollRun
+ */
+class PayrollRunResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'company_id' => $this->company_id,
+            'country_code' => $this->country_code,
+            // Issue #1874 — identifiant de corrélation (logs ↔ réponse ↔ audit).
+            'correlation_id' => $this->correlation_id,
+            'rules_version' => $this->rules_version,
+            'rules_period' => $this->rules_period?->toDateString(),
+            'rules_identifier' => $this->rules_identifier,
+            'period_start' => $this->period_start?->toDateString(),
+            'period_end' => $this->period_end?->toDateString(),
+            'status' => $this->status,
+            // DZ-DEPTH (#1818) : type (standard|regularization) + lien vers le
+            // run original pour les bulletins rétroactifs.
+            'type' => $this->type,
+            'original_run_id' => $this->original_run_id,
+            'reason' => $this->reason,
+            'total_gross' => $this->total_gross,
+            'total_deductions' => $this->total_deductions,
+            'total_net' => $this->total_net,
+            'total_employer_cost' => $this->total_employer_cost,
+            'employee_count' => $this->employee_count,
+            'pay_slips_count' => $this->resource->getAttribute('pay_slips_count'),
+            'calculated_at' => $this->calculated_at?->toIso8601String(),
+            'validated_at' => $this->validated_at?->toIso8601String(),
+            'locked_by' => $this->locked_by,
+            'locked_at' => $this->locked_at?->toIso8601String(),
+            'created_at' => $this->created_at?->toIso8601String(),
+        ];
+    }
+}
+

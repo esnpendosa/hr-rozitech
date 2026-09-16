@@ -1,0 +1,2058 @@
+# SCENARIOS DE TEST API POUR GITHUB ACTIONS    
+
+Note 2026-09-10 (BC-27 SHOWCASE V-MEDIA, issue #6872, PR #7178) : nouvelle surface API medias de vitrine —
+- Privee (gestion tenant : auth sanctum + `module.showcase` fail-closed + RBAC `api.manager:principal,rh`) : `GET /api/v1/showcase/media` (liste des medias du perimetre, filtre `kind` logo|section + `section_id`), `POST /api/v1/showcase/media` (upload multipart, 201) et `DELETE /api/v1/showcase/media/{id}` (204). Le DTO prive `ShowcaseMediaResource` est une allowlist : ni `disk`, ni `path`, ni `company_id` (test de non-fuite dedie).
+- Contraintes de validation : png/jpg/jpeg/webp seulement, svg reserve au logo (`kind=logo`) et refuse si le contenu embarque du script/entite active ; 2 Mo (logo) / 5 Mo (section) ; nom d'origine sanitise, nom stocke aleatoire ; stockage sur le disk prive `local` (hors webroot). Types/poids/extension hors contrat → 422.
+- Publique isolee (aucun auth, throttle `shop-public`, DTO binaire) : `GET /api/v1/public/vitrine/{slug}/media/{id}` — 404 si la vitrine n'est pas publiee, jeton d'apercu prive `?token=` accepte sur brouillon (reponse `no-store`), en-tetes de cache/immutabilite sur une vitrine publiee, `Content-Security-Policy` sandbox sur les svg.
+- Isolation tenant fail-closed (BelongsToCompany + policy) : id d'un media d'un autre tenant ou d'une autre vitrine → 404 ; flag `companies.features.company_showcase` a off → 403.
+- Couverture : `api/tests/Feature/Showcase/ShowcaseMediaApiTest.php` (7 cas : type/poids refuses, svg actif refuse, isolation tenant + RBAC + flag, upload + lecture publique d'une vitrine publiee, refus si brouillon, non-fuite disk/path/company_id, cross-showcase).
+
+Note 2026-09-08 (BC-27 SHOWCASE, issues #6866/#6867, PR #7029) : nouvelle surface API vitrine tenant + publique isolee —
+- Privee (gestion tenant : auth sanctum + flag `companies.features.company_showcase` fail-closed + RBAC `api.manager:principal,rh`, policy CompanyShowcasePolicy) : `POST /api/v1/showcase` (creation 1-clic idempotente de la vitrine du tenant, slug = slug tenant, 201/200) et `GET /api/v1/showcase` (etat courant) ; sections `GET/POST /api/v1/showcase/sections`, `PATCH/DELETE /api/v1/showcase/sections/{id}`, `POST /api/v1/showcase/sections/reorder` (ids = ensemble exact des sections existantes sinon 422, transaction) — chaque `content` valide contre le JSON Schema versionne par type (hero, features, gallery, testimonials, contact, footer ; schema_version 1) via ShowcaseSectionSchemaValidator (types, requis, `additionalProperties:false` → cles inconnues 422, bornes maxLength/maxItems/minItems).
+- Publique isolee (aucun auth tenant, throttle `shop-public`, DTO allowlist VitrinePublicResource — jamais id/company_id/timestamps) : `GET /api/v1/public/vitrine/{slug}` (slug regex `[A-Za-z0-9\-_]{1,160}`), 404 si vitrine non publiee.
+- Isolation tenant fail-closed (BelongsToCompany) : id d'une section d'une autre societe → 404 (jamais 403) ; cache public invalide a chaque mutation d'une vitrine publiee.
+- Couverture : `api/tests/Feature/Showcase/ShowcaseApiTest.php` (creation 1-clic, idempotence, RBAC), `ShowcaseSectionApiTest.php` (CRUD, RBAC, 422 schema, isolation, flag off → 403, DELETE 204), `ShowcasePublicApiTest.php` (shape publique, non-fuite, 404 draft/inexistant, cache), `CompanyShowcaseDomainTest.php` + `api/tests/Unit/Showcase/ShowcaseSectionSchemaTest.php` (schema valide/invalide par type).
+
+Note 2026-09-01 (issue #6662, PR #6663) : nouvelle surface publique « solutions sectorielles » —
+- `GET /api/v1/solutions` : catalogue des solutions (allowlist serveur, fail-closed).
+- `GET /api/v1/solutions/{code}/survey` : questions + catalogue de packages.
+- `POST /api/v1/solutions/{code}/survey` : reponses → pack suggere (moteur de regles deterministe, aucune IA, aucune donnee tenant).
+- `GET /api/v1/solutions/{code}/pack?packages=k1,k2` : guide PDF du pack (dompdf, i18n serveur `solutions.*`).
+Public sans auth (pre-qualification vitrine), throttle 10/min. Couverture : `api/tests/Feature/Solutions/SolutionSurveyEndpointTest.php` (8 tests) + `api/tests/Unit/Core/Solutions/SolutionSurveyEngineTest.php` (4 tests).
+
+  
+## Objectif   
+
+Note 2026-08-26 (issue #5588, lot durcissements) : la surface API kiosque et recrutement public a change —
+- `POST /api/v1/kiosks` (register) : le `device_code` n'est plus stocke en clair (sha256 deterministe au repos, migration tenant `2026_08_26_000001_5588`) ; le code en clair n'est retourne qu'a la creation (provisioning), les lookups API/web hach entree (`AttendanceKiosk::hashDeviceCode`).
+- `GET/POST /api/v1/kiosks/{deviceCode}/roster|punch|announcements` : resolution par hash de l'entree (URL en clair inchangee pour les kiosques) ; les lignes legacy non backfillees sont hors contrat (404).
+- `POST /api/v1/public/careers/{companySlug}/jobs/{jobPosting}/apply` : `resume_url` porte la garde anti-SSRF `NotPrivateUrl` (https public uniquement ; IP privees/loopback/link-local/metadata cloud et hotes `.local/.internal/.lan` refuses → 422).
+- Documentation API web : `/docs`, `/api-explorer`, `/tester-guide`, `/docs/openapi.yaml` exigent l'authentification en production (403 anonyme, Gate `viewApiDocs`) ; restent publiques hors prod.
+- Web kiosk : `GET /kiosk/{deviceCode}` et `POST /kiosk/{deviceCode}/punch` resolvent par hash du device_code.
+
+Definir une couverture backend exhaustive pour la CI GitHub Actions, alignee sur les roles reels de l'application, les domaines metier critiques et les risques multitenant.
+
+Note 2026-06-28 : Migration des modeles d'authentification (User/Employee) vers l'architecture DDD dans Core/Auth terminee.
+
+Note 2026-08-22 (stabilisation CI, PR #5295) : les endpoints publics OIDC `GET /sso/oidc/{companyId}/authorize` et `GET /sso/oidc/{companyId}/callback` portent explicitement `throttle:10,1`; `SsoCallbackThrottleTest` vérifie ce contrat anti-abus. Le contrat `api/openapi.yaml` reste parsable par Redocly après fusion des chemins dupliqués, correction des nullable OpenAPI 3.0 et alignement des paramètres recruitment; le miroir et les SDK JavaScript/Python sont régénérés.
+
+Note 2026-08-31 (BC-16 EDU, EduManager — PR #6378) : nouvelle surface API verticale `EduManager` (`api/routes/modules/edu_manager.php`, préfixe `/edu-manager`, middleware `throttle:api → auth:sanctum → token.refresh → tenant → throttle:api-plan → module.edumanager`). 77 routes : référentiel (campuses, academic-years, subjects, classes + affectation enseignants, students + responsables légaux), admissions (CRUD + convert → student), présence (index/store par classe + correct), emplois du temps (course-slots), évaluations & notes versionnées, bulletins (report cards + publication), frais & contrat Accounting (fees), import/export sécurisé, marketing admissions, notifications & portail guardian (tokens d'accès). Les scénarios CI associés vivent dans `api/tests/Feature/EduManager/*` (`EduApiTest`, `EduCampusInvariantTest`, `EduAttendanceServiceTest`, `EduGradeServiceTest`, `EduImportExportTest`, `EduGuardianPortalApiTest`, `EduFeeApiTest`, `EduMarketingApiTest`, `EduNotificationApiTest`, ...) et couvrent : RBAC scolaire (director/headmaster/teacher/guardian), isolation tenant (404 sûr cross-tenant), invariants de présence/notes/bulletins, idempotence import/export et 401/403 feature-gate. Actif via le flag `companies.features.edumanager` (kill switch).
+
+Note 2026-08-30 (BC-26 DELIVERY, DELIVERY-101/#6282) : nouvelle surface API du module de
+livraison generique — smoke `GET /api/v1/delivery/ping` (feature flag `companies.features.delivery`,
+403 FEATURE_NOT_ENABLED sans flag) ; les API livraisons/tournees/tracking/COD/rapports
+(`/api/v1/deliveries/*`) arrivent dans les lots suivants (DELIVERY-201..208).
+Note 2026-08-28 (lot CRM client V0/V1 — issues #5722/#5723/#5724/#5726) : nouvelle surface API CRM tenant —
+- `POST /api/v1/crm/consents` (accord/refus) + `POST /api/v1/crm/consents/{id}/revoke` : consentements par (contact, canal, finalité), historique immuable `audit_logs` (RGPD art. 7), aucun envoi sans consentement (fail-closed) ;
+- `GET/POST/PUT/DELETE /api/v1/crm/segments*` + `POST /api/v1/crm/segments/{id}/rebuild` + `GET /{id}/members` : définitions JSONB strictement allowlistées (aucun SQL utilisateur), versionnées (snapshot reproductible), membership tenant-scopée ;
+- `GET/POST/PUT/DELETE /api/v1/crm/campaigns*` + `start|pause|resume|cancel|finish` + `report` : cycle de vie strict (transitions invalides 422), audience segment OU explicite filtrée au consentement au start, envoi stoppable et observable ;
+- `POST /api/v1/crm/email/transactional|marketing` : marketing soumis au consentement + suppression (adresse hashée SHA-256, aucune PII) + quotas par tenant/heure (429 `EMAIL_RATE_LIMITED`) ;
+- `POST /api/v1/crm/email/webhook` (secret partagé `X-Leopardo-Webhook-Secret`) et `POST /api/v1/crm/email/unsubscribe` (jeton HMAC) : endpoints publics par design, bounce/complaint/unsubscribe → suppression + propagation aux envois de campagne ;
+- RBAC : lecture = `api.manager` (tout manager du tenant) ; écritures/actions = `api.manager:principal,marketing` + Policies dédiées ; isolation tenant `BelongsToCompany` (404 cross-tenant testé).
+- Couverture : `api/tests/Feature/CRM/*` (consentements, segments, campagnes, email) + `api/tests/Unit/CRM/*` (grammaire de segment) — cycle de vie, RBAC, isolation, validation stricte, audit.
+
+## Perimetre
+
+- API publique
+- API authentifiee tenant
+- RBAC et isolation multitenant
+- Parcours critiques RH
+- Endpoints techniques et resilients
+- Contrats JSON consommes par le mobile
+- Contrats d'auth et de session de la plateforme admin
+
+## Roles a couvrir 
+
+1. Super Admin
+2. Owner / Company Admin
+3. HR Manager
+4. Manager
+5. Employee
+6. Finance / Payroll
+7. Utilisateur inactif / bloque
+8. Utilisateur hors tenant / tenant etranger
+
+## Strategie CI recommandee
+
+1. Tests `Unit`
+2. Tests `Feature`
+3. Tests critiques par domaine metier
+4. Tests de securite / isolation
+5. Rapport CI lisible avec mapping vers les scenarios
+
+Note 2026-05-12 : les tests Feature des modules post-sprints doivent verifier les routes reelles (`/billing/subscription/*`, `/training/courses/{id}/sessions`, actions `PUT` pour prets/frais) et rester alignes avec le schema `CreatesMvpSchema`.
+
+Note 2026-05-14 : les endpoints sensibles utilisent des limiters nommes configurables (`auth-sensitive`, `privacy-sensitive`, `payroll-sensitive`, `platform-sensitive`, `ai-sensitive`). Les scenarios API doivent conserver au moins un test `429` sur auth publique et un test `429` sur privacy authentifie.
+
+Note 2026-05-15 : l'API expose maintenant des headers de version (`X-API-Version`, `X-API-Supported-Versions`) et refuse un `X-API-Version` non supporte. Les routes authentifiees tenant portent aussi un limiter `api-plan` configurable par plan commercial ; garder un test `429` dedie sur un plan Starter avec seuil abaisse en test.
+
+Note 2026-05-21 : les listes critiques consommees par mobile/admin (`employees`, `absences`, `attendance`, `me/pay-slips`, `notifications`) doivent conserver pagination, filtres, tri allowliste, payload vide et erreurs de validation couverts par `ApiListQueryContractTest`. Aucun `sort_by` libre ne doit atteindre une requete SQL.
+
+Note 2026-05-25 : le mobile RH consomme maintenant `GET/POST /employees` pour l'equipe et `GET/POST /salary-advances` pour les demandes d'avance. Les scenarios API doivent verifier que la creation employe accepte et retourne les champs RH minimum (`contract_start`, `salary_type`, `salary_base` ou `hourly_rate`, `extra_data.department/job_title/work_location`) et que les avances employee-side restent soumises au workflow RH avec `repayment_months`.
+
+Note 2026-05-27 : le compte employee durable consomme `PATCH /auth/profile`, `GET /me/career` et `GET /cabinet/stats`. Les scenarios API doivent verifier que les contacts personnels facultatifs (`personal_email`, `recovery_email`, `personal_phone`) sont sauvegardes, que la timeline carriere reste scopee a l'utilisateur courant et que les statistiques du placard numerique restent propres a l'employe authentifie.
+
+Note 2026-05-27 : l'onboarding QR mobile consomme `GET /me/qr-profile`, `GET /company/qr-onboarding`, `POST /company/qr-onboarding/scan-employee`, `POST /company/qr-onboarding/create-employee` et `POST /me/company-qr/scan`. Les scenarios API doivent verifier les jetons signes/expires, le rejet des jetons modifies, le pre-remplissage manager, la creation depuis QR avec email professionnel unique et la demande d'integration employe via QR entreprise.
+
+Note 2026-05-27 : le mobile employee consomme `GET /me/monthly-summary` pour l'ecran "Mon mois complet". Les scenarios API doivent verifier le mois vide avec `breakdown=[]`, totaux a zero, `period.from/to` stables et `year`/`month` retournes comme entiers meme quand ils viennent de query params.
+
+Note 2026-05-27 : le cockpit manager mobile consomme `GET /attendance`, `GET /attendance/anomalies`, `GET /attendance/corrections`, `PUT /attendance/corrections/{id}/approve` et `PUT /attendance/corrections/{id}/reject`. Les scenarios API doivent verifier l'isolation tenant, l'interdiction employee, la file `pending` paginee et l'application d'une correction employee en pointage manuel recalcule.
+
+Note 2026-05-27 : les estimations attendance doivent rester compatibles avec le pointage multi-session. Les scenarios API doivent verifier que `GET /me/daily-summary`, `GET /me/monthly-summary`, `GET /employees/{id}/daily-summary` et `GET /employees/{id}/quick-estimate` agregent toutes les sessions d'une journee, exposent `sessions_count`, et ne retombent jamais sur un filtre dur `session_number = 1`.
+
+Note 2026-05-28 : les demandes RH visibles par mobile manager doivent etre decisionnables sans ambiguite. Les scenarios API doivent verifier que `GET /salary-advances` expose `employee`, `employee_name`, `company_id`, `requested_at`, `reason`, `amount`, `repayment_months` et que `GET /absences` expose `employee_name`, `absence_type`, periode, duree et motif. Les actions approve/reject doivent recharger le meme contexte dans la reponse.
+
+Note 2026-05-28 : la liste mobile manager `GET /api/v1/employees` doit exposer `work_state` / `work_state_label` pour les etats `present`, `break`, `leave`, `mission`, `absent`, `offline`. Les scenarios API doivent verifier que ces etats restent scopes au tenant et que seul un manager principal peut modifier `role` / `manager_role` via `PATCH /employees/{employee}`.
+
+Note 2026-06-01 : la liste mobile manager `GET /api/v1/employees` doit rester compatible avec `EmployeeResource` en production stricte et avec les colonnes optionnelles absentes sur un environnement partiellement migrÃ©. Les scenarios API doivent verifier que le payload pagine expose les champs utiles au mobile (`company_id`, contacts personnels, salaire, horaire, biometrie, `extra_data`, `work_state`) sans erreur de modele partiellement charge et sans fuite inter-tenant. Les selects relationnels `company` / `schedule`, la recherche et le tri attendance doivent rester proteges par `Schema::hasColumn` afin de ne pas casser Render quand un tenant historique n'a pas encore toutes les colonnes optionnelles.
+
+Note 2026-06-07 : la liste mobile manager `GET /api/v1/employees` doit aussi exposer un contexte entreprise complet (`company`, `currency`, `features`) en reutilisant l'entreprise courante resolue par le middleware tenant. En shared PostgreSQL, ne pas eager-loader `Company` via le `search_path` tenant : un schema `shared_tenants` peut masquer `public.companies` et produire `company=null` dans le mobile.
+
+Note 2026-06-01 : les documents de paiement asynchrones Plan 62 consomment `GET /api/v1/me/payment-documents`, `GET /api/v1/me/payment-documents/{paymentDocument}/download`, `GET /api/v1/payments/{payrollRun}/documents` (chemin canonique depuis #2201, ex-`/payroll-runs/{payrollRun}/payment-documents` supprimé). Les scenarios API doivent verifier les statuts `pending/generating/available/failed`, le telechargement uniquement quand le fichier existe, l'isolation employee/tenant et la creation d'un document `advance_receipt` lors de `PUT /salary-advances/{id}/mark-paid`.
+
+Note 2026-06-01 : le Plan 63 durcit les pics de charge. Les scenarios API/ops doivent verifier que `GET /api/v1/health` expose les profondeurs des queues `documents`, `pdf`, `payroll`, `notifications`, `webhooks`, `default`, que `queue:health-check` retourne `failed_jobs`, que `GET /api/v1/dashboard/manager-digest` reste tenant-scope malgre le cache court, et que `GET /api/v1/schedules` invalide son cache apres create/update/delete.
+
+Note 2026-06-01 : le Plan 67.5 fige la preuve notifications mobile production. Les scenarios API doivent verifier `POST/GET/DELETE /api/v1/device-tokens`, `POST /api/v1/push-notifications/send`, l'upsert FCM avec `company_id` quand la colonne existe, la suppression scopee a l'utilisateur courant et l'audit `CommunicationService`. Le garde mobile associe est `dev-hub/tools/validate-mobile-notification-production-proof.ps1`.
+
+Note 2026-06-01 : les endpoints platform detail `GET /api/v1/platform/companies/{company}/health`, `GET/PATCH /subscription` et `GET/PATCH /features` doivent verifier que `Company` est toujours charge via `PlatformCompanyLookup` depuis `public.companies`, meme apres creation client ou requete tenant. Les scenarios super-admin doivent tester creation entreprise puis ouverture immediate de la fiche client par UUID.
+
+Note 2026-06-06 : la creation platform admin `POST /api/v1/platform/companies` est multi-pays. Les scenarios super-admin doivent verifier qu'un payload mobile minimal peut creer un client non DZ en `trial` ou `active`, que `language`, `currency` et `timezone` sont derives par `CountryDefaults` quand ils sont omis, et qu'aucun fallback universel DZD/Africa-Algiers n'est reintroduit.
+
+Note 2026-06-07 : le smoke lancement peut enregistrer un kiosque temporaire via `POST /api/v1/kiosks` avec le manager demo quand `IncludeKioskProvisioning` est active, puis verifier `GET /api/v1/kiosks/{deviceCode}/roster` et `GET /api/v1/kiosks/{deviceCode}/announcements` avec le `X-Kiosk-Token` recu. Les scenarios kiosque doivent rester tolerants aux tenants historiques dont les colonnes biometrie employees ou la table `kiosk_announcements` ne sont pas encore presentes, afin de retourner un payload exploitable plutot qu'un 500 Render.
+
+Note 2026-06-07 : les endpoints kiosque token-only doivent resoudre l'entreprise liee au device depuis `public.companies`, pas via une relation Eloquent dependante du `search_path` courant. Les scenarios Render/shared PostgreSQL doivent couvrir `register -> roster -> announcements` pour eviter qu'un schema `shared_tenants` masque `public.companies` et provoque un 500.
+
+Note 2026-06-07 : `GET /api/v1/kiosks/{deviceCode}/announcements` doit aussi tolerer une table `kiosk_announcements` tenant historique dont les colonnes de filtrage ou tri (`is_active`, `starts_at`, `expires_at`, `priority`, `created_at`) ne sont pas encore presentes. Le contrat attendu reste une reponse 200 avec `data=[]` ou des annonces serialisees, jamais un 500.
+
+Note 2026-06-07 : si `kiosk_announcements` existe sans colonne `company_id`, l'endpoint kiosque doit retourner `data=[]`. Une annonce non scoppable ne doit jamais etre renvoyee par defaut, car cela risquerait une fuite inter-tenant.
+
+Note 2026-08-03 : le workflow Onboarding Smoke Test doit verifier php artisan leopardo:migrate --seed --demo dans Docker Compose avec PostgreSQL shared. La commande doit creer public et shared_tenants de facon idempotente, puis purger et reconnecter pgsql apres chaque changement runtime de search_path avant de lancer les migrations public, tenant puis demo. Les migrations tenant doivent utiliser un search_path strict shared_tenants pour que Schema::hasTable() ne voie pas une table homonyme dans public; les seeders repassent ensuite en shared_tenants,public pour lire les catalogues publics. Le seed demo doit aussi verifier que notification_preferences accepte l'upsert (company_id, employee_id) utilise par les preferences mobiles.
+
+Note 2026-06-07 : les annonces kiosque sont une fonctionnalite non critique. Si une table tenant historique reste non queryable malgre les gardes de colonnes, l'endpoint doit journaliser l'erreur et retourner `data=[]` afin que le kiosque puisse continuer roster/pointage sans page bloquee.
+
+Note 2026-06-01 : le resume paie mobile manager `GET /api/v1/payroll/mobile-summary` doit rester tolerant aux tenants historiques partiellement migres. Les scenarios API doivent verifier que `PayrollCycleService` ne selectionne que les colonnes employees existantes (`manager_id`, `salary_type`, `salary_base`, `hourly_rate`, noms) et retourne un payload vide ou partiel exploitable au lieu d'un 500.
+
+Note 2026-06-01 : les soldes paie mobiles doivent reutiliser `currentCompany()` quand le middleware tenant a deja resolu l'entreprise. Les scenarios API shared PostgreSQL doivent eviter toute regression ou `$employee->company` recharge `Company` depuis un `search_path` tenant pouvant masquer `public.companies`.
+
+Note 2026-06-01 : `GET /api/v1/employees/{employee}/balance` et `GET /api/v1/payroll/mobile-summary` sont des surfaces mobiles manager critiques. Les scenarios doivent verifier que le parametre de route `{employee}` est correctement resolu, et qu'une erreur de calcul d'un employe n'entraine pas un 500 global de la synthese.
+
+Note 2026-06-01 : `GET /api/v1/launch-readiness` est un cockpit lancement tenant-scope. Les scenarios doivent verifier qu'il reutilise l'entreprise courante du middleware tenant, qu'il ne depend pas d'un rechargement `Company` vulnerable au `search_path`, et qu'il reste tolerant aux colonnes paie employees absentes pendant les migrations progressives.
+
+Note 2026-07-23 (PA2-COMM-011) : `POST /api/v1/announcements` accepte desormais `status` (`draft`/`scheduled`/`published`) et `scheduled_at`, avec deux nouvelles actions `POST /api/v1/announcements/{id}/publish` et `POST /api/v1/announcements/{id}/cancel` (auteur ou principal/RH uniquement). Les scenarios API doivent verifier : une annonce `draft` ne fan-out aucune notification a la creation ; une annonce `scheduled` ne publie qu'une fois `scheduled_at` echu, via la commande `announcements:publish-scheduled` (couvert cote backend par `AnnouncementControllerTest`, pas encore par un scenario CI dedie multi-tenant) ; `GET /api/v1/announcements` ne remonte les lignes `draft`/`scheduled`/`cancelled` d'un autre auteur qu'aux managers `principal`/`rh` ; une annonce deja `published` ne peut pas etre annulee retroactivement (422 attendu).
+
+Note 2026-07-25 (PA2-PAY-003) : `GET /api/v1/payroll/cycles/preview` permet a un manager de previsualiser une regle de cycle candidate (`pay_cycle`/`pay_day`/`week_start`, tous optionnels) avant de la sauvegarder via `PUT /api/v1/payroll/cycle-settings`. Les scenarios API doivent verifier : sans parametre, la reponse reflete les reglages actuellement persistes de l'entreprise (pas de defaut code en dur) ; un override (ex. `pay_cycle=weekly`) n'est jamais ecrit dans `companies.metadata.payroll` (verifie via un `GET /api/v1/payroll/cycle-settings` immediatement apres) ; `estimated_total_gross`/`employee_count` n'incluent que les employes actifs (les employes `archived` sont exclus) ; un `pay_cycle` hors `daily/weekly/monthly` renvoie 422 ; un employe (non manager) recoit 403.
+
+## Matrice complete des scenarios backend
+
+### 1. Sante technique et bootstrap
+
+- `GET /api/health` retourne 200 avec structure attendue
+- `GET /api/v1/health/live` retourne 200 (liveness probe, pas de verification DB)
+- `GET /api/v1/health/ready` retourne 200 si DB accessible, 503 sinon (readiness probe)
+- Application demarre avec migrations `public` puis `tenant`
+- Redis / cache / queue sync ne cassent pas les endpoints critiques
+- Une erreur de bootstrap ne fuit pas d'informations sensibles
+- Le middleware `RequestIdMiddleware` ajoute un header `X-Request-Id` a chaque reponse API
+- Le middleware `ApiVersionMiddleware` ajoute `X-API-Version: v1` et `X-API-Supported-Versions`
+- Une requete avec `X-API-Version: v2` sur `/api/v1/*` retourne `400 UNSUPPORTED_API_VERSION`
+- Un `X-Request-Id` fourni dans la requete est reechoe dans la reponse
+- `GET /docs` publie Swagger UI sans authentification
+- `GET /docs/openapi.yaml` sert la specification canonique `api/openapi.yaml` sans copie divergente
+
+### 2. Auth publique et onboarding
+
+- Register public succes avec creation tenant
+- Register refuse si email deja utilise globalement
+- Register refuse si payload invalide
+- Login succes pour chaque role autorise
+- Login refuse pour mot de passe invalide
+- Login public retourne `429` apres depassement du limiter `auth-sensitive`
+- Une route authentifiee retourne `429` apres depassement du limiter `api-plan` du plan client
+- Login refuse pour compte inactif ou bloque
+- `me` retourne le bon role, tenant, permissions et contexte
+- Logout invalide le token en cours
+
+### 3. RBAC par role
+
+- Super Admin peut acceder aux ressources globales seulement
+- Owner/Admin peut administrer son tenant sans acceder au global
+- HR peut gerer employes et conges selon permissions
+- Manager peut consulter/valider seulement son equipe
+- Employee ne peut acceder qu'a ses propres donnees
+- Finance peut consulter paie si activee
+- Toute elevation de privilege est refusee en `403`
+- **`manager_role=superviseur` scope equipe (PA2-SEC-003, `SupervisorScopedRbacTest`)** : un manager `superviseur` ne voit/agit que sur l'equipe dont il est le `manager_id` direct (lui-meme inclus), miroir du scoping `manager_role=dept` (PA2-SEC-002) mais au niveau rapport direct plutot que departement. Couvre `Employee::isSuperviseur()/isSupervisorScoped()/managesEmployeeDirectly()/managesTeamMemberOf()`, le scope reutilisable `Employee::scopeVisibleToManager()` (fail-closed : aucun rapport direct = aucun resultat, jamais un fallback company-wide), et son branchement dans `EmployeePolicy`, `AttendancePolicy`, `EvaluationPolicy` + les controllers `EmployeeController`, `EvaluationController`, `AttendanceController`, `ScheduleController#assignEmployees`. `AttendanceAnomalyService::summarize()` et `AttendanceMonthlyReportService::build()` recoivent l'Employee agissant (plus un `departmentId` brut) pour propager ce scoping. `DepartmentController`/`DepartmentPolicy` restent company-wide pour un superviseur (pas de departement propre).
+
+### 4. Isolation multitenant
+
+- Un token du tenant A ne voit jamais les ressources du tenant B
+- Les recherches par identifiant refusent les objets externes au tenant
+- Les ecritures inter-tenant sont refusees
+- Les user lookups / shared tables restent coherents
+- Les migrations tenant ne polluent pas `public`
+
+### 5. Employes et organisation
+
+- Liste employees avec pagination, tri, filtre
+- Liste employees refuse les tris non allowlistes et retourne un payload vide stable quand la recherche ne matche rien
+- Organigramme retourne uniquement les employes du tenant courant et construit l'arbre sans scans repetes par noeud
+- Chaine manager et subordonnes refusent les IDs hors tenant
+- Creation employee avec validations metier
+- Creation employee depuis mobile/RH avec date d'embauche, matricule, type de paie, salaire/taux horaire et metadonnees poste/departement/lieu
+- Creation employee depuis QR employe : le QR pre-remplit le profil, le manager renseigne un email professionnel unique et les donnees contractuelles, puis l'API cree l'employe dans le tenant du manager.
+- Demande d'integration via QR entreprise : un employe authentifie soumet une demande rattachee a l'entreprise cible sans valider automatiquement l'embauche.
+- Mise a jour employee avec verifications unicite/global email
+- Desactivation / reactivation employee
+- Consultation detail employee selon role
+- Refus d'acces pour employee sur dossier d'un autre employee
+
+### 6. Presence / attendance
+
+- Check-in succes
+- Check-out succes
+- Pointage multi-session : apres un check-out, un employe peut recreer une session le meme jour avec `work_type` (`resume`, `overtime`, `mission`, `travel`) et un `session_number` incremente.
+- `GET /attendance/today` expose `sessions` et `summary` pour afficher details de journee, pauses, heures supp et session ouverte sur mobile.
+- Les resumes et estimations `me` / `employees/{id}` additionnent toutes les sessions de la journee et retournent `sessions_count`, heures travaillees, heures supplementaires et gains sans ignorer les sessions 2+.
+- Double check-in interdit
+- Check-out sans check-in interdit
+- Historique presence retourne des donnees coherentes
+- Historique presence supporte filtre statut, intervalle de dates, tri allowliste, pagination et payload vide
+- Resume du jour correct selon fuseau et etat
+- Conflits ou doublons geres sans corruption des donnees
+- `POST /attendance/corrections` permet a un employe de demander une modification de pointage sans ecriture directe sur le log, avec refus des heures futures, du checkout avant check-in et des logs hors utilisateur.
+- `PUT /attendance/{attendanceLog}` reste reserve aux managers `principal` et `rh` pour modifier directement un log du tenant courant, avec refus des employes et des managers non autorises.
+- `GET /attendance/anomalies` retourne un resume d'impact business (`late_minutes`, sorties manquantes, corrections, actions critiques)
+- Chaque anomalie attendance expose une action manager recommandee et un flag `requires_manager_action`
+- **Mode de pointage mobile configurable (issue #761, `PunchPhotoTest`)** : `AttendanceModeSettings.punch_photo_mode` (`null`/`kiosk`/`photo_required`), lu/ecrit via `GET/PUT /smart-attendance/mode-settings` et resolu pour l'employe connecte via `GET /smart-attendance/config` (`requires_punch_photo`). `POST /attendance/check-in`/`check-out` acceptent un champ multipart optionnel `punch_photo` (image, 5 Mo max) ; en mode `photo_required` sans photo fournie (hors flux kiosque physique `AttendanceKiosk` et hors import externe/offline), rejet `422 PUNCH_PHOTO_REQUIRED` (fr/en/ar/tr). Nouvel endpoint `GET /attendance/{attendanceLog}/punch-photo` (memes regles d'autorisation que la consultation du log) pour recuperer la photo stockee (`attendance/punch-photos/{company_id}/{employee_id}/...`, `AttendanceLog.punch_photo_path`, expose via `AttendanceLogResource.punch_photo_url`).
+- **Fermeture de journée (issue #5265)** : `GET|POST /api/v1/attendance/day-closures`, `POST /api/v1/attendance/day-closures/{id}/validate`, `DELETE /api/v1/attendance/day-closures/{id}` — verrou + validation par (company, employee, date), RBAC manager/RH/principal, employe 403, isolation tenant 404, garde 409 `ATTENDANCE_DAY_CLOSED` sur check-in/check-out/import/approbation geo.
+- **Export CSV mensuel des présences (issue #5696)** : `GET /api/v1/export/attendance/monthly?month=YYYY-MM` (manager seulement, `abort(403, 'MANAGER_REQUIRED')` pour un employé, 401 sans session) — synthèse par employé (jours/heures/HS/retards/…) via `AttendanceReportService` (même agrégation que `/attendance/monthly-report`), enveloppe JSON `{format, content, filename, count, month}` avec neutralisation OWASP (`CsvCellSanitizer`), validation stricte `month` (YYYY-MM, défaut mois courant), ligne `export_history` tracée (type `attendance_monthly`) et isolation tenant (aucune fuite inter-tenant). Contrôleur dans le module Attendance (`AttendanceExportController`), route montée sur la surface canonique `/export/*` (`api/routes/modules/dashboard.php`). Couvert par `AttendanceMonthlyExportTest`.
+- **Calculateur de pointage unifie (issue #5265)** : `AttendanceHoursCalculator` — retard (tolérance), heures travaillees (pauses deduites), heures supplementaires (seuil + `overtime`/`resume`) ; memes resultats pour les 4 modes (kiosque, geo, ZKTeco, mobile) et les resumes/estimations.
+
+### 6.b Taches terrain apres pointage
+
+- `GET /tasks/today` retourne uniquement les taches assignees a l'employe courant et dues aujourd'hui.
+- Un manager peut creer une tache avec duree prevue, priorite, categorie, recurrence et cle de template.
+- Un employe assigne peut passer une tache a `done` avec duree realisee et note de realisation.
+- Le score de performance d'une tache terminee est calcule sans exposer les taches d'un autre tenant.
+- Les anomalies geofence, heures supplementaires et sequences rapides restent scopees au tenant courant
+
+### 7. Conges / absences
+
+- Creation demande de conge par employee
+- Validation / refus par manager ou HR
+- Solde mis a jour correctement
+- Chevauchement de periodes refuse
+- Consultation historique des demandes par role
+- Liste absences supporte filtres statut/periode/employe, tri allowliste, pagination et payload vide
+- Employee ne peut pas valider sa propre demande sans permission speciale
+- Liste paginee `GET /api/v1/absences` expose pour le dashboard manager les champs derives `employee_name` et `type` (nom du type d'absence) en plus des relations `absence_type` / `absenceType`
+
+### 8. Paie / finance
+
+- Acces bulletins par employee
+- Liste `GET /api/v1/me/pay-slips` supporte filtre statut `validated|sent`, tri allowliste, pagination et refuse les statuts internes `calculated`
+- Detail `GET /api/v1/me/pay-slips/{id}` expose les lignes du bulletin dans un payload stable pour mobile
+- Acces synthese payroll par finance / HR
+- Refus d'acces payroll pour roles non autorises
+- Calculs exposes sans fuite inter-tenant
+- Etats de paie invalides rejetes proprement
+- Declarations sociales CNAS DZ, CNSS MA et DSN FR reservees aux managers, validees par periode et scopees au tenant courant
+- Les declarations sociales utilisent les identifiants entreprise depuis `companies.metadata` et les donnees salarie via les casts Eloquent, notamment `national_id` `encrypted`
+- Les declarations CNSS MA comptent les jours travailles depuis `attendance_logs` du trimestre courant sans inclure les autres tenants
+- Admin middleware : seul manager `principal` est considere admin cote tenant ; les sous-roles `dept` et `superviseur` doivent recevoir `403`
+
+### 9. Estimation / PDF / documents
+
+- Quick estimate retourne structure et montants attendus
+- Daily summary respecte les donnees filtrees
+- PDF recu genere un fichier telechargeable valide
+- Erreurs de generation PDF gerees sans crash global
+- Rapport mensuel attendance JSON expose jours travailles, heures, retards et estimations paie terrain
+- Rapport mensuel attendance reste performant sur 500+ employes en groupant les logs par employe avant generation des lignes
+- Export CSV du rapport mensuel conserve les colonnes d'estimation paie et reste exploitable par comptable
+- PDF du rapport mensuel affiche les indicateurs de cloture et l'estimation globale sans casser le rendu
+- Exports admin `GET /api/v1/export/{employees,attendance,contracts,vehicles,pay-slips,absences,training}` restent authentifies, reserves manager et disponibles pour le dashboard Cloudflare Pages.
+- Le test contractuel `FrontendApiContractTest` garde les routes critiques admin, mobile et kiosk afin qu'un renommage backend ne casse pas silencieusement les frontends.
+- Les endpoints kiosque terrain `config` (BIO-006 #6767), `employee-info`, `announcements`, `leave-balance` et `qr-punch` restent accessibles avec `X-Kiosk-Token` sans bearer Sanctum utilisateur.
+
+### 10. Notifications / evenements / audit
+
+- Evenement metier declenche la notification attendue
+- Liste notifications supporte filtre `type`, filtre `unread` et alias mobile `unread_only`, tri chronologique allowliste, pagination, `unread_count` et payload vide stable
+- Endpoints mobiles de lecture (`PUT /notifications/{id}/read`, `PUT /notifications/read-all`) et suppression (`DELETE /notifications/{id}`) restent scopes a l'utilisateur authentifie et auditent `communication_events`
+- `POST /api/v1/client-events` persiste uniquement les evenements UX allowlistes, exige auth + tenant, minimise les proprietes et refuse les evenements non fiables comme `login_failed`
+- `GET/PATCH /api/v1/notification-preferences` cree et met a jour les preferences de canaux de l'utilisateur authentifie, avec audit `communication_events`
+- `GET /api/v1/communication/analytics` est reserve aux managers `principal` et `rh`, retourne uniquement les agregats du tenant courant, et refuse les employes.
+- `GET /api/v1/launch-readiness` est reserve aux managers `principal` et `rh`, retourne score, blocages requis, prochaines actions et checks go-live tenant-scopes.
+- Journalisation des actions sensibles disponible si prevue
+- `AuditLogger` listener ecoute les 8 domain events et ecrit dans `audit_logs`
+- `WebhookListener` dispatche les events vers les endpoints webhook du tenant
+- Les events sont dispatches depuis les services (EmployeeCreated, EmployeeArchived, AttendanceCheckedIn/Out, AbsenceRequested/Approved/Rejected, PayrollValidated)
+- `EventServiceProvider` cable chaque event aux listeners AuditLogger et WebhookListener
+
+### 11. Resilience et erreurs
+
+- `401` si token manquant / invalide
+- `403` si role insuffisant
+- `404` sur ressource absente avec payload standard
+- `422` sur validation metier
+- `429` si rate limit active
+- `500` ne fuit ni stack ni secrets en production
+
+### 12. Contrats API pour mobile
+
+- Les endpoints auth renvoient les champs attendus par Flutter
+- Les endpoints attendance renvoient un shape stable
+- Le mobile distingue la correction employe (`POST /attendance/corrections`) de la modification RH/manager (`PUT /attendance/{attendanceLog}`), et conserve un etat UI lisible meme si l'historique de la semaine echoue.
+- Les listes paginees gardent une structure constante
+- Les enums / statuts attendus par le mobile restent stables
+
+### 13. Contrats API pour la plateforme admin
+
+- `POST /api/v1/platform/auth/login` accepte `email`, `password`, `device_name` et optionnellement `two_fa_code`
+- Un super-admin sans 2FA obtient `200` avec `data`, `token`, `token_type`, `role=super_admin` et `two_fa_enabled`
+- Un super-admin avec 2FA active et sans code valide obtient `202` avec `code=TWO_FA_REQUIRED` au lieu d'un faux succes silencieux
+- `GET /api/v1/platform/auth/me` retourne un shape stable pour hydrater la session admin sans hypothese cote frontend
+- `POST /api/v1/platform/auth/logout` invalide le token courant sans exiger de mecanisme de refresh fantome
+- Aucun contrat admin ne doit reintroduire des routes `/admin/auth/*` inexistantes
+- `GET /api/v1/platform/companies/{company}/health` retourne plan/MRR, features, adoption pointage 30 jours, onboarding, anomalies et next actions
+- `GET /api/v1/platform/companies/health` retourne le portefeuille client avec MRR total, repartition des risques et prochaine action par company
+- `GET /api/v1/platform/companies/health` est **pagine** (#7339) : `?page=` (defaut 1) et `?per_page=` (defaut 50, plafond 100) ; `limit` reste accepte comme alias de `per_page` (retro-compatibilite #7302) ; `?refresh=1` purge le cache de la page demandee
+- La reponse du portefeuille expose `meta` (`current_page`, `per_page`, `total`, `last_page`, `from`/`to` — nuls sur une page vide) ; une page hors bornes renvoie `200` avec `items: []`, jamais une erreur
+- Deux pages consecutives ne servent jamais la meme societe (ordre total `created_at DESC, id DESC`) et les pages couvrent le portefeuille sans trou ni doublon
+- `data.summary` decrit la PAGE (meme semantique que l'ancien `limit` de #7302) ; le total reel du portefeuille est dans `meta.total`, sans scorer les societes hors page
+- Le nombre de requetes d'une page ne depend pas du nombre de societes **hors page** (`test_portfolio_query_count_does_not_grow_with_company_count`, `test_portfolio_exposes_page_metadata_and_disjoint_pages`)
+- `GET /api/v1/platform/companies` (annuaire) expose son defaut de pagination dans `meta.per_page` (20 par defaut, 100 au maximum) : un client ne doit plus croire qu'il a recu « toutes les societes »
+- `GET /api/v1/platform/plans` retourne le catalogue des plans pour alimenter les formulaires d'abonnement super-admin
+- `GET/PATCH /api/v1/platform/companies/{company}/subscription` lit et met a jour plan, statut, dates d'abonnement et notes client
+- `GET /api/v1/platform/metrics/overview` retourne les agregats plateforme MRR/ARR, encaissements 30 jours, impayes, companies, abonnements, facturation et systeme
+- Le health client classe clairement le risque (`low`, `medium`, `high`) et reste reserve au guard `super_admin_api`
+- Les metriques health ne doivent jamais lire les donnees d'un autre tenant ni dependre d'un `current_company` applicatif
+- Le contrat abonnement refuse les statuts inconnus, les plans inexistants et les dates incoherentes
+- Le contrat metrics overview reste reserve au guard `super_admin_api`, ne retourne aucune donnee nominative tenant et tolere les tables billing absentes pendant les migrations progressives
+
+### 14. Catalogue de traductions distant et variantes de locale
+
+- `GET /api/v1/i18n/catalog` retourne les variantes supportees, checksums et metadata de version
+- `GET /api/v1/i18n/catalog/{locale}` normalise `fr-CA`, `fr-BE`, `ar-SA`, `ar-MA`, `tr-TR`, `en-US`, `en-GB` vers leur langue canonique
+- L'endpoint retourne `ETag`, `checksum`, `fallback_locale` et `rtl` de facon stable
+- Une requete `If-None-Match` valide doit repondre `304` sans payload parasite
+- Les catalogues invalides ou absents ne doivent jamais provoquer une erreur `500` silencieuse
+
+### 15. Onboarding go-live client
+
+- `GET /api/v1/onboarding/checklist` reste reserve aux managers autorises
+- La checklist couvre creation societe, manager actif, equipe ajoutee/active, bases de paie, geofence, biometrie et kiosque
+- Le payload expose `go_live_ready` et `next_actions` pour guider l'installation client sans interpretation cote frontend
+- Les metriques de progression ne doivent pas compter une etape paie complete si aucun salaire ou taux horaire n'est renseigne
+
+### 16. Privacy / RGPD self-service
+
+- `GET /api/v1/privacy/export` retourne uniquement le bundle de donnees de l'employe authentifie et des compteurs d'activite scopes par `company_id`
+- `POST /api/v1/privacy/deletion-request` cree une demande tracee non destructive pour revue RH/juridique et ne supprime jamais le compte immediatement
+- `PATCH /api/v1/privacy/biometric-consent` enregistre le consentement ou retire le consentement en desactivant les flags biometriques et en effacant les references de templates
+- Les endpoints privacy restent sous `auth:sanctum` + `tenant` et ne prennent jamais d'`employee_id` client pour eviter l'export d'un collegue ou d'un autre tenant
+- Les acces aux fiches employees et exports privacy creent une entree `audit_logs` avec `category=hr_data_access`, acteur, tenant et cible quand elle existe
+- Les endpoints privacy retournent `429` apres depassement du limiter `privacy-sensitive`
+
+## Mapping attendu vers les suites GitHub Actions
+
+### Suite `Unit`
+
+- Services d'authentification
+- Services de presence
+- Services d'estimation / calcul
+- Toute logique metier pure et deterministe
+
+### Suite `Feature`
+
+- Auth login / me / logout
+- Auth guardrails: employee archive, company suspended
+- RBAC employees
+- Employees mobile manager : payload `work_state`, principal-only pour nomination/revocation RH, refus RH non principal
+- Isolation tenant
+- Isolation tenant par chaine FK : `WebhookDelivery`, `PaySlipLine`, `ApprovalDecision`, `ExpenseItem` doivent etre filtres via leur parent portant `company_id`
+- Attendance check-in / check-out / history
+- Attendance anomalies business impact / recommended actions
+- Attendance monthly report JSON / CSV / PDF payroll estimates
+- Self-service `GET /api/v1/me/monthly-summary` : mois vide, totaux zero, breakdown vide, periode stable et types JSON compatibles mobile
+- Manager mobile `GET/PUT /api/v1/attendance/corrections*` : file pending, approve applique le pointage, reject cloture la demande, isolation tenant stricte
+- Onboarding checklist go-live readiness
+- Estimation daily summary / quick estimate / PDF
+- Contrats JSON critiques pour le mobile
+- Contrats d'auth plateforme et cas `TWO_FA_REQUIRED`
+- Contrat health plateforme pour adoption, retention et upsell client
+- Contrat catalogue plans plateforme pour eviter les `plan_id` hardcodes cote frontend
+- Contrat abonnement plateforme pour upgrade, suspension, expiration et notes client
+- Contrat metrics overview plateforme pour MRR/ARR, impayes, encaissements, companies, abonnements et facturation
+- Contrats privacy/RGPD pour export donnees personnelles, demande de suppression et consentement biometrique employe
+- Journalisation `audit_logs` des acces RH sensibles : liste employees, fiche employee, export privacy
+- Health endpoint
+
+### Suites a ajouter ou durcir progressivement
+
+- `tests/Feature/PublicRegisterTest.php`
+- `tests/Feature/Leave/LeaveApprovalTest.php`
+- `tests/Feature/Payroll/PayrollAccessTest.php`
+- `tests/Feature/Security/BlockedUserTest.php`
+- `tests/Feature/Platform/PlatformAuthTest.php`
+
+## Sortie attendue dans GitHub Actions
+
+- Rapport JUnit Unit
+- Rapport JUnit Feature
+- Logs applicatifs en artefact
+- Rapport CI central mentionnant:
+  - couverture backend executee
+  - scenarios backend de reference
+  - gaps connus restant a fermer
+
+## Critere GO / NO GO
+
+- GO: tous les tests Unit + Feature passent, aucun test critique securite/isolation en echec
+- NO GO: echec auth, RBAC, multitenant, attendance critique, payload contrat mobile, contrat admin plateforme ou payroll securite
+
+## Gaps actuels a fermer en priorite
+
+- Register public complet en CI
+- Conges / approbations en CI
+- Payroll access control en CI
+- Utilisateur bloque distinct de l'etat archive en CI
+- Suite dediee a l'auth plateforme avec 2FA
+
+## Modules API etendus (v4.2.0)
+
+### Module A â Conges avances
+- `GET /api/v1/leave-policies` retourne la liste des politiques actives
+- `POST /api/v1/leave-policies` cree une politique (manager RH uniquement)
+- `GET /api/v1/leave-policies/{id}` retourne le detail d'une politique
+- `PUT /api/v1/leave-policies/{id}` modifie une politique (manager RH)
+- `DELETE /api/v1/leave-policies/{id}` desactive une politique (manager RH)
+- `GET /api/v1/leave-balances?year=2026` retourne les soldes par employe et annee
+- `GET /api/v1/me/leave-balances` retourne les soldes de l'employe connecte
+- `GET /api/v1/leave-accruals` retourne l'historique des cumuls
+- `POST /api/v1/leave-accruals` cree un cumul manuel (manager RH)
+- RBAC : employe non-manager ne voit que ses propres soldes
+- Isolation tenant : policies, balances et accruals doivent etre scopes au `company_id` de l'acteur ; `POST /leave-accruals` refuse employee/policy d'un autre tenant.
+- Couverture Feature : CRUD policy existant, index tenant-scope, balances manager/self-service, accrual success + refus cross-tenant employee/policy, accrual index tenant-scope.
+- Scheduler : `leave:accrue` accumule les soldes le 1er de chaque mois
+
+### Module B â Contrats
+- `POST /api/v1/contracts` cree un contrat en statut draft (manager RH)
+- `PUT /api/v1/contracts/{id}` modifie un contrat
+- `POST /api/v1/contracts/{id}/activate` active un contrat draft (signed_at auto)
+- `POST /api/v1/contracts/{id}/suspend` suspend un contrat actif
+- `POST /api/v1/contracts/{id}/terminate` resilie avec motif obligatoire
+- `POST /api/v1/contracts/{id}/renew` renouvelle (cree nouveau + expire ancien)
+- `GET /api/v1/contracts/expiring?days=30` liste les contrats expirant dans 30 jours
+- `GET /api/v1/contracts/{id}/amendments` liste les avenants
+- `POST /api/v1/contracts/{id}/amendments` cree un avenant
+- `GET /api/v1/contracts/{id}/generate-pdf` genere les donnees PDF
+- `GET /api/v1/me/contracts` retourne les contrats de l'employe connecte
+- RBAC : employe voit uniquement ses propres contrats
+- Isolation : `GET /api/v1/contracts` et `GET /api/v1/contracts/expiring` ne retournent que le tenant courant
+- Isolation : `POST /api/v1/contracts` refuse un `employee_id` hors tenant
+- Self-service : un employe ne peut pas consulter, generer le PDF ou lire les avenants du contrat d'un collegue
+- Scheduler : `contracts:alert-expiring` alerte a 30/15/7 jours
+
+### Module C â Avances salaire mobile
+- `GET /api/v1/salary-advances` retourne les avances de l'employe connecte, et la liste tenant pour manager/RH autorise.
+- `POST /api/v1/salary-advances` permet a un employe de demander une avance avec `amount`, `reason` et `repayment_months`.
+- RBAC : un employe ne peut creer une demande que pour lui-meme ; la decision reste reservee au workflow RH/manager.
+- Isolation tenant : la liste et les decisions ne doivent jamais exposer les avances d'un autre tenant.
+- Contrat mobile : apres creation, la reponse expose `status=pending`, `amount`, `reason`, `repayment_months`, `monthly_deduction`, `amount_remaining` et `repayment_plan` si calcule.
+
+### Module K â Workflows d'approbation
+- `GET /api/v1/approval-workflows` liste les workflows (admin RH)
+- `POST /api/v1/approval-workflows` cree un workflow
+- `PUT /api/v1/approval-workflows/{id}` modifie un workflow
+- `DELETE /api/v1/approval-workflows/{id}` desactive un workflow
+- `GET /api/v1/approvals/pending` liste les approbations en attente
+- `POST /api/v1/approvals/{id}/approve` approuve avec commentaire
+- `POST /api/v1/approvals/{id}/reject` rejette avec commentaire obligatoire
+- `GET /api/v1/approvals/history` historique des decisions
+
+### Module C â Recrutement/ATS
+- `POST /api/v1/recruitment/jobs` cree une offre d'emploi (manager RH)
+- `PUT /api/v1/recruitment/jobs/{id}` publie une offre (status draft -> published, published_at auto)
+- `POST /api/v1/recruitment/jobs/{id}/applicants` ajoute un candidat
+- `POST /api/v1/recruitment/applicants/{id}/interviews` planifie un entretien
+- RBAC : employes non-managers recoivent 403 sur toutes les routes recrutement
+- Isolation : listes, details, mises a jour et creation de candidats restent scopees au `company_id` courant.
+
+### Module D â Formation/LMS
+- `POST /api/v1/training/courses` cree un cours (manager RH)
+- `POST /api/v1/training/courses/{id}/sessions` planifie une session
+- `POST /api/v1/training/sessions/{id}/enroll` inscrit un employe
+- `PUT /api/v1/training/enrollments/{id}` complete une inscription (score, feedback)
+- Isolation : catalogue, details, sessions, trainers et enrollments refusent les ressources ou employees hors tenant.
+
+### Module E â Prets employes
+- `POST /api/v1/loans` cree un pret avec echeancier auto-genere
+- `PUT /api/v1/loans/{id}/approve` approuve un pret (manager RH)
+- `PUT /api/v1/loans/{id}/disburse` debloque les fonds (apres approbation)
+- Validation : un pret non approuve ne peut pas etre debloque (422)
+- Isolation : manager ne voit que les prets de son tenant et ne peut pas creer/approuver un pret pour un employe externe.
+
+### Module F â Notes de frais
+- `POST /api/v1/expense-claims` cree une note avec items
+- `PUT /api/v1/expense-claims/{id}/submit` soumet pour approbation
+- `PUT /api/v1/expense-claims/{id}/approve` approuve (manager RH)
+- Validation : seul le draft peut etre soumis, seul le submitted peut etre approuve
+- Isolation : employe ne voit que ses notes, manager seulement celles de son tenant, et les approvals cross-tenant retournent 404.
+
+### Module G â Organigramme
+- `GET /api/v1/org-chart` retourne l'arbre hierarchique complet
+- `GET /api/v1/org-chart/{id}/subordinates` retourne les subordonnes directs
+- `GET /api/v1/org-chart/{id}/manager-chain` retourne la chaine manageriale ascendante
+
+### Module H â Rapports RH
+- `GET /api/v1/reports/headcount` retourne effectifs par departement, type contrat, genre (payload mis en cache par tenant avec TTL `HR_REPORT_HEADCOUNT_CACHE_TTL`, desactive si `0`)
+- `GET /api/v1/reports/turnover?months=12` retourne embauches/departs par mois
+- `GET /api/v1/reports/absenteeism?month=5&year=2026` retourne jours absence par type
+- `GET /api/v1/reports/payroll-summary` retourne masse salariale brute/nette
+- RBAC : uniquement managers
+
+### Module I â Webhooks
+- `POST /api/v1/webhooks` cree un endpoint avec secret genere (principal)
+- `GET /api/v1/webhooks/events` retourne la liste des evenements disponibles
+- `GET /api/v1/webhooks/{id}` inclut les 20 dernieres livraisons
+- `DELETE /api/v1/webhooks/{id}` supprime un endpoint
+- RBAC : uniquement principal
+
+### Module J â Audit Trail
+- `GET /api/v1/audit-logs` retourne les logs filtres par action, type, user, date
+- `GET /api/v1/audit-logs/{id}` retourne le detail avec old/new values
+- `GET /api/v1/audit-logs/export-csv` exporte les logs en CSV avec filtres `from`/`to` (stream chunked)
+- RBAC : uniquement principal
+
+## Paie Complete Multi-Pays (v4.3.0)
+
+### Salary Structures
+- `GET /api/v1/salary-structures` retourne les structures salariales de la company
+- `POST /api/v1/salary-structures` cree une structure (manager RH)
+- `GET /api/v1/salary-structures/{id}` retourne la structure avec ses composants
+- `PUT /api/v1/salary-structures/{id}` met a jour une structure
+- `DELETE /api/v1/salary-structures/{id}` supprime une structure
+- RBAC : managers uniquement
+
+### Salary Components
+- `POST /api/v1/salary-components` cree un composant (earning, deduction, employer_contribution)
+- `GET /api/v1/salary-components?type=earning` filtre par type
+- Validation : code unique par company + structure
+- RBAC : managers uniquement
+
+### Tax Slabs
+- `GET /api/v1/tax-slabs?country_code=DZ` retourne les tranches fiscales par pays
+- `POST /api/v1/tax-slabs` cree une tranche avec effective_from/to
+- RBAC : managers uniquement
+
+### Social Contributions
+- `GET /api/v1/social-contributions?country_code=DZ&type=employee` filtre par pays et type
+- `POST /api/v1/social-contributions` cree une cotisation avec code unique
+- RBAC : managers uniquement
+
+### Payroll Runs
+- `POST /api/v1/payroll-runs` cree un run en draft (period_start, period_end, country_code)
+- `POST /api/v1/payroll-runs/{id}/calculate` lance le calcul (genere les pay_slips)
+- `POST /api/v1/payroll-runs/{id}/validate` valide le run (status calculated -> validated) et enqueue un warmup PDF (`WarmPaySlipPdfPathsForPayrollRunJob`) lorsque `PAYROLL_QUEUE_PDF_WARMUP` est actif
+- `POST /api/v1/payroll-runs/{id}/cancel` annule un run (interdit si paid)
+- `GET /api/v1/payroll-runs/{id}/summary` retourne le resume avec totaux et liste employes
+- Validation : seul un run calculated peut etre valide, seul un run draft/calculated peut etre recalcule
+- RBAC : managers uniquement
+- Couverture Feature : liste scopee tenant, creation manager, calcul via contrat `PayrollCalculator`, validation run + bulletins + dispatch warmup PDF + fichier local `pdf_path`, annulation draft, refus paid et refus d'acces cross-tenant.
+
+### Pay Slips
+- `GET /api/v1/pay-slips` liste paginee tous les bulletins du tenant (manager), filtres optionnels `payroll_run_id` (404 si run hors tenant), `status` (`calculated|validated|sent`), sans lignes de detail â utilise par le SPA admin pour eviter un GET par run
+- `GET /api/v1/payroll-runs/{id}/pay-slips` liste les bulletins d'un run (manager), avec lignes chargees (legacy / detail par run)
+- `GET /api/v1/pay-slips/{id}` detail bulletin avec lignes (manager ou employe concerne)
+- `GET /api/v1/pay-slips/{id}/pdf` telecharge le PDF du bulletin (manager ou employe proprietaire) ; si `pdf_path` pointe vers un fichier present sur le disque `local`, le fichier est servi sinon generation synchrone DomPDF
+- `POST /api/v1/payroll-runs/{id}/send-slips` exige un run valide/paye et marque les bulletins emailable comme envoyes
+- RBAC : manager voit tout, employe voit uniquement ses bulletins ; `GET /pay-slips` refuse les employes (403)
+- Couverture Feature : index tenant + filtres + isolation + 422 status invalide, liste par run scopee tenant, self-service validated/sent uniquement, detail proprietaire, PDF protege, send-slips bloque avant validation et refus employe sur liste manager.
+
+### Self-service
+- `GET /api/v1/me/pay-slips` retourne les bulletins valides/envoyes de l'employe connecte
+- `GET /api/v1/me/pay-slips/{id}` detail bulletin avec lignes (uniquement si validated/sent)
+- RBAC : employe connecte, ses propres bulletins uniquement
+
+### Bank Exports
+- `POST /api/v1/payroll-runs/{id}/bank-export` genere un fichier export (format: sepa_xml, ccp_dz, cpa_dz, bna_dz, cnep_dz, edx_dz, virement_ma, csv_generic)
+- `GET /api/v1/bank-exports/{id}` detail de l'export
+- `GET /api/v1/bank-exports/{id}/download` telecharge le fichier genere
+- Validation : payroll run doit etre validated ou paid
+- RBAC : managers uniquement
+
+---
+
+## Module Tracking Vehicules (Sprint 9-10)
+
+### Vehicles CRUD
+- `GET /api/v1/vehicles` liste paginee avec filtres status, type
+- `POST /api/v1/vehicles` creation vehicule
+- `GET /api/v1/vehicles/{id}` detail vehicule
+- `PUT /api/v1/vehicles/{id}` mise a jour
+- `DELETE /api/v1/vehicles/{id}` suppression
+- RBAC : authentification requise, isolation par company_id
+
+### Vehicle Sub-Resources
+- `GET /api/v1/vehicles/{id}/position` position GPS actuelle (via Traccar)
+- `GET /api/v1/vehicles/{id}/trips` historique trajets paginÃ©
+- `GET /api/v1/vehicles/{id}/alerts` alertes du vehicule paginÃ©es
+- `GET /api/v1/vehicles/{id}/maintenance` historique maintenance paginÃ©
+
+### Affectations Chauffeurs
+- `POST /api/v1/vehicles/{id}/assign` affecter un chauffeur
+- `POST /api/v1/vehicles/{id}/unassign` retirer affectation
+- `GET /api/v1/vehicles/{id}/assignments` historique affectations
+
+### Trips
+- `GET /api/v1/vehicle-trips` liste trajets filtrable (vehicle, driver, dates)
+- `GET /api/v1/vehicle-trips/{id}` detail trajet
+
+### Alerts
+- `GET /api/v1/vehicle-alerts` liste alertes filtrable (type, acknowledged, vehicle)
+- `POST /api/v1/vehicle-alerts/{id}/acknowledge` acquitter alerte
+
+### Maintenance
+- `GET /api/v1/vehicle-maintenance` liste maintenance filtrable
+- `POST /api/v1/vehicle-maintenance` enregistrer maintenance
+- `PUT /api/v1/vehicle-maintenance/{id}` modifier
+- `DELETE /api/v1/vehicle-maintenance/{id}` supprimer
+
+### Traccar Sync
+- `POST /api/v1/tracking/sync-devices` synchroniser devices depuis Traccar
+- `POST /api/v1/tracking/sync-positions` synchroniser positions
+- `POST /api/v1/tracking/sync-trips` synchroniser trajets
+
+### Fleet Dashboard
+- `GET /api/v1/fleet/overview` statistiques flotte (total, active, maintenance, alertes)
+- `GET /api/v1/fleet/live-map` positions temps reel de tous les vehicules
+- `GET /api/v1/fleet/reports/fuel` rapport consommation carburant
+- `GET /api/v1/fleet/reports/mileage` rapport kilometrage
+- `GET /api/v1/fleet/reports/maintenance-due` maintenances a venir (30 jours)
+- Couverture Feature : overview scope au tenant, live-map avec Traccar fake sans HTTP externe, rapports carburant/kilometrage groupes par vehicule, maintenances dues a 30 jours et refus non authentifie.
+## Module IA (Sprint 7-8)
+
+### Chat IA
+- `POST /api/ai/chat` envoie un message, retourne la reponse IA avec conversation_id
+- `POST /api/ai/chat` avec `conversation_id` existant continue la conversation
+- Validation : `message` requis, max 2000 caracteres
+- Rate limiting : quota par plan SaaS (trial: 10, starter: 50, business: 200/mois)
+- Feature flag : retourne 403 si `AI_ENABLED=false`
+- RBAC : authentification Sanctum requise
+
+### Historique conversations
+- `GET /api/ai/chat/history` retourne les conversations paginÃ©es de l'utilisateur
+- `DELETE /api/ai/chat/{conversationId}` supprime une conversation
+- Isolation tenant : chaque utilisateur ne voit que ses conversations dans son entreprise
+
+### Actions write IA avec confirmation
+- Les outils write (`create_absence`, `approve_absence`, etc.) retournent `confirmation_required` avec `pending_action_id` sans mutation immediate
+- `POST /api/v1/ai/actions/{pendingActionId}/confirm` execute l'action apres validation utilisateur
+- `POST /api/v1/ai/actions/{pendingActionId}/reject` annule l'action en attente
+- Isolation : un utilisateur ne peut confirmer que ses propres actions pending dans son tenant
+- Couverture Feature : `AIWriteActionConfirmationTest` (confirmation, rejet, approve_absence, orchestrator pending_confirmations)
+
+### Tool Registry
+- `GET /api/ai/tools` liste les outils IA actifs (debug/admin)
+- Les outils sont filtrÃ©s par role (employee, manager, admin)
+- 15 outils enregistrÃ©s : get_employees, search_employees, get_departments, get_headcount, etc.
+
+### Middlewares IA
+- `AIFeatureCheck` : bloque si `AI_ENABLED=false`
+- `AITenantInjector` : injecte company_id et user_id dans le request
+- `AIRateLimiter` : quota mensuel par entreprise
+
+---
+
+## Modules RH Avances (Sprint 11-12)
+
+### Recrutement â Actions avancees
+- `POST /api/v1/recruitment/jobs/{id}/publish` publier une offre (draft -> published)
+- `POST /api/v1/recruitment/jobs/{id}/close` fermer une offre (published -> closed)
+- `DELETE /api/v1/recruitment/jobs/{id}` supprimer (draft uniquement)
+- `GET /api/v1/recruitment/applicants/{id}` detail candidat avec entretiens
+- `PATCH /api/v1/recruitment/applicants/{id}/status` changer statut pipeline
+- `DELETE /api/v1/recruitment/applicants/{id}` supprimer candidat
+- `PATCH /api/v1/recruitment/interviews/{id}/feedback` ajouter feedback + notation
+- `DELETE /api/v1/recruitment/interviews/{id}` annuler entretien
+
+### Self-service employe
+- `GET /api/v1/me/trainings` mes inscriptions formations avec details cours/session
+- `POST /api/v1/me/trainings/{sessionId}/enroll` auto-inscription a une session
+- `GET /api/v1/me/loans` mes prets avec compteur echeances
+- `GET /api/v1/me/loans/{id}/repayments` echeancier de mon pret
+
+### Rapports avances
+- `GET /api/v1/reports/recruitment-pipeline` candidats par statut
+- `GET /api/v1/reports/training-completion` inscriptions par statut
+- `GET /api/v1/reports/loan-summary` montants prets par statut
+- `GET /api/v1/reports/demographics` effectifs par departement et type contrat
+- `GET /api/v1/reports/cost-analysis` analyse couts (prets, formations) par annee
+
+---
+
+## Dashboard, Notifications & Exports (Sprint 15-16)
+
+### Dashboard
+- `GET /api/v1/dashboard/summary` resume (employes, departements, pointage today, absences pending)
+- `GET /api/v1/dashboard/recent-activity` activite recente depuis audit_logs
+- `GET /api/v1/dashboard/kpi` KPI mensuel (turnover, new hires, absence rate)
+- `GET /api/v1/dashboard/manager-digest` signaux mobile manager du jour (presence, retards, sessions ouvertes, actions RH pending)
+- Couverture Feature requise : isolation tenant, scope equipe directe pour manager departement, limite recent activity, KPI compatible SQLite/PostgreSQL
+
+### Horaires manager
+- `GET /api/v1/schedules` liste les horaires tenant-scope visibles mobile manager
+- `POST /api/v1/schedules` cree une regle entreprise avec pause, tolerance retard, jours travailles, jours de repos, regles conges, notes internes et seuils heures supp
+- `PUT /api/v1/schedules/{schedule}` modifie les regles horaires existantes sans casser les tenants historiques partiellement migres
+- `POST /api/v1/schedules/{schedule}/assign-employees` affecte une regle a une selection d'employes du meme tenant et refuse toute liste contenant un employe hors entreprise
+- `DELETE /api/v1/schedules/{schedule}` supprime un horaire non defaut
+- `POST /api/v1/employees` peut recevoir `schedule_id` pour affecter l'horaire des la creation employe
+- `PATCH /api/v1/employees/{employee}` peut corriger horaire, date d'embauche, salaire/taux horaire et metadonnees poste/departement/lieu depuis la fiche mobile manager
+- Couverture Feature requise : manager autorise, employe refuse, isolation tenant des horaires, refus d'un `schedule_id` hors entreprise, assignation multi-employes et rollback logique si un ID hors tenant est fourni
+
+### Taches du jour et pointage
+
+- `POST /api/v1/tasks` permet au manager d'assigner une tache du jour a un employe du meme tenant avec duree estimee, priorite, categorie et `template_key`
+- `GET /api/v1/tasks/today` alimente le pointage employe et la vue manager du jour
+- `PATCH /api/v1/tasks/{task}` permet a l'employe assigne de declarer `status=done`, `completed_minutes` et `completion_note`
+- Couverture Feature requise : refus d'un `assigned_to` hors entreprise et calcul du `performance_score` a la completion
+
+### Notifications
+- `GET /api/v1/notifications` liste paginee avec unread_count
+- `GET /api/v1/notifications/unread` non-lues uniquement
+- `PATCH /api/v1/notifications/{id}/read` marquer comme lue
+- `POST /api/v1/notifications/mark-all-read` tout marquer comme lu
+- `PUT /api/v1/notifications/{id}/read`, `PUT /api/v1/notifications/read-all` et `DELETE /api/v1/notifications/{id}` gardent les alias mobiles employee/manager
+- Couverture Feature requise : seules les notifications de l'employe authentifie sont visibles/modifiees
+
+### Exports
+- `GET /api/v1/export/employees` export JSON ou CSV des employes
+- `GET /api/v1/export/attendance` export pointage avec filtre dates
+
+
+## Billing, Onboarding & Feature Flags (Sprint 13-14)
+
+### Billing / Abonnements
+- `GET /api/v1/billing/subscription` detail abonnement courant
+- `POST /api/v1/billing/subscription/upgrade` changer de plan (starter/business/enterprise)
+- `POST /api/v1/billing/subscription/cancel` annuler abonnement avec raison
+- `POST /api/v1/billing/subscription/renew` renouveler abonnement annule
+- `GET /api/v1/billing/invoices` liste factures paginee
+- `GET /api/v1/billing/invoices/{id}` detail facture avec paiements
+- `GET /api/v1/billing/invoices/{id}/pdf` lien PDF facture
+- RBAC : upgrade/cancel/renew reserves aux managers
+- Couverture Feature : renew abonnement annule, refus cancel/renew employe, liste/detail/PDF factures scopes au tenant authentifie
+
+### Webhooks paiement
+- `POST /api/v1/webhooks/stripe` webhook Stripe (invoice.paid, payment_failed, subscription.deleted)
+- `POST /api/v1/webhooks/chargily` webhook Chargily (checkout.paid)
+- Pas d'authentification requise (endpoints publics)
+- Couverture Feature requise : facture payee, paiement cree, past_due, annulation abonnement
+- Couverture Feature negative : facture Stripe inconnue, evenement Stripe inconnu et facture Chargily inconnue ne doivent creer aucun paiement ni changer abonnement/facture existants
+
+### Onboarding enrichi
+- `GET /api/v1/onboarding-setup/checklist` checklist dynamique (auto-seed 10 etapes si vide)
+- `GET /api/v1/onboarding-setup/progress` pourcentage progression
+- `PATCH /api/v1/onboarding-setup/{stepKey}/complete` marquer etape complete
+- `PATCH /api/v1/onboarding-setup/{stepKey}/skip` sauter etape (non-required seulement)
+- Couverture Feature : auto-seed 10 etapes, progression completed/skipped, completion par tenant, skip optionnel, refus skip obligatoire et isolation inter-tenant
+
+### Feature Flags
+- `GET /api/v1/feature-flags/matrix` matrice complete features x plans
+- `GET /api/v1/feature-flags/check/{featureKey}` verifier si feature active pour company
+- `PUT /api/v1/feature-flags/matrix` refuse les utilisateurs tenant ; les ecritures matrice passent par les contrats plateforme super-admin
+- Couverture Feature : lecture matrix, check par abonnement actif, fallback trial, feature inconnue desactivee et refus ecriture matrix depuis un utilisateur tenant
+
+### Rapports avances
+- `GET /api/v1/reports/recruitment-pipeline` candidats par statut
+- `GET /api/v1/reports/training-completion` inscriptions par statut
+- `GET /api/v1/reports/loan-summary` montants prets par statut
+- `GET /api/v1/reports/demographics` effectifs par departement et type contrat
+- `GET /api/v1/reports/cost-analysis` analyse couts (prets, formations) par annee
+
+---
+
+## IA Avancee â Voice, Agents, Analytics (Sprint 17-18)
+
+### Voice IA
+- `POST /api/v1/ai/voice/transcribe` audio -> texte (Whisper ou Deepgram)
+- `POST /api/v1/ai/voice/synthesize` texte -> audio (Edge TTS ou ElevenLabs)
+- `POST /api/v1/ai/voice/command` pipeline complet audio -> IA -> audio
+- Support langues : fr, ar, tr, en
+- Rate limiting applique
+- Couverture Feature : transcribe/synthesize restent stables sans cles provider externes, et `voice/command` garde le contrat orchestrateur `conversation_id`, reponse IA et URL audio nullable
+
+### Agents autonomes
+- `POST /api/v1/ai/agent/run` executer une tache multi-step (max 10-20 etapes)
+- `GET /api/v1/ai/agent/workflows` lister les workflows predefinis
+- Workflows : prepare_payroll, weekly_report, new_employee_onboarding
+- Couverture Feature : workflows predefinis presents, execution agent borne par `max_steps`, validation refuse `max_steps > 20`
+
+### Analytics IA
+- `GET /api/v1/ai/analytics/usage` utilisation du tenant authentifie (requests, tokens, couts)
+- `GET /api/v1/ai/analytics/costs` couts par periode et provider (day/week/month)
+- `GET /api/v1/ai/analytics/tools` outils les plus appeles
+- `GET /api/v1/ai/analytics/errors` taux de succes + erreurs recentes
+- Couverture Feature requise : colonnes reelles `ai_audit_logs`, isolation tenant, historique/tools IA scopes
+- RBAC : analytics IA reservees aux managers `principal` et `rh`; les managers `dept` et `superviseur` doivent recevoir `403`
+- Couverture Feature : `usage`, `tools`, `errors` et `costs` groupable par `day/week/month` restent scopes au tenant authentifie
+- CI : toute retouche de ces routes doit rester couverte par le gate Pint diff-aware et par les tests Feature RBAC associes
+
+---
+
+## DevOps â Health enrichi, Metrics, Structured Logging (Post-Sprint)
+
+### Health enrichi
+- `GET /api/v1/health` â Inclut desormais : queue (driver + size), memory (usage_mb, peak_mb, limit_mb), environment, uptime_seconds
+- `GET /api/v1/health/live` â Sonde liveness inchangee
+- `GET /api/v1/health/ready` â Sonde readiness inchangee
+
+### Metrics platform
+- `GET /api/v1/metrics` â Retourne: companies (total, active, trial), employees (total, active), system (php_version, laravel_version, memory_usage_mb, cache_driver, queue_driver, db_driver)
+- `GET /api/v1/platform/metrics/overview` â Retourne: revenue (currency, mrr, arr, collected_30d, overdue_total), companies, subscriptions, billing, system et generated_at pour le cockpit super-admin
+
+### Structured Logging
+- Middleware `StructuredLogging` enregistre chaque requete API en JSON : method, uri, status, duration_ms, ip, user_agent, user_id, company_id, request_id
+- Channel `structured` : daily JSON logs dans `storage/logs/structured.log`
+- Channel `audit` : daily JSON logs dans `storage/logs/audit.log` (90 jours retention)
+- Couverture Feature : requetes API non-health journalisees sur le channel `structured`, sondes health exclues du bruit de logs
+
+## Paie avancee â PDF, Bank Export, Billing (Post-Sprint)
+
+### Bulletin de paie PDF
+- `GET /api/v1/pay-slips` liste paginee les bulletins du tenant (manager), filtres `payroll_run_id` / `status`
+- `GET /api/v1/pay-slips/{id}/pdf` telecharger le bulletin en PDF (manager ou employe proprietaire)
+- `GET /api/v1/me/pay-slips/{id}/pdf` telecharger son propre bulletin (self-service)
+- Template Blade adapte par pays (DZ, MA, TN, FR, TR, SN) avec mentions legales
+- DomPDF genere le PDF A4 portrait
+
+### Envoi bulletins
+- `POST /api/v1/payroll-runs/{id}/send-slips` marquer les bulletins comme envoyes (manager)
+- Verifie que le run est valide avant envoi
+
+### Export bancaire reel
+- `POST /api/v1/payroll-runs/{id}/bank-export` avec format : sepa_xml, ccp_dz, cpa_dz, bna_dz, cnep_dz, edx_dz, virement_ma, csv_generic
+- SEPA XML : format pain.001.001.03 pour virements europeens
+- CCP Algerie Poste : format texte fixe (entete, detail, total)
+- CPA/BNA/CNEP (DZ) : pipe-delimited HEADER/DETAIL/FOOTER (RIB, nom, net) — conventions internes a valider avec la banque (#5243)
+- EDX (DZ) : enregistrements a largeur fixe H/D/F, montants DZD — convention interne documentee (#5243)
+- CSV generique / virement_ma : employee_id, first_name, last_name, iban, bank_account, net_salary, currency, period
+- Les tests doivent couvrir que l'export ne selectionne pas de colonnes employees inexistantes (`rib`, `bank_name`)
+
+### Facture PDF (Billing)
+- `GET /api/v1/billing/invoices/{id}/pdf` telecharger la facture en PDF
+- Numero auto-incremente LEO-2026-XXXX
+- Mentions legales et TVA incluses
+
+### Scheduled jobs billing
+- `billing:check-trials` (daily) : notifier les trials expirant dans 3 jours
+- `billing:check-overdue` (daily) : marquer les factures en retard comme overdue
+- `billing:generate-invoices` (monthly) : generer les factures pour les abonnements actifs
+
+### Leave carry-forward
+- `leave:carry-forward` (annuel) : reporter les soldes non utilises selon LeavePolicy
+- Expiration des reports selon carry_forward_expiry_days
+
+### Declarations sociales (CNAS DZ / CNSS MA / DSN FR / DAS DZ)
+- `POST /api/v1/social-declarations/cnas-dz` genere une declaration trimestrielle CNAS Algerie avec taux salarie 9% et employeur 26%
+- `POST /api/v1/social-declarations/cnss-ma` genere une declaration trimestrielle CNSS Maroc avec jours travailles
+- `POST /api/v1/social-declarations/dsn-fr` genere une declaration mensuelle DSN simplifiee France (format S10/S20/S21/S44)
+  - Parametres : `month` (1-12), `year` (2020-2099)
+  - Mapping types contrat : CDIâ01, CDDâ02, INTERIMâ03, APPRENTISSAGEâ04, PROFESSIONNALISATIONâ05, STAGEâ07
+  - La reponse contient `content` (texte DSN), `filename` (DSN_FR_MM_YYYY_date.dsn), `employee_count`
+- `POST /api/v1/social-declarations/das-dz` genere la Declaration Annuelle des Salaires DZ (CSV une ligne par employe : NIS, nom, mois, brut, CNAS 9%/26%, IRG, net + TOTAUX), agregee des bulletins valides des runs DZ de l'annee (#5243) — parametre `year` (2020-2099), managers uniquement, audit `payroll.das_declaration`
+- Les quatre endpoints sont reserves aux roles manager (isManager)
+- Les calculs s'appuient sur les bulletins valides (`pay_slips` status=validated) du mois/trimestre/annee demande
+- Isolation tenant : les bulletins et employes doivent etre scopes au `company_id` de l'acteur
+- La requete company ne doit effectuer qu'un seul SELECT (pas de requetes dupliquees name + tax_id)
+
+### Notifications temps reel (SSE)
+- `GET /api/v1/notifications/stream` ouvre un flux SSE (Server-Sent Events) pour les notifications en temps reel
+  - Event `notification` : nouvelles notifications avec `unread_count`
+  - Event `error` : session expiree
+  - Event `timeout` : signal de reconnexion apres 120s
+  - Heartbeat `: heartbeat` toutes les 5s
+- L'endpoint est authentifie via `auth:sanctum` + tenant isolation
+- Le stream verifie l'existence de l'employe a chaque iteration (securite session)
+
+### Import employes CSV
+- `POST /api/v1/employees/import` importe des employes depuis un fichier CSV avec validation ligne par ligne
+- `GET /api/v1/employees/import-template` retourne un template CSV avec colonnes et exemple
+- L'import utilise `Employee::create()` (pas `DB::insert`) pour respecter les casts `encrypted` sur `national_id`, `iban`, `bank_account`
+- Les colonnes CSV doivent correspondre au schema reel : `address_line`, `postal_code`, `nationality` (pas `address`, `city`, `country`)
+- Validation genre : `in:M,F` (pas `male/female/other`)
+- Validation contract_type : `in:CDI,CDD,Stage,Interim,Consultant`
+- Validation status : `in:active,inactive,on_leave,terminated,suspended`
+- Detection doublons email avant insertion
+- Rollback transactionnel en cas d'erreur
+- Isolation tenant : l'import scope au `company_id` de l'acteur
+
+### Compression reponse API
+- Le middleware `CompressResponse` compresse les reponses JSON > 1 Ko pour les clients acceptant `Accept-Encoding: gzip`
+- Les reponses compressees portent `Content-Encoding: gzip` et `Vary: Accept-Encoding`
+- Les clients sans `Accept-Encoding: gzip` recoivent la reponse non compressees
+
+
+
+### IA Workflows metier
+- `POST /api/v1/ai/workflows/prepare-payroll` execute le workflow de preparation paie
+  - Requiert `period_start` et `period_end` (dates)
+  - Collecte les employes actifs du tenant
+  - Verifie les structures salariales manquantes
+  - Detecte les absences en attente de validation sur la periode
+  - Compte les absences approuvees a deduire
+  - Verifie si un run de paie existe deja pour la meme periode
+  - Retourne un rapport multi-etapes avec status `ready` ou `requires_attention`
+  - Reserve aux managers (role=manager) ; employes recoivent 403
+  - Isolation tenant : toutes les requetes sont scopees au `company_id` de l'acteur
+- `GET /api/v1/ai/workflows/weekly-report` genere un rapport hebdomadaire automatique
+  - Parametre optionnel `week_start` (date) ; par defaut la semaine precedente
+  - Effectifs par departement et par statut
+  - Absences par type avec comptage pending/approved/rejected
+  - Detection anomalies : employes sans pointage ni absence approuvee, contrats expirant sous 30 jours
+  - Retourne un resume texte synthetique
+  - Reserve aux managers ; employes recoivent 403
+
+### Simulation cotisations sociales
+- `POST /api/v1/cotisation-simulation` simule les cotisations pour un salaire brut donne
+  - Requiert `gross_salary` (numeric >= 0) et `country_code` (in:DZ,MA,FR,TN,TR,SN)
+  - Retourne le detail des cotisations employe et employeur par type
+  - Calcule le net avant impot et le cout total employeur
+  - Taux DZ : CNAS salarie 9%, employeur 26%
+  - Taux MA : CNSS salarie 4.48%, AMO 2.26%, employeur CNSS 8.98%, AMO 3.40%
+  - Pays non supportes retournent une erreur 422
+  - Reserve aux managers ; employes recoivent 403
+  - Aucune persistance : calcul en memoire uniquement
+
+### Rapports RH avances (Iteration 8)
+- `GET /api/v1/reports/headcount` retourne l'effectif total et la repartition par departement et par statut
+- `GET /api/v1/reports/absenteeism` retourne le taux d'absenteisme, jours totaux, duree moyenne et repartition par type pour la periode donnee
+- `GET /api/v1/reports/turnover` retourne le taux de turnover pour la periode donnee
+- `GET /api/v1/reports/overtime` retourne les heures supplementaires totales, nombre d'employes concernes et repartition par departement
+- `GET /api/v1/reports/payroll-summary` retourne la masse salariale (brut, net, charges patronales, nombre de bulletins)
+- `GET /api/v1/reports/recruitment-pipeline` retourne les candidatures par etape du pipeline de recrutement
+- `GET /api/v1/reports/training-completion` retourne le taux de completion des formations et les inscriptions par statut
+- `GET /api/v1/reports/demographics` retourne la repartition demographique (age, genre, anciennete)
+- `GET /api/v1/reports/cost-analysis` retourne l'analyse des couts RH par departement
+- `GET /api/v1/reports/loan-summary` retourne l'encours et les remboursements de prets employes
+- Tous les rapports sont scopes au `company_id` de l'acteur et reservees aux managers
+
+### Indexes performance etendus (D6)
+- La migration `2026_05_17_000001_add_extended_performance_indexes` ajoute des indexes PostgreSQL sur les colonnes filtrees des tables contracts, training_courses, training_sessions, training_enrollments, job_postings, applicants, audit_logs et webhook_endpoints
+- Les indexes sont crees avec `CREATE INDEX CONCURRENTLY IF NOT EXISTS` et sont idempotents
+- L'index partiel `idx_contracts_end_date` filtre sur `status = 'active'` pour optimiser les alertes d'expiration
+
+### Predictions IA (Plan 15 C11-C13, C15)
+- `GET /api/v1/predictions/turnover` retourne le scoring turnover par departement et employe, avec facteurs de risque et taux global
+- `GET /api/v1/predictions/absenteeism` retourne les predictions d'absenteisme avec periodes a risque, saisonnalite et recommandations
+- `GET /api/v1/predictions/notifications` retourne les notifications proactives IA (contrats expirants, periodes d'essai, anniversaires, approbations en retard, formations incompletes, soldes conges faibles)
+- Les 3 endpoints sont reserves aux managers `principal` et `rh` (RBAC teste dans PredictionControllerTest)
+- Les employes non-managers recoivent un 403
+- Structure reponse : `{"data": {...}}` avec champs documentes
+- Le TurnoverPredictor analyse anciennete, taux departement, absences frequentes
+- L'AbsenteeismPredictor integre saisonnalite (juillet, aout, decembre) et tendances
+- Le ProactiveNotificationService agrege 6 types de notifications tries par severite (critical > warning > info)
+### Audit logs UI (E9 - Iteration 9)
+- `GET /api/v1/audit-logs` retourne les logs d'audit pagines, scopes au `company_id` de l'acteur
+- `GET /api/v1/audit-logs/export?format=csv` exporte les logs d'audit au format CSV
+- Les logs contiennent `user_name`, `action`, `auditable_type`, `auditable_id`, `old_values`, `new_values`, `ip_address`, `user_agent`, `created_at`
+- Filtrage par action (created, updated, deleted, login, logout, exported) et par type d'entite (Employee, Contract, Absence, PayrollRun, etc.)
+- Isolation tenant : les logs sont filtres par `company_id`
+
+
+### SSO SAML/OIDC (Plan 15 K2)
+- `GET /api/v1/sso/providers` retourne la liste des protocoles SSO supportes (SAML 2.0, OpenID Connect) â public, pas d'auth
+- `GET /api/v1/sso/status` retourne le statut SSO de l'entreprise (enabled, provider) â RBAC manager principal uniquement
+- `POST /api/v1/sso/configure` configure SSO pour l'entreprise (provider in:saml,oidc, entity_id URL, sso_url URL) â RBAC manager principal
+- `DELETE /api/v1/sso/disable` desactive SSO pour l'entreprise â RBAC manager principal
+- `POST /api/v1/sso/saml/{companyId}/callback` recoit la reponse SAML de l'IdP â audit #1694 : 501 explicite tant que la validation n'est pas implementee (jamais de succes vide)
+- `GET /api/v1/sso/oidc/{companyId}/callback` recoit le callback OIDC (code, state, id_token) â idem : 501 explicite
+- Les endpoints de gestion (status, configure, disable) sont proteges par auth:sanctum + tenant
+- Les callbacks sont publics (recus directement de l'IdP)
+- Configuration stockee en JSONB dans company_sso_configs (unique par company_id)
+- Audit #1694 : `POST /configure` ne marque JAMAIS la config active tant que la validation n'est pas implementee (is_active=false) ; `certificate`/`client_secret` chiffres au repos (Crypt) et jamais renvoyes au client ; tests : chiffrement au repos, 501 callbacks, is_active=false
+
+### Optimisation planning IA (C14 - Iteration 12)
+- `GET /api/v1/planning/weekly-optimization` retourne l'analyse de couverture departement, les conflits planning et les recommandations pour la semaine donnee
+- `GET /api/v1/planning/weekly-optimization?week_start=2026-06-01` accepte une date de debut de semaine optionnelle
+- `GET /api/v1/planning/shift-rebalancing` retourne l'analyse de repartition des effectifs par departement avec suggestions de reequilibrage
+- Le score d'optimisation est un entier 0-100 base sur la couverture departementale et le nombre de conflits
+- Isolation tenant : toutes les requetes sont scopees au `company_id` de l'acteur authentifie
+- Authentification requise : les endpoints retournent 401 sans token valide
+
+### Push Notifications / Device Tokens (G8 - Batch 1)
+- `POST /api/v1/device-tokens` enregistre un token FCM (platform: ios/android/web, token: string) â self-service employe
+- `DELETE /api/v1/device-tokens` supprime un token FCM â self-service employe
+- `GET /api/v1/device-tokens` liste les tokens actifs de l'employe connecte (pagine : `data` = liste simple, `meta` = pagination)
+- `POST /api/v1/push-notifications/send` envoie une notification push a un employe â RBAC manager uniquement
+- Les tokens invalides (NotRegistered, InvalidRegistration) sont automatiquement desactives
+
+### Calendar Sync (L6 - Batch 1)
+- `GET /api/v1/calendar/connections` liste les connexions calendrier de l'employe (Google, Outlook, CalDAV)
+- `POST /api/v1/calendar/connect` connecte un calendrier (provider, access_token, refresh_token, calendar_id)
+- `DELETE /api/v1/calendar/disconnect/{provider}` deconnecte un calendrier
+- `POST /api/v1/calendar/sync` synchronise les conges et formations vers le calendrier externe
+- `GET /api/v1/calendar/events?from=2026-01-01&to=2026-12-31` liste les evenements calendrier synchronises
+
+### ZKTeco Integration (L5 - Batch 1)
+- `GET /api/v1/zkteco/devices` liste les pointeuses ZKTeco de l'entreprise â RBAC manager
+- `POST /api/v1/zkteco/devices` enregistre une nouvelle pointeuse (serial_number, name, ip_address, port, protocol)
+- `GET /api/v1/zkteco/devices/{id}` detail pointeuse + historique sync
+- `PUT /api/v1/zkteco/devices/{id}` met a jour une pointeuse
+- `DELETE /api/v1/zkteco/devices/{id}` supprime une pointeuse
+- `POST /api/v1/zkteco/heartbeat/{serialNumber}` heartbeat device â marque online â pas d'auth Sanctum
+- `POST /api/v1/zkteco/sync-attendance/{serialNumber}` sync pointages depuis device â pas d'auth Sanctum
+- `POST /api/v1/zkteco/devices/{serialNumber}/push-users` pousse la liste employes vers le device â RBAC manager
+- `GET /api/v1/zkteco/devices/{id}/sync-logs` historique des synchronisations
+
+### Kiosk Extensions (H1-H4 - Batch 1)
+- `POST /api/v1/kiosks/{deviceCode}/employee-info` info employe post-pointage (nom, departement, poste, photo, pointage du jour, solde conges)
+- `GET /api/v1/kiosks/{deviceCode}/announcements` annonces actives pour le kiosk (titre, corps, priorite, dates)
+- `POST /api/v1/kiosks/{deviceCode}/leave-balance` solde conges par identifiant employe
+- `GET /api/v1/kiosks/{deviceCode}/config` configuration kiosk au demarrage (matrice methodes BIO-006 #6767, politique offline BIO-007 #6772, etat synchro)
+- `POST /api/v1/kiosks/{deviceCode}/qr-punch` pointage par QR code (decode base64 JSON â matricule/employee_id)
+- Tous les endpoints kiosk necessitent le header X-Kiosk-Token pour l'authentification device
+
+### Auth Token Refresh (D4 - Iteration 13)
+- `POST /api/v1/auth/refresh-token` genere un nouveau token Sanctum avec les memes abilities
+- L'ancien token est supprime apres rotation
+- Le nouveau token respecte la duree d'expiration configuree dans `sanctum.expiration`
+- Necessite `auth:sanctum` â tout role authentifie peut rafraichir son token
+
+### Queue Jobs (D2 - Iteration 13)
+- `ProcessPayrollBatchJob` dispatche sur la queue `payroll` avec 3 retries et 600s timeout
+- `SendBulkNotificationsJob` dispatche sur la queue `notifications` avec 3 retries et 120s timeout
+- Les jobs filtrent par `company_id` pour garantir l'isolation tenant
+- Tags Horizon : `company:{id}`, `payroll_run:{id}` / `notification:{class}`
+
+### Model Policies (Plan 23 - Iteration 5)
+- AbsencePolicy : viewAny (tous), view (owner+managers), create (employes actifs), approve/reject (managers), delete (owner, pending uniquement)
+- ContractPolicy : viewAny (managers), view (owner+managers), create/update/activate/terminate/renew (P, RH)
+- DepartmentPolicy, PositionPolicy, SchedulePolicy : viewAny (tous), view (meme entreprise), create/update (managers), delete (P, RH)
+- SitePolicy : viewAny (tous), view (meme entreprise), create/update (managers), delete (P uniquement)
+- ApprovalRequestPolicy : viewAny (tous), view (demandeur+managers), create (employes actifs), approve/reject (managers, pending uniquement)
+- LoanPolicy : viewAny (tous), view (owner+managers), create (employes actifs), approve/reject/disburse (P, FIN)
+- ExpenseClaimPolicy : viewAny (tous), view (owner+managers), create (employes actifs), approve/reject (P, FIN, RH), delete (owner, brouillon uniquement)
+- InvoicePolicy : viewAny/view (P, FIN), create/pay (P)
+- WebhookEndpointPolicy : viewAny/view/create/update/delete (P uniquement)
+- Toutes les policies enregistrees dans AuthServiceProvider via Gate::policy()
+
+### API Resources Normalization (Plan 23 - Iteration 1)
+- Les controllers AbsenceController, DepartmentController, PositionController, ScheduleController, SiteController, NotificationController, WebhookController, ApprovalController, ContractController retournent des JsonResource au lieu de tableaux manuels
+- Chaque Resource expose un contrat JSON stable (dates ISO-8601, relations conditionnelles via whenLoaded)
+- Les collections paginees conservent les meta standard Laravel (current_page, last_page, per_page, total)
+
+### FormRequests Extraction (Plan 23 - Iteration 2)
+- StoreDepartmentRequest, UpdateDepartmentRequest, StorePositionRequest, UpdatePositionRequest validations avec authorize() gates
+- StoreScheduleRequest, UpdateScheduleRequest validations horaires, jours, tolerances
+- StoreSiteRequest, UpdateSiteRequest validations GPS (lat -90/90, lng -180/180, radius 10-5000m)
+- StoreWebhookEndpointRequest, UpdateWebhookEndpointRequest validations URL + events whitelist
+
+### ApiError Enum (Plan 23 - Iteration 4)
+- ApiError backed enum avec ~40 codes (auth, authz, not found, validation, business logic, rate limit, server)
+- Methode `->status()` retourne le HTTP status code correspondant
+- Methode `->message()` charge la traduction i18n (FR/EN/AR/TR) ou fallback anglais
+- Methode `->response()` retourne une JsonResponse formatee {error, message}
+
+### DB Transactions (Plan 23 - Iteration 3)
+- ContractController::renew enveloppe creation nouveau contrat + expiration ancien dans DB::transaction
+- ApprovalController::approve/reject enveloppe creation decision + mise a jour statut dans DB::transaction
+- NotificationController::markRead/markAllRead enveloppe update + audit CommunicationEvent dans DB::transaction
+
+### API Manager Middleware RBAC (API Consolidation - v4.16.129)
+- `EnsureApiManagerMiddleware` enregistre comme `api.manager` dans `bootstrap/app.php`
+- `api.manager` sans parametres autorise tout manager (principal, rh, dept, comptable, superviseur) â refuse les employes simples avec `403 MANAGER_REQUIRED`
+- `api.manager:principal,rh` autorise uniquement les roles specifies â refuse les autres managers avec `403 INSUFFICIENT_ROLE`
+- `api.manager:principal` sur `/billing/subscription` refuse RH, dept, superviseur et employes
+- `api.manager:principal,comptable` sur `/payroll-runs` refuse RH, dept, superviseur et employes
+- `api.manager:principal,rh,comptable` sur `/export/employees` refuse dept, superviseur et employes
+- `GET /me/pay-slips`, `GET /me/contracts`, `GET /me/trainings`, `GET /me/loans` accessibles a tout employe authentifie (pas de middleware api.manager)
+- `GET /org-chart` accessible a tout employe authentifie
+- `GET /dashboard/summary` refuse les employes non-managers
+- `ApiManagerMiddlewareTest` couvre : allow any manager, reject employee, allow specific roles, reject wrong role, reject unauthenticated
+
+### DemoCompanySeeder Extensions (API Consolidation - v4.16.129)
+- `seedContracts()` cree 6 contrats demo (CDI/CDD/stage, active/draft/expired) pour chaque entreprise demo
+- `seedTrainingCourses()` cree 3 formations avec sessions et enrollments
+- `seedRecruitmentJobs()` cree 3 postes avec pipeline candidats
+- `seedLoans()` cree 1 pret actif + 1 en attente avec echeances
+- `seedExpenseClaims()` cree 2 notes de frais avec lignes detaillees
+- Tous utilisent `sharedTableExists()` pour tolerer les tables absentes
+- `cleanupExistingCompany()` nettoie les 12 nouvelles tables avant re-seed
+
+### Plans 60-65 â Double Validation Avances & Paiement en Masse (Redis Upstash)
+
+#### Plan 58 â Personnalisation Entreprise / Branding Tenant
+- `GET /api/v1/company/branding` : retourne le branding de l'entreprise courante depuis `companies.metadata.branding`, lisible par tout utilisateur authentifie du tenant.
+- `PATCH /api/v1/company/branding` : reserve aux managers `principal` et `rh`, valide `display_name`, `logo_url`, `primary_color`, `accent_color`, `brand_mode`.
+- Upload logo optionnel via champ multipart `logo`, stockage sur disk `public`, URL stable retournee dans `data.branding.logo_url`.
+- Validation stricte des couleurs au format hex `#RRGGBB`, fallback lisible cote API/mobile si la valeur est absente ou invalide.
+- `CompanyBrandingControllerTest` couvre lecture employee, refus modification employee, modification manager/RH, upload logo et validation couleur.
+
+#### Plan 60 â Double Validation Avances Salaire
+- `PUT /api/v1/salary-advances/{id}/manager-approve` : manager approuve, met `validation_status=manager_approved` et `manager_approved_at`
+- `PUT /api/v1/salary-advances/{id}/mark-paid` : comptable/manager declare paiement, met `payment_declared_at` et `payment_declared_by`
+- `PUT /api/v1/salary-advances/{id}/confirm-received` : employe confirme reception, met `employee_confirmed_at`
+- Acces refuse a un employe sans role manager sur les endpoints d'approbation (403)
+- Acces refuse a un manager d'une autre entreprise (404)
+
+#### Plan 61 â Cycles de Paie & Solde Employe (PayrollCycleController)
+- `GET /api/v1/payroll/cycles` : retourne la liste paginee des PayrollRuns pour l'entreprise (manager requis)
+- `GET /api/v1/payroll/cycles/current` : retourne `period_start`, `period_end`, `label` du cycle courant calcule
+- `GET /api/v1/me/balance` : retourne le solde paie self-service du cycle courant avec devise, avances deduites et reste
+- `GET /api/v1/employees/{id}/balance` : retourne `gross_due`, `advances`, `paid`, `remaining` pour le cycle courant
+- `GET /api/v1/payroll/mobile-summary` : retourne la synthese mobile manager des soldes paie du perimetre autorise
+- `GET /api/v1/payroll/cycles/preview` (PA2-PAY-003, manager requis) : previsualise le resultat d'une regle de cycle candidate (`pay_cycle`/`pay_day`/`week_start` optionnels) sans rien persister, avec periode/label/prochaine date de paiement et total paie estime sur les employes actifs
+- Employe peut consulter son propre solde ; manager peut consulter tout employe de son entreprise
+- Acces refuse a un employe consultant le solde d'un autre employe sans etre manager (403)
+- Acces refuse a un manager consultant un employe hors de son entreprise (404)
+
+#### Plan 62 â Generation PDF Bulletins de Paie Async (GeneratePaySlipPdfJob)
+- `GeneratePaySlipPdfJob` dispatche sur la queue `pdf` avec `tries=3`, `timeout=120`
+- Le job genere le PDF via dompdf, stocke dans `payslips/{company_id}/{year}/{month}/{employee_id}.pdf`
+- Met a jour `pay_slips.pdf_path` apres generation
+- Notifie l'employe via `PushNotificationService` apres generation reussie
+- Failure silencieuse si `PayrollRun`, `Employee`, `Company` ou `PaySlip` introuvable (log warning, pas d'exception)
+
+#### Plan 63 â Architecture Redis Upstash / QueueHealthCheck
+- `php artisan queue:health-check` retourne JSON avec `redis_ok`, `redis_latency_ms`, profondeurs des queues `default`, `documents`, `pdf`, `notifications`, `payroll`, `webhooks`
+- Retourne `status=error` si Redis inaccessible (exit FAILURE)
+- Options `--queue=pdf --queue=payroll` limitent le check aux queues specifiees
+
+#### Plan 64 â Cloture Automatique Presences, Timezone et GPS doux
+- `php artisan attendance:auto-close` cloture les pointages sans `check_out` selon `company.metadata.attendance_auto_close` ou le fallback 12h
+- `--threshold=N` parametre le seuil fallback en heures
+- `--dry-run` preview sans ecriture
+- Calcule `hours_worked` selon `workday_hours + overtime_margin_minutes`, sans utiliser le statut invalide `auto_closed`
+- Met `correction_note=auto_close`, `punch_note` explicatif et `punch_meta.auto_close.correction_window=true`
+- `POST /api/v1/attendance/check-in|check-out` accepte `device_timezone`, `gps_lat`, `gps_lng`, `gps_accuracy`; le backend stocke UTC, retourne timezone locale + geofence doux (`inside=false` ne bloque pas) et expose `gps.accuracy_m`
+- Plan 67.3 ajoute le garde mobile/API `validate-mobile-location-readiness.ps1` pour garantir que les apps employee/manager collectent le GPS sans bloquer et que l'API conserve ce contrat.
+
+#### Plan 65 â Paiement en Masse (BulkPaymentController + ProcessBulkPaymentJob)
+- `POST /api/v1/payroll-runs/{id}/bulk-pay` : dispatch `ProcessBulkPaymentJob` sur queue `payroll`, retourne 202 Accepted
+- Retourne 422 si le run n'est pas en status `validated` ou `calculated`
+- Retourne 409 si un job bulk-pay est deja en cours pour ce run (detection via Redis)
+- `GET /api/v1/payroll-runs/{id}/bulk-pay/status` : retourne `status`, `done`, `total` depuis Redis
+- Retourne `status=not_started` si aucun job trouve dans Redis
+- Retourne 503 avec `error` si Redis indisponible
+- `ProcessBulkPaymentJob` : marque les avances `manager_approved` en `payment_declared`, dispatch `GeneratePaySlipPdfJob` pour chaque employe, met le run en `paid`
+- Ecrit la progression Redis avec TTL 1h (`bulk_pay:run:{id}`)
+- `POST /api/v1/payment-batches` cree un lot de paiement auditable depuis un payroll run valide et ses pay slips
+- `POST /api/v1/payment-batches/{id}/mark-paid` marque les items comme payes et declenche les documents de paiement async
+- `POST /api/v1/payment-confirmations/{paymentItem}/confirm` permet a l'employe proprietaire de confirmer reception, de maniere idempotente, avec signature device/IP/user-agent/document_version
+
+#### Plan 71 - Platform Admin Multi-Pays
+- `GET /api/v1/platform/country-defaults` : super-admin authentifie, retourne la liste canonique des pays supportes avec `country`, `label`, `language`, `currency`, `timezone`.
+- `POST /api/v1/platform/companies` : le payload mobile minimal peut envoyer seulement `country`; le backend derive langue, devise et timezone via `CountryDefaults`.
+- Les tests doivent couvrir au minimum `SN/XOF`, `CM/XAF`, `TR/TRY` et verifier qu'un nouveau pays ne retombe pas silencieusement sur `DZD`.
+
+#### Module Growth - Partenariat & Parrainage
+- GET /api/v1/partners/profile : retourne le profil partenaire pour l'employe authentifie.
+- POST /api/v1/partners/profile : soumet une candidature partenaire.
+- GET /api/v1/partners/commissions : liste les commissions d'un partenaire actif.
+- GET /api/v1/partners/links : gere les liens de parrainage (liste, creation, desactivation).
+- GET /api/v1/growth/referral : point d'entree tracking des clics via code affilié.
+- L'acces aux ressources partenaires refuse les candidatures en attente.
+- Les ecritures de statistiques de clic et de cookie restent tolerantes aux blocs ad-blocker.
+
+#### Phase 2 — Architecture Multi-App RBAC (v4.17.0)
+
+- `GET /api/v1/hr/dashboard` : accessible RH (`manager_role=rh`) et principal. Retourne stats employes actifs, invitations en attente, nouveaux du mois.
+- `GET /api/v1/hr/me` : profil RH avec `app=rh`, `role_label=Responsable RH`.
+- `GET /api/v1/hr/team-overview` : vue compacte de l'equipe avec departements et postes.
+- `GET /api/v1/hr/employees` : liste paginee/filtree des employes (search, status, contract_type).
+- `POST /api/v1/hr/employees` : creation d'employe par RH — `role` force a `employee`, `manager_role` force a `null` meme si envoye dans le payload.
+- `GET /api/v1/hr/employees/{id}` / `PATCH /api/v1/hr/employees/{id}` : lecture et modification employe par RH, sans possibilite de changer `role` ou `manager_role`.
+- Acces refuse (403 MANAGER_REQUIRED) si `role=employee` tente d'acceder a `/hr/**`.
+- Acces refuse (403 INSUFFICIENT_ROLE) si `manager_role=marketing` tente d'acceder a `/hr/**`.
+- `EnsureAppContextMiddleware` (alias `app.context`) : valide header `X-App-Context` optionnel. Retourne 400 si contexte inconnu, 403 si role incompatible avec le contexte declare.
+- `GET /api/v1/auth/me` : champ `mobile_experience.app` retourne `{id, name, deep_link_scheme}` selon le role — `principal` => manager, `rh` => rh, `employee` => employee.
+- `mobile_experience.modules` differencie les modules selon le role : principal voit `role_management`, rh voit `hr_employees` + `hr_team_overview`, employee voit self-service uniquement.
+
+#### Module Growth - Correction Auth v4.16.255
+- POST /api/v1/partner/apply : accessible via token Sanctum Employee (guard uth:sanctum)  
+esolveGlobalUser() cree l'entree User dans public.users si elle n'existe pas encore pour l'employe authentifie.
+- GET /api/v1/partner/stats : retourne les stats de commission uniquement si le token Employee correspond a un enregistrement Partner actif dans public.partners. Retourne 403 NOT_A_PARTNER sinon.
+- POST /api/v1/partner/payout : demande de paiement liee au partner resolu depuis le token Employee Sanctum.
+- GET /api/v1/partner/companies : liste les entreprises parrainees par le partner resolu.
+- Refus attendus : 401 si token absent, 403 NOT_A_PARTNER si employe non enregistre comme partenaire, 400 ALREADY_EXISTS si double candidature.
+- Contrats couverts : GrowthModuleTest, FrontendApiContractTest.
+
+#### Phase 2 DDD — Modules Absence, Expense, Notification (v4.17.1)
+
+**Module Absence**
+- `POST /api/v1/modules/absences` : demande d'absence — valide DTO RequestAbsenceDTO (employee_id, type_id, start_date, end_date, reason). Retourne 422 si dates en conflit (AbsenceDateConflictException) ou solde insuffisant (InsufficientLeaveBalanceException).
+- `PATCH /api/v1/modules/absences/{id}/approve` : approbation manager — retourne 409 si l'absence n'est plus en statut PENDING (AbsenceNotPendingException).
+- `PATCH /api/v1/modules/absences/{id}/reject` : rejet manager — meme garde AbsenceNotPendingException.
+- `GET /api/v1/modules/leave-policies` : liste des politiques de conges. Accessible manager + RH.
+- Isolation tenant : toutes les operations sont scopées par company_id du token.
+- Tests couverts : AbsenceServiceTest (DTO, exceptions, approve guard).
+
+**Module Expense**
+- `POST /api/v1/modules/expenses` : creation note de frais — valide CreateExpenseDTO (employee_id, amount, category, expense_date). Retourne 422 si montant invalide.
+- `PATCH /api/v1/modules/expenses/{id}/submit` : soumission pour approbation — retourne 409 si statut != DRAFT (ExpenseNotDraftException).
+- `GET /api/v1/modules/expenses` : liste des notes de frais de l'employe authentifie.
+- Tests couverts : ExpenseServiceTest (DTO defaults, exception status codes).
+
+**Module Notification**
+- `POST /api/v1/modules/notifications/send` : envoi notification interne — valide destinataire, canal (in_app, push, email), message.
+- `PATCH /api/v1/modules/notifications/read` : marque notifications comme lues (bulk par tableau d'ids).
+- `GET /api/v1/modules/notifications` : liste paginee des notifications de l'utilisateur.
+- Tests couverts : NotificationTest (action class instantiation smoke).
+
+**Notes gouvernance Phase 2**
+- Les 3 modules DDD suivent la structure Clean Architecture : Application/Actions, Domain/Models+Exceptions, Infrastructure/Services, Interfaces/Api/V1/Controllers, Providers.
+- Les routes sont enregistrees via AbsenceServiceProvider, ExpenseServiceProvider, NotificationServiceProvider.
+- leopardo_mobile_legacy archive le 2026-06-28 : les apps employee, manager et core remplacent l'application legacy. La validation CI Plan 28 est mise a jour en consequence.
+
+
+## Phase 3 — Migration complète des routes vers les modules DDD (v4.16.256)
+
+Les 8 derniers contrôleurs ont été migrés vers leurs modules métier respectifs :
+- `MeController`, `SiteController`, `AdvancedReportController`, `AuditLogController`, `PredictionController` → `App\Modules\HR\Interfaces\Api\V1\Controllers\`
+- `EstimationController`, `EmployeeLoanController` → `App\Modules\Payroll\Interfaces\Api\V1\`
+- `NotificationStreamController` → `App\Modules\Notification\Interfaces\Api\V1\Controllers\`
+
+Les anciens contrôleurs dans `App\Http\Controllers\Api\V1\` ont été supprimés.
+
+**Scenarios couverts** : FrontendApiContractTest, backend feature tests existants.
+
+## Phase 9 — Smart Attendance GPS — Phase 1 à 5 (v4.17.5)
+
+**Expense — Route reject REST-compliant**
+- `PUT /api/v1/expense-claims/{id}/reject` : rejet d'une note de frais par un manager — valide champ `reason` obligatoire (422 si absent). Retourne 200 + payload `data.status=rejected`.
+- `POST /api/v1/expense-claims/{id}/reject` : synonyme conservé pour compatibilité backward.
+- Isolation multitenant : un manager d'un autre tenant reçoit 404 (non 403), préservant l'opacité de l'existence de la ressource.
+- Rôle : seul un employee avec `manager_role` peut approuver/rejeter (403 sinon).
+
+**Auth Google OAuth améliorée**
+- `POST /api/v1/auth/google/token` : connexion via token Google — mock Socialite renforcé (`stateless()->userFromToken()`). Test de rejet 401 pour email inconnu. Test cross-tenant garantissant l'absence de fuite d'isolation.
+- Tests couverts : GoogleAuthGlobalLookupTest (lookup global, rejet inconnu, isolation cross-tenant).
+
+## Phase 5 — Migration AbsenceController DDD + HR Domain/Contracts (v4.17.9)
+
+**Absence — Controller DDD canonique (remplacement Planning module)**
+- `GET /api/v1/absences` : liste paginée avec filtres `status`, `month`, `year`, `employee_id`. RBAC : employee voit ses propres absences, manager voit toutes celles du tenant.
+- `POST /api/v1/absences` : création — rules de solde, conflits de dates gérés par `AbsenceService`.
+- `GET /api/v1/absences/{id}` : 404 cross-tenant, 403 si employee ne possède pas l'absence.
+- `PUT /api/v1/absences/{id}/approve` : manager uniquement — 404 cross-tenant, 403 non-manager.
+- `PUT /api/v1/absences/{id}/reject` : manager uniquement — champ `rejected_reason` requis.
+- `DELETE /api/v1/absences/{id}` : employee peut annuler sa propre absence — 404 cross-tenant, 403 si pas propriétaire.
+- Correction bug : `absence.php` avait un double prefix `/v1/v1/absences` — corrigé en `absences` (routes étaient mortes).
+
+**HR Domain/Contracts**
+- `EmployeeRepositoryInterface` — `findById`, `findByEmail`, `paginateByCompany`, `save`, `delete`
+- `DepartmentRepositoryInterface` — `findById`, `allByCompany`, `save`, `delete`
+- `ContractRepositoryInterface` — `findById`, `activeByEmployee`, `save`, `terminate`
+
+## Phase 6 — PHPStan vagues 1→4 (v4.18.1)
+
+**Corrections PHPStan sans impact API**
+- Cette phase corrige des annotations mixed-types sur services existants sans modification de surface API.
+- Aucun nouvel endpoint créé/supprimé — vérifications de régression non nécessaires.
+- Services affectés : `AbsenceService`, `AttendanceService`, `CameraService`, `FeatureRegistry`, `PayrollCalculator`, `PlatformCompanyHealthService`.
+- Controllers affectés : `EvaluationController`, `HrReportController`, `PlatformCompanyRequestController`, `TaskController` — signature publique inchangée.
+
+**Impact PHPStan**
+- `api/phpstan.neon` : Extension Larastan activée — niveau de check renforci progressivement.
+- Baseline mise à jour pour exclure les erreurs résiduelles en cours de résolution.
+
+## Phase 7 — Refactor architecture DDD : suppression legacy Api/V1 (v4.21.0)
+
+**Suppression 90 controllers legacy (`app/Http/Controllers/Api/V1/`)**
+- Tous les controllers supprimés avaient un doublon fonctionnel dans `app/Modules/*/Interfaces/Api/V1/`
+- Conservés : `EdgeController`, `EdgeDownloadController`, `SSO/SSOController` (pas de doublon module)
+- Impact routes : aucun — les fichiers de routes `routes/modules/*.php` pointaient déjà vers les modules DDD
+- Vérification de non-régression : `FrontendApiContractTest` couvre l'intégralité de la surface API exposée
+
+**Suppression 26 services legacy (`app/Services/`)**
+- Services supprimés et leurs 51 consommateurs mis à jour vers les classes modules équivalentes
+- Remplacement : `AttendanceService` → `App\Modules\Attendance\...`, etc.
+- Consommateurs : Controllers, Listeners, Jobs, Mail, Tests
+
+**Infrastructure manquante créée**
+- `Modules/{Growth,Platform,Onboarding,Training}/Infrastructure/` — corrige 4 violations CI `Module Structure Validator`
+
+**Scénarios de régression à valider**
+- `FrontendApiContractTest` — surface API complète (toutes routes)
+- `backend-tests` (Feature suite complète) — comportement fonctionnel inchangé
+- `Module Structure Validator` CI — structure DDD conforme
+
+## Phase 8 — Correctifs CI (suite refactor DDD, v4.22.4)
+
+**Aucun nouvel endpoint / aucun endpoint supprimé — corrections de comportement sur endpoints existants**
+
+- `POST /api/v1/expense-claims` : `ExpenseItem::$fillable` déclarait la colonne inexistante `expense_date` au lieu de `date` (colonne réelle, NOT NULL) — l'insertion d'un item de note de frais échouait systématiquement en base malgré une requête valide (`QueryException` masquée derrière un 500). Corrigé pour utiliser `date`.
+  - Scénario à valider : `ExpenseClaimControllerTest::test_employee_can_submit_expense_claim` — statut 201 + `data.status = draft`.
+- `GET /api/v1/features/manifest` et `GET /api/v1/features/compatible/{version}` : `filterFeaturesByPermissions()` lisait la clé `required_permissions` alors que `Feature::toManifestArray()` expose `permissions` — le filtre RBAC ne bloquait donc **jamais** aucune feature restreinte coté manifeste (une feature avec `permissions: ['admin.manage']` était renvoyée à tous les rôles). Corrigé pour lire `permissions`. `GET /api/v1/features/{key}` (endpoint `show`) n'était pas affecté (lit déjà `$feature->permissions` directement).
+  - Scénario à valider : `FeatureManifestApiTest::it_filters_features_by_permissions` — une feature `restricted_feature` avec permission non accordée ne doit plus apparaître dans `data.features` du manifeste.
+- Endpoints d'attendance (`POST /api/v1/attendance/check-in`, `check-out`, historique) : `AttendanceLog` sans casts Eloquent (`check_in`/`check_out`/`date`/`punch_meta`) provoquait des 500 (`Error: Call to a member function ... on string`, `Array to string conversion`) sur des requêtes par ailleurs valides. Comportement fonctionnel des endpoints inchangé (pas de nouveau champ exposé), simple correction de bug empêchant l'exécution.
+  - Scénarios à valider : `CheckInTest`, `AttendanceServiceTest::test_check_out_calculates_hours_and_overtime`, `AutoCloseAttendanceCommandTest`.
+- Isolation multitenant (`company_id`) rétablie sur `AbsenceType`, `AttendanceLog`, `AttendanceKiosk`, `BiometricEnrollmentRequest` (trait `BelongsToCompany` manquant) — impact direct sur tous les endpoints qui listent ces ressources sans filtre explicite de tenant (ex. `GET /api/v1/absence-types`, `GET /api/v1/attendance/kiosks`) : une entreprise pouvait voir les enregistrements d'une autre entreprise avant ce correctif.
+  - Scénario à valider : `TenantModelIsolationTest` (4 assertions concernées).
+
+**Endpoints non affectés**
+- Tous les autres endpoints listes dans ce document restent inchangés ; ces correctifs ne touchent qu'à la couche modèle/service, pas aux routes, contrats de requête/réponse ni RBAC declaratif (`RequiresPermission`).
+
+## Phase 2 — Module Marketing : Policies, Actions applicatives, client Ayrshare (PR #858)
+
+**Aucune nouvelle route API publique exposée dans cette phase — couche Policy/Action interne préparant les futurs endpoints REST du module Marketing.**
+
+- `App\Policies\SocialAccountPolicy` : `view`, `connect`, `disconnect` — accès restreint aux managers `principal` ou `marketing` du même `company_id` (pattern `hasManagerRole`, aligné sur `TrainingPolicy`).
+  - Scénario à valider : `SocialAccountPolicyTest` — refus pour manager d'un autre tenant, refus pour rôle hors `principal`/`marketing`, autorisation pour manager `marketing` du bon tenant.
+- `App\Policies\SocialPostPolicy` : `viewAny`, `view`, `create`, `update`, `delete`, `publish` — mêmes règles de rôle/tenant, plus restriction d'état (`update`/`delete` uniquement sur `draft`/`scheduled`, `publish` interdit si déjà `published`).
+  - Scénario à valider : `SocialPostPolicyTest` — transitions d'état interdites (édition d'un post déjà publié, republication), isolation tenant.
+- Actions applicatives `ConnectSocialAccountAction`, `CreateSocialPostAction` (`App\Modules\Marketing\Application\Actions`) et client `Ayrshare` : orchestrent la connexion de comptes sociaux et la création de posts en s'appuyant sur les policies ci-dessus.
+  - Scénarios à valider : `ConnectSocialAccountActionTest`, `CreateSocialPostActionTest`, `SocialAccountModelTest`.
+
+**Endpoints non affectés**
+- Aucune route sous `api/routes/` n'est ajoutée ou modifiée par cette phase (seul le contrôleur pré-existant `dashboard/marketing` reste inchangé). Les prochaines phases exposeront les endpoints REST `SocialAccount`/`SocialPost` consommant ces policies.
+
+## Phase Marketing — Suivi de publication par plateforme (`post_publications`, issue #1432)
+
+**Aucune nouvelle route API publique — nouvelle table tenant + modèle Eloquent consommés en interne par `SocialPublishingService::publishNow()`.**
+
+- Migration `2026_08_03_000001_create_post_publications_table` (tenant) : une ligne par plateforme ciblée par un `social_post`, alignée sur `docs/specifications/MODULE_MARKETING.md` §3.1 (`post_id`, `social_account_id`, `external_post_id`, `status`). Contrainte unique `(social_post_id, platform)` — un appel Ayrshare peut réussir globalement tout en échouant sur une plateforme précise (ex: contenu trop long pour X/Twitter mais accepté sur LinkedIn) ; cette table porte ce détail que les colonnes globales de `social_posts` (`status`, `provider_post_ref`) n'exposaient pas.
+- `App\Modules\Marketing\Domain\Models\PostPublication` : modèle scopé tenant (`BelongsToCompany`), `belongsTo` `SocialPost`/`SocialAccount`.
+- `SocialPublishingService::publishNow()` étendu : parse `postIds[]` (succès) et `errors[]` (échecs partiels) de la réponse Ayrshare pour upserter un `PostPublication` par plateforme ciblée ; en cas d'échec total de l'appel (exception avant tout retour exploitable), marque chaque plateforme ciblée comme `failed`. Idempotent entre deux appels (upsert sur la contrainte unique), donc rejouable sans dupliquer les lignes en cas de retry du job planifié.
+  - Scénario à valider : `PostPublicationTest` — succès complet (une ligne `success` par plateforme + `external_post_id`), succès partiel (une plateforme `success`, une autre `failed` avec `error_message`), échec total (toutes les plateformes ciblées `failed`), idempotence sur double appel (toujours une ligne par plateforme, pas de doublon).
+
+**Endpoints non affectés**
+- Aucune route sous `api/routes/` n'est ajoutée ou modifiée par cette phase. `SocialPostControllerTest`/`SocialPublishingServiceTest` existants (contrat `social_posts` inchangé) vérifiés non régressés : 83/83 tests du module Marketing passants (79 pré-existants + 4 nouveaux).
+
+## Platform Super-Admin — Self-service profil, mot de passe, 2FA
+
+**Nouvelles routes** sous `Route::middleware(['auth:super_admin_api', 'throttle:platform-sensitive'])->prefix('platform')` dans `api/routes/api.php` (`App\Core\Auth\Interfaces\Api\V1\PlatformAuthController`) :
+
+- `PATCH /api/v1/platform/auth/profile` : met à jour `name`/`email` du super-admin authentifié (champs `sometimes`). Rejette avec `422 EMAIL_ALREADY_TAKEN` si l'email cible appartient déjà à un autre `super_admins.id`.
+  - Scénario à valider : `PlatformAuthTest::test_super_admin_can_update_own_profile`, `PlatformAuthTest::test_super_admin_profile_update_rejects_email_already_taken`.
+- `POST /api/v1/platform/auth/change-password` : requiert `current_password` + `new_password`/`new_password_confirmation` (min 8). Vérifie le mot de passe actuel (`401 INVALID_PASSWORD` sinon), met à jour `password_hash`, puis révoque tous les tokens Sanctum actifs du compte sauf celui de la requête courante (durcissement anti-session-hijack après changement de mot de passe).
+  - Scénario à valider : `PlatformAuthTest::test_super_admin_can_change_own_password`, `PlatformAuthTest::test_change_password_rejects_wrong_current_password`.
+
+**Endpoints non affectés**
+- Aucun changement sur `login`, `me`, `logout`, `2fa/setup|enable|disable` ni sur les guards `super_admin_web`/`super_admin_api` existants. `PlatformAuthTest` complet vérifié : 12/12 passants.
+
+## Recruitment — Portail carrières public (ATS Backend, issue #1324)
+
+**Nouvelles routes**, toutes non authentifiées (`throttle:public-careers` uniquement, aucun `auth:sanctum`/`tenant` middleware) sous `Route::prefix('public/careers')` dans `api/routes/api.php` (`App\Modules\Recruitment\Interfaces\Api\V1\PublicCareerController` / `CandidateApplicationController`) :
+
+- `GET /api/v1/public/careers/{companySlug}` : liste les `JobPosting` `published` (non fermées) de l'entreprise resolue par son `slug` public. 404 si le slug est inconnu.
+  - Scenario a valider : `PublicCareerControllerTest` (listing, filtres, isolation tenant, 404 slug inconnu).
+- `GET /api/v1/public/careers/{companySlug}/feed.xml` : flux XML publisher (Indeed XML / Google for Jobs) des offres publiees de l'entreprise.
+  - Scenario a valider : `PublicCareerControllerTest` (contenu XML, offres brouillon/fermees absentes du flux).
+- `GET /api/v1/public/careers/{companySlug}/jobs/{jobPosting}` : detail d'une offre publiee ; 404 pour brouillon/fermee/inexistante ou offre d'une autre entreprise.
+  - Scenario a valider : `PublicCareerControllerTest` (detail, 404 cross-tenant, 404 brouillon).
+- `POST /api/v1/public/careers/{companySlug}/jobs/{jobPosting}/apply` : soumission de candidature publique (creation `Applicant`, upload CV optionnel ou `resume_url`). 404 si l'offre n'est pas publiee/appartient a une autre entreprise, 422 sur validation.
+  - Scenario a valider : `PublicCareerControllerTest` (candidature valide, validation, cross-tenant refuse).
+
+Le tenant est resolu depuis le `companySlug` de l'URL (jamais depuis Sanctum, puisque le visiteur n'a pas de compte) ; le contexte tenant (search_path + binding `current_company`) n'est actif que pour la duree de la requete.
+
+**Endpoints non affectés**
+- Les endpoints authentifies existants du module Recruitment (`/recruitment/jobs*`, `/recruitment/applicants*`) restent inchanges.
+
+## PA2-ARCH-011 — Nettoyage doublons de routes /absences et /notifications (issue #1414)
+
+Audit KiloClaw de `api/app/Modules/` : `routes/modules/rh.php` declarait deux fois les memes routes deja definies ailleurs, meme controller/action a chaque fois. Aucun changement de contrat API observable — les deux copies pointaient vers la meme reponse.
+
+- `GET /absences`, `POST /absences`, `GET /absences/{absence}`, `PUT /absences/{absence}/approve`, `PUT /absences/{absence}/reject`, `DELETE /absences/{absence}` : retire le doublon dans `routes/modules/rh.php` (bloc "Module 1 — Absences"). Source unique desormais `routes/modules/absence.php` (deja plus complet : inclut aussi `GET /absences/{absence}/proof`).
+  - Scenario a valider : suite `AbsenceControllerTest` existante — comportement identique avant/apres (meme `AbsenceController`, aucune methode modifiee).
+- `GET /notifications` : retire le doublon dans `routes/modules/rh.php` (bloc "Module 5 — Notifications"). Source unique desormais `routes/modules/dashboard.php` (`NotificationController::index`, deja utilise par `/notifications/unread`, `/notifications/mark-all-read`, etc.).
+  - Scenario a valider : suite `NotificationControllerTest`/`NotificationTest` existante — comportement identique avant/apres (meme controller/action).
+
+**Endpoints non affectés**
+- Toutes les autres routes `/notifications/*` (`read-all`, `{notification}/read`, `stream`, `sse-token`) restent dans `routes/modules/rh.php`, inchangees.
+- Aucune route publique/authentifiee n'est ajoutee, retiree ou renommee ; seule la definition dupliquee est retiree.
+
+## PA2-ARCH-011 — Modules/Expense devient une facade HTTP pure vers Planning (issue #1414)
+
+Meme audit : `Modules/Expense/{Domain,Application,Infrastructure}` (ExpenseClaim, ExpenseItem, ExpenseService, CreateExpenseClaim, SubmitExpenseClaim, ExpenseRepositoryInterface) etait du code mort jamais reference hors du module — le controller reellement route (`Modules/Expense/Interfaces/Api/V1/Controllers/ExpenseClaimController`, `routes/modules/expense.php`) consommait deja `Planning\Domain\Models\{ExpenseClaim,ExpenseItem}` directement. Supprime, sans changement de contrat API : les endpoints `expense-claims/*` existants (inchanges) continuent de repondre exactement pareil.
+
+Bug corrige au passage (pas un changement de contrat, une correction de bug latent) : `AuthServiceProvider` enregistrait `Gate::policy()` sur le modele mort au lieu du vrai modele `Planning\...\ExpenseClaim` consomme par le controller — corrige.
+
+- Scenario a valider : suite `ExpenseClaimControllerTest` existante (deja verte, teste le vrai controller/modele Planning) — comportement identique avant/apres.
+
+## Issue #1474 — Commande `audit:purge` (rétention RGPD des audit logs)
+
+La matrice RGPD référençait `audit:purge --older-than=24months` sans que la commande existe. Nouvelle commande console `audit:purge` (défaut 24 mois, minimum 1 mois) qui supprime les lignes `audit_logs` dont `created_at` est antérieur au cutoff, planifiée hebdomadairement (`routes/console.php`, `onOneServer`). Aucun endpoint HTTP ajouté/modifié.
+
+- Scenario a valider : `tests/Unit/PurgeAuditLogsCommandTest` (purge des logs > N mois, respect de l'option `--older-than`, no-op si rien d'expiré) + la matrice de conformité RGPD passe le point « limitation de conservation » de PARTIEL a CONFORME (politique documentée dans `docs/security/POLITIQUE_RETENTION_DOCUMENTS.md`).
+Note 2026-08-09 (F-11, #1541) : le workflow de cloture de paie est expose via l'API. `POST /payroll-runs/{run}/validate` passe par `PayrollClosingService::validateRh` (audit `payroll_run_validated`), `POST /payroll-runs/{run}/lock` verrouille le run (conditionnel atomique, audit `payroll_run_locked`, reserve principal/comptable), `POST /payroll-runs/{run}/unlock` exige une `reason` (audit `payroll_run_unlocked`), `cancel` refuse les runs verrouilles, `PayrollRunResource` expose `locked_by`/`locked_at`. Les scenarios API doivent verifier : RBAC employee 403, isolation tenant 404, lock sans validation 422, unlock sans raison 422, recalcul d'un run verrouille refuse.
+Note 2026-08-23 (#5243) : `GET /payroll-runs/{run}/bordereau` exporte le bordereau de paie d'un run (CSV : section TOTAUX_PAR_COTISATION — lignes de bulletin groupees par type/libelle — puis section RECAPITULATIF_RUN — brut, cotisations salariales, IRG, autres deductions, net, cotisations patronales, cout employeur, bulletins). Scenarios a verifier : RBAC manager (employee 403), isolation tenant (404), run non-DZ (422), totaux CSV egaux aux totaux de la cloture, audit `payroll.bordereau`.
+Note 2026-08-09 (F-10, #1540) : `GET /payroll-runs/{run}/journal` exporte le journal de paie mensuel (CSV, toutes rubriques par employe) depuis un run verrouille/cloture. Les scenarios API doivent verifier : RBAC principal/comptable uniquement (employee 403), isolation tenant 404, run non cloture 422, totaux du CSV egaux aux totaux de la cloture, contenu horodate et rejouable.
+Note 2026-08-09 (F-20, #1550) : ecarts pointage → paie. `GET /api/v1/payroll-runs/{run}/anomalies` (lecture seule, principal/comptable) agrege doublons de pointage, incoherences, variance brut et ecarts heures pointees vs heures integrees au bulletin (`attendance_vs_payroll`, tolerance 2 h, severite medium/high). Scenarios : RBAC employee 403, isolation tenant 404, totaux coherents avec la cloture.
+Note 2026-08-23 (#5243) : `GET /payroll-runs/{run}/bordereau` exporte le bordereau de paie d'un run (CSV : section TOTAUX_PAR_COTISATION — lignes de bulletin groupees par type/libelle — puis section RECAPITULATIF_RUN — brut, cotisations salariales, IRG, autres deductions, net, cotisations patronales, cout employeur, bulletins). Scenarios a verifier : RBAC manager (employee 403), isolation tenant (404), run non-DZ (422), totaux CSV egaux aux totaux de la cloture, audit `payroll.bordereau`.
+Note 2026-08-09 (F-10, #1540) : `GET /payroll-runs/{run}/journal` exporte le journal de paie mensuel (CSV, toutes rubriques par employe) depuis un run verrouille/cloture. Les scenarios API doivent verifier : RBAC principal/comptable uniquement (employee 403), isolation tenant 404, run non cloture 422, totaux du CSV egaux aux totaux de la cloture, contenu horodate et rejouable.
+
+## CI main rouge 2026-08-09 — réparation des 43 tests pré-existants
+
+Réparation de la suite backend (tests.yml + payroll-ci) sur les vraies migrations : `national_id` élargi à varchar(500) (cast `encrypted`), `languages.updated_at` réconcilié (00015 + migration additive), tests alignés sur les contraintes réelles (factories pour plan_id/first_name, statuts attendance_logs, Content-Disposition Symfony, PDF dompdf v3 avec décompression FlateDecode + UTF-16BE/LE, PendingCommand->run() explicite), `DemoDzSeeder` idempotent face au verrouillage F-11. Aucun endpoint HTTP ajouté/modifié.
+
+- Scenario a valider : suite complète `Backend (PHP 8.4 + PostgreSQL 16 + Redis 7)` + `Tests module Payroll` + `Backend Coverage (PHPUnit)` vertes sur main.
+## Issue #1661 — Commande `biometric:purge-expired` (rétention biométrique, Spec S-1)
+
+Nouvelle commande console `biometric:purge-expired` (rétention par défaut 24 mois, options `--company` et `--dry-run`) qui nullifie les références de templates biométriques expirées (contrat terminé depuis > N mois, ou consentement datant de > N mois quand aucune fin de contrat n'est renseignée), tenant par tenant via `TenantManager::withinTenant`, tracée dans `audit_logs` (action `biometric_templates_purged`), planifiée hebdomadairement (`routes/console.php`, `onOneServer`). Aucun endpoint HTTP ajouté/modifié.
+
+- Scenario a valider : `tests/Feature/BiometricPurgeExpiredTest` (purgé après fin de contrat / non-purgé employé actif / consentement expiré sans contrat / idempotence / dry-run / demandes d'enrôlement / société inconnue) + politique de rétention v2 dans `docs/security/POLITIQUE_RETENTION_DOCUMENTS.md`.
+
+Note 2026-08-11 (#1728) : suppression du repertoire legacy `api/app/Services/` (17 shims `class_alias` backward-compat vers les canoniques `App\Core\…` / `App\Modules\…`). Seule reference mise a jour : `PartnerService.php` (Billing) pointe desormais `App\Core\Auth\Infrastructure\Services\SensitiveDataEncryptor`. Aucun endpoint HTTP ajoute/modifie, aucun contrat de reponse change.
+
+- Scenario a valider : suite backend complete verte (PHP 8.4 + PostgreSQL 16 + Redis 7) + PHPStan + coverage — la suppression ne doit casser aucun import (grep `App\Services\` = 0 reference residuelle).
+
+Note 2026-08-13 : le cockpit super-admin (`front/admin-dashboard`) consomme le nouveau contrat `/admin/*` cree cote API (issue #1764) : `GET /admin/dashboard/stats|activities|alerts`, `POST /admin/dashboard/alerts/{key}/dismiss`, `GET|POST /admin/edge-nodes(/{id}/sync|/revoke)`, `GET /admin/ai/conversations(/{id}/messages)`, `GET /admin/fleet/alerts`, `GET /admin/hr-reports`, `GET|PUT /admin/platform/marketing/oauth-config`. Les scenarios API doivent verifier : guard super_admin (401/403), contrats de reponse exacts (stats/activities/alerts, dismiss persiste dans `platform_alert_dismissals`, oauth `client_secret` chiffre et jamais renvoye en GET, hr-reports `columns`/`rows` pour les 5 types). Couverture : `PlatformAdminDashboardApiTest` (12 tests) + `FrontendApiContractTest` (14 routes).
+
+Note 2026-08-14 (issue #1811) : jours fériés par pays. Nouveau contrat API `public_holidays` — super-admin `GET|POST /api/v1/admin/public-holidays`, `PUT|DELETE /api/v1/admin/public-holidays/{id}` (fériés nationaux, company_id=NULL) ; manager `principal` `GET|POST /api/v1/public-holidays`, `PUT|DELETE /api/v1/public-holidays/{id}` (fériés d'entreprise uniquement, company_id forcé à sa société ; les nationaux restent en lecture seule). Scenarios API a verifier : RBAC (employee 403, comptable 403 en ecriture, super-admin national, principal scope societe), isolation tenant (un principal ne voit/modifie que ses fériés + nationaux), validation payload (country_code size 2, date, year 2020-2100, holiday_type enum), suppression d'un férié national par un principal → 403. Couverture : `PublicHolidayControllerTest` (RBAC + isolation), `PublicHolidayServiceTest` (jours ouvrés, override entreprise, fallback 22), `PayrollCalculatorCoverageTest` (computeWorkedDays DZ nov 2026 → 20 jours).
+Note 2026-08-14 (#1813) : workflow de validation des modifications de taux légaux (double signature + audit trail immuable).
+- `POST /tax-slabs|/social-contributions` crée désormais un brouillon (`status=draft`) ; `PUT /tax-slabs/{id}|/social-contributions/{id}/submit` soumet (`pending_validation`) ; `PUT /admin/rate-validation/{table}/{id}/approve|reject` (platform_admin uniquement, motif obligatoire au rejet) ; `GET /tax-slabs/{id}/history|/social-contributions/{id}/history` lit l'audit trail append-only (`tax_rate_change_log`). Scénarios : un barème `pending_validation` n'est PAS utilisé dans les calculs (seul `active` l'est), approbation par un manager → 401 (routes admin) / 404 (routes tenant), rejet sans motif → 422, ancienne ligne active → `superseded` à l'approbation, historique trace chaque transition (created/submitted/approved/rejected/superseded avec état avant/après), UPDATE/DELETE sur le log → bloqués.
+- Couverture : `TaxSlabValidationWorkflowTest` (7 tests), `TaxRateChangeLogTest` (3 tests).
+
+Note 2026-08-14 (#1814) : interface admin des barèmes fiscaux + simulateur.
+- `GET|POST /admin/tax-slabs`, `PUT|DELETE /admin/tax-slabs/{id}`, `POST /admin/tax-slabs/reset-defaults` (platform_admin uniquement, lignes nationales `company_id NULL` — le référentiel légal ; les overrides entreprise restent côté tenant) ; `POST /payroll/simulate` (manager principal/comptable) et `POST /admin/payroll/simulate` (platform_admin) — simulation dry-run avec `slabs_override` optionnel, aucune persistance. Scénarios : breakdown cohérent (brut − cotisations = assiette ; impôt par tranche ; net ; coût employeur), reset-defaults régénère le barème légal du moteur, RBAC (employé 403, non authentifié 401), non-persistance vérifiée.
+- Couverture : `PayrollSimulationControllerTest` (4 tests).
+
+Note 2026-08-14 (#1815) : interface admin des cotisations sociales + simulation plafonnée.
+- `GET|POST /admin/social-contributions`, `PUT|DELETE /admin/social-contributions/{id}` (platform_admin, lignes nationales ; filtre `type` employee/employer) ; `/payroll/simulate` accepte `ignore_caps` (comparaison avec/sans plafond légal, via `AbstractCountryRules::withCapsEnabled()`). Scénarios : CRUD national (company_id null), isolation tenant (les lignes admin ne fuient pas vers l'index tenant), brut > plafond → cotisation plafonnée (CM 900k → 31 500 sur 750k), `ignore_caps` → 37 800 sur le brut complet.
+- Couverture : `SocialContributionAdminControllerTest` (3 tests) + `PayrollSimulationControllerTest` étendu.
+Note 2026-08-14 (#1817) : archivage automatique des bulletins PDF dans le Cabinet employé. `GET /me/pay-slips/{slip}/document` (nouvel endpoint, propriétaire ou manager ; isolation tenant 404 ; repli sur le PDF standard si le run n'est pas clôturé) ; suppression d'un `CabinetDocument` `read_only` → 403. Scénarios : après `lock()`, un document par bulletin (audit `payslip_archived`), double exécution du job → pas de doublon, employé d'une autre société → 404. Couverture : `PaySlipCabinetArchiveTest` (4 tests).
+ (feat(payroll): archivage automatique bulletin PDF dans le Cabinet employé après clôture (Closes #1817))
+
+
+Note 2026-08-14 (issue #2172, QA pass) : durcissement isolation + contrat d'audit paie.
+- `PUT|DELETE /api/v1/tax-slabs/{id}` (+ `/submit` et `/{id}/history`) : une ressource d'un AUTRE tenant répond désormais **404** (et non 403) — convention d'isolation `PayrollTenantIsolationTest` (le manager étranger ne doit pas deviner l'existence de la ligne). Scénario : manager B `PUT /tax-slabs/{slab-de-A}` → 404, `DELETE` → 404, `history` → 404 ; manager A sur sa propre ligne → inchangé.
+- `POST /payroll-runs/{id}/calculate` : le run persiste désormais `rules_version`, `rules_identifier` et `rules_period` des règles EFFECTIVES (les bulletins les portaient déjà — le run ne les avait jamais, d'où `NULL` dans `payroll_calculation_audits`). Scénario : après calcul, `GET /payroll/audit/{correlationId}` expose rules_version/rules_identifier non vides.
+- Couverture : `PayrollTenantIsolationTest`, `PayrollAuditTest`, `BiometricPurgeExpiredTest`, `SensitiveDataAccessAuditTest`, `QueueObservabilityApiTest`, `MigrationSchemaPlacementTest`, `CotisationSimulationTest`, `PayrollCalculationContractTest`.
+
+Note 2026-08-15 (campagne QA complète, issues #2652/#2653/#2654/#2662) : durcissement du contrat d'erreur et des routes runtime.
+- `POST /auth/login` (tenants) : plus de 500 brut — les comptes existants à `password_hash` NULL ou verrouillés (`locked_until`) renvoient désormais un 401/403 propre selon le cas (`AuthLoginHardeningTest`) ; le login d'un email inconnu reste un 401.
+- Contrat d'erreur homogène : les endpoints API renvoient un body JSON conforme (message + code) au lieu de HTML/500 générique — couvert par `ApiErrorContractTest` ; les erreurs hors contrat (`{message: Server Error}`) sont éliminées.
+- Routes runtime : `POST /edge/{id}/sync` (EdgeNodeController::sync) implémentée (elle répondait 500 — route déclarée sans action) ; doublon `POST /webhooks/{endpoint}/test` supprimé. Couverture : `EdgeNodeSyncRouteTest`.
+- Garde CI : `dev-hub/tools/check-openapi-route-coverage.py` étendu (routes DDD `api/routes/**` incluses, allowlist `openapi-coverage-allowlist.txt` ajustée — 524/706, 0 drift) — un endpoint non documenté OpenAPI fait échouer la CI.
+- SDK régénérés (`dev-hub/sdk/javascript/leopardoClient.js`, `dev-hub/sdk/python/leopardo_client.py`, `dev-hub/openapi/v1.yaml`, `MANIFEST.json`) alignés sur `api/openapi.yaml` (534 opérations).
+
+Note 2026-08-22 (PA2-SEC-INPUTS) : toute nouvelle surface d'entree doit etre testee en rejet fail-closed avant l'action metier. Le lot de stabilisation couvre les signatures webhook et headers malformes, les parametres camera (`camera_id`, token, IP), les filtres Fleet/Cabinet allowlistes et bornes, les en-tetes CSV employes (colonnes inconnues ou dupliquees, contenu invalide, volume maximal), les uploads audio IA (MIME, taille, langue, conversation_id et voice) ainsi que les URLs de redirection checkout limitees a l'origine autorisee. Ajouter un cas 422 ou 401 pour toute valeur hors contrat et verifier qu'aucune donnee sensible n'apparaisse dans les URLs ou logs.
+
+Note 2026-08-22 (issue #5268) : rapports de pointage par période — `GET /attendance/monthly-report` généralisé en moteur de rapports.
+- `period=day|week|month` (défaut `month`, rétro-compatible) ; ancres `date` (Y-m-d), `week` (Y-m-d — semaine ISO lundi→dimanche), `month` (Y-m), interprétées dans le fuseau entreprise.
+- Filtres `department_id` (équipe) et `employee_id` (fiche individuelle) ; `format=json|csv|pdf`.
+- RBAC : scope manager `visibleToManager` conservé (PA2-SEC-002/003) — un manager `dept` filtrant sur un AUTRE département reçoit zéro ligne (combinaison AND filtres × scope, jamais d'élargissement).
+- Contrat : `data.period.type` ajouté, `data.period.month` conservé (rétro-compat) ; chaque ligne employé expose `department_id`/`department_name` ; exports nommés `attendance-report-<period>-<from>_<to>.<ext>` (CSV neutralisé #4169, PDF i18n ×4).
+- Scénarios : journalier (borne jour), hebdomadaire (borne lundi→dimanche, hors-semaine exclue), mensuel (rétro-compat), défaut `month`, filtre équipe, filtre employé, export CSV hebdo (en-tête + valeurs), export PDF jour (Content-Disposition), RBAC scoped manager, `period` invalide → 422.
+- Couverture : `AttendanceReportTest` (13 tests) + `AttendanceMonthlyReportTest` (rétro-compat intacte) — suite `tests/Feature/Attendance` 62/62.
+
+Note 2026-08-22 (issue #5260) : contrats par pays — modèles légaux + signature explicite.
+- `GET /api/v1/contracts/templates?country=DZ|MA|TN|SN[&contract_type=cdi|cdd]` (principal/rh) : bundle légal (références, période d'essai, préavis, congés, HS, SMIG, cotisations, clauses CDI/CDD) ; pays inconnu → 422 `CONTRACT_TEMPLATE_NOT_FOUND`, employé → 403.
+- `POST /api/v1/contracts` : `apply_legal_template` (défaut : semer quand `clauses` absent) — clauses du pays de l'entreprise de l'employé, jamais d'écrasement des clauses explicites.
+- `POST /api/v1/contracts/{id}/sign` : signature explicite idempotente (`signed_at` + `signed_document_path` optionnel) ; 403 non-manager, 404 cross-tenant.
+- Scénarios à vérifier : bundles ×4 pays, seed au store (entreprise DZ → clauses loi 90-11), clauses explicites préservées, idempotence sign, historique amendements complet (list chronologique), isolation tenant.
+- Couverture : `tests/Feature/HR/ContractByCountryTest.php` (9 tests) — contrat OpenAPI documenté (745/745 routes couvertes).
+
+Note 2026-08-24 (issue #5232) : paramétrage comptable par entreprise — `GET/PUT /api/v1/accounting/settings`.
+- `GET /api/v1/accounting/settings` : renvoie la ligne de paramétrage de l'entreprise courante (devise, langue des documents, `tva_rates`, `number_series` par DocumentType, mentions légales, `template_style`) ; défauts dérivés du pays de l'entreprise via CountryDefaults si aucun paramétrage persisté.
+- `PUT /api/v1/accounting/settings` : upsert d'une ligne par entreprise (RBAC `api.manager:comptable,principal`, employé → 403) ; validation 422 (devise hors registre, langue hors fr/ar/tr/en, `tva_rates` {label,rate} invalide, mentions > 2000 caractères).
+- Provisioning : listener `ProvisionAccountingSettings` sur `CompanyCreated` (withinTenant, additif non bloquant, idempotent).
+- Scénarios à vérifier : défauts pays DZ (DZD, fr, TVA 19 %, série `FAC`), upsert puis relecture, validation 422 ×4, RBAC, isolation tenant, provisioning + idempotence.
+- Couverture : `tests/Feature/Accounting/AccountingSettingsTest.php` (12 tests) — OpenAPI documenté (756/756 routes couvertes), SDK régénérés.
+
+Note 2026-08-24 (issue #5288) : activation guidée de la Comptabilité — `GET/POST /api/v1/accounting/activation`.
+- `GET /api/v1/accounting/activation` : check-list d'activation de l'entreprise courante (`settings`, `contact`, `example_invoice`) — RBAC `api.manager:comptable,principal`, employé → 403.
+- `POST /api/v1/accounting/activation` : exécution idempotente de l'activation complète (paramétrage + contact démo + facture EXEMPLE) — rejouable sans effet de bord (re-poster = même état).
+- Scénarios à vérifier : GET avant activation (check-list vide), POST complet puis relecture GET (check-list remplie), idempotence du POST (2e appel), RBAC employé → 403, isolation tenant.
+- Couverture : `tests/Feature/Accounting/AccountingActivationTest.php` — OpenAPI documenté, SDK régénérés.
+
+Note 2026-08-25 (issue #5522) : audit des accès au portail client — `GET /api/v1/accounting/documents/shared/{document}/accesses`.
+- `GET /api/v1/accounting/documents/shared/{document}/accesses` : liste paginée (date décroissante) des événements `accounting.share.info` / `accounting.share.download` pour TOUS les partages du document (qui a consulté/téléchargé, quand, depuis quelle IP — réponse à incident RGPD loi 18-07) — RBAC `api.manager:comptable,principal`, employé → 403, non authentifié → 401, document inconnu ou cross-tenant → 404 (fail-closed), `per_page` 1-100, le `share_token` n'est jamais exposé.
+- Scénarios à vérifier : principal 200 (2 accès réels info+download, ordre décroissant, champs action/module/request_id/ip_address/user_agent/created_at), comptable 200, employé 403, 401, 404 document inconnu, 404 cross-tenant, pagination (5 accès → 3 pages, `meta.total`).
+- Couverture : `tests/Feature/Accounting/ShareAccessAuditTest.php` (7 tests) — OpenAPI documenté, miroir + SDK régénérés.
+
+Note 2026-08-24 (issue #5271) : déclaration TVA simplifiée par période — `GET /api/v1/accounting/reports/vat-declaration`.
+- `GET /api/v1/accounting/reports/vat-declaration?period=YYYY-MM[&format=json|csv]` : déclaration mensuelle du tenant courant (RBAC `api.manager:comptable,principal`, employé → 403) — TVA collectée (factures + reçus), déductible (avoirs), net, détail par taux (assiette HT, taxe, TTC) ; brouillons et annulés exclus ; période invalide → 422 ; `format=csv` → export `vat-declaration-<period>.csv`.
+- Multi-taux TVA par pays dans les défauts settings (DZ 19/9, MA 20, TN 19, SN 18, CI 18, TR 20, FR 20…) + mentions légales par défaut par pays.
+- Scénarios à vérifier : golden août 2026 (collectée 6 200/678/6 878 · déductible 300/57/357 · net 5 900/621/6 521), période vide → zéros, exclusion brouillon/annulé/hors période/proforma, isolation tenant, CSV, RBAC.
+- Couverture : `tests/Feature/Accounting/VatDeclarationTest.php` (8 tests) — OpenAPI documenté (757/757 routes couvertes), SDK régénérés.
+Note 2026-08-22 (issue #5282) : supervision queue prod — la commande `php artisan queue:health-check` couvre désormais le driver `database` (table `jobs`, driver prod 0 €) en plus de Redis : profondeur par queue (jobs prêts, non réservés), jobs réservés > 10 min (worker mort → `stale_reserved_jobs`), `failed_jobs` ; sortie JSON ; exit FAILURE si seuils dépassés (`--max-pending=50`, `--max-failed=10`, `--max-stale-minutes=10`) + alerte Slack opt-in (`SLACK_MONITORING_WEBHOOK_URL`, silencieux si absent). Workflow `.github/workflows/queue-supervision.yml` (cron 5 min, offset +2 min du drain `queue-worker-fallback.yml`) → run rouge < 15 min après une panne (DoD #5282). `GET /api/v1/health` expose `failed_jobs` (scrapers d'uptime externe).
+- Scénarios à vérifier : queue vide → SUCCESS ; backlog > seuil → FAILURE (exit 1) ; job réservé > 10 min → FAILURE avec `stale_reserved_jobs` ; job réservé récent → SUCCESS (pas de faux positif) ; `failed_jobs` > seuil → FAILURE ; driver `sync` → SUCCESS (pas de check Redis en test).
+- Couverture : `QueueSupervisionDatabaseTest` (5 tests) + `QueueFailedJobsTableTest` (existant).
+Note 2026-08-22 (issue #5259) : plans de carrière — événements de carrière (promotion/raise/transfer/title_change).
+- `GET|POST /api/v1/career-events`, `GET|PUT|PATCH|DELETE /api/v1/career-events/{id}` (édit/suppression `pending` uniquement), `PUT /api/v1/career-events/{id}/approve|reject|apply`. Workflow `pending → approved → applied` (ou `rejected`) ; `apply` met à jour l'employé (position_id, department_id, salary_base) en transaction → impact paie au run suivant.
+- Scénarios à vérifier : création manager avec snapshot `from_*` (poste/département/salaire courants de l'employé), employé → 403 sur create et lecture limitée à son propre parcours, manager `dept` scopé (PA2-SEC-002) / `superviseur` (PA2-SEC-003), isolation tenant (ressource d'une autre société → 404, cible poste/département cross-tenant → 422), transitions invalides (apply sur `pending` → 403, apply sans cible → 422 CAREER_EVENT_NOTHING_TO_APPLY, edit/delete hors `pending` → 403), `GET /me/career` expose `data.career_events` (parcours complet contrats + événements).
+- Couverture : `tests/Feature/HR/CareerEventTest.php` (12 tests) — contrat OpenAPI documenté (9 opérations, 753/753 routes couvertes).
+Note 2026-08-23 (issue #5225) : envoi email des documents + portail client sécurisé.
+- Partage tokenisé (`accounting_document_shares` : token 64 caractères, expiration 14 j, email destinataire) — RGPD : accès strictement limité au document partagé (pattern CabinetShare #1817) ; le token est la credential, pas d'auth Sanctum.
+- `GET /accounting/documents/shared/{token}` : méta du document partagé (numéro, type, statut, TTC, expiration) — token inconnu/expiré → 404.
+- `GET /accounting/documents/shared/{token}/download` : PDF depuis le disque privé — token inconnu/expiré → 404 ; throttle dédié ; Content-Disposition `attachment`.
+- `DocumentShareMail` : PDF en pièce jointe + lien sécurisé ; `SendDocumentEmail` garantit le PDF (job #5224), crée le partage, envoie, `sent_at` + statut `sent` (transition minimale — workflow complet via #5223).
+- Commande artisan `accounting:send-document {document} [--email=]`.
+- Scénarios : envoi avec pièce jointe + lien, méta publiques, téléchargement PDF, token expiré/inconnu → 404, accès limité au document partagé (un token ne révèle que son document), RBAC sans effet sur les routes publiques.
+- Couverture : `DocumentShareEmailTest` (6 tests).
+HEAD
+## Corrections de pointage — workflow complet (issue #5267, 2026-08-23)
+
+- `POST /attendance/corrections` — demande avec justificatif optionnel (`proof`, multipart ≤ 5 Mo, jpg/jpeg/png/pdf/heic) ; refusée (422 `ATTENDANCE_PERIOD_CLOSED`) si la date est dans une période clôturée (`attendance_period_closures`).
+- `GET /attendance/corrections` — file de corrections (manager/RH) avec `proof_url` + flag `anomaly` (conflit session géo validée > 15 min).
+- `GET /attendance/corrections/{correction}/proof` — téléchargement du justificatif (propriétaire + managers ; 404 cross-tenant / sans pièce).
+- `POST|PUT /attendance/corrections/{correction}/approve|reject` — décisions tracées `AuditLog` (requested/approved/rejected) ; bloquées sur période close (422).
+- Commande `attendance:close-period --company=<slug> --month=YYYY-MM` — clôture idempotente et tracée.
+- Couvert par `tests/Feature/Attendance/CorrectionWorkflowV2Test` (7 tests), `CorrectionWorkflowTest`.
+
+Note 2026-08-23 (issue #5229) : trésorerie Phase B — paiements + rapprochement + relances.
+- Enregistrement : `POST /accounting/documents/{document}/payments` — règle « jamais payé > total » (422 `PAYMENT_EXCEEDS_TOTAL`, rien n'est écrit), documents émis uniquement (422 `PAYMENT_ON_UNSENT_DOCUMENT`), `paid_amount` + statut document mis à jour (partially_paid/paid — transition minimale, workflow complet via #5223).
+- Rapprochement : `POST /accounting/payments/{payment}/reconcile` — pending/recorded → matched + `reconciled_at`, idempotent.
+- Liste : `GET /accounting/payments?document_id=&status=` — RBAC comptable/principal (403 sinon).
+- Relances : `POST /accounting/reminders/run` + commande `accounting:send-payment-reminders` — stages J+7/J+15/J+30 paramétrables (`accounting_settings.payment_reminder_days`), cibles documents émis non soldés échus, unique (document, stage) → zéro doublon, notification in-app aux managers principal/comptable (template `accounting_payment_reminder`, i18n ×4), échec notification ≠ échec relance (log).
+- Couverture : `AccountingPaymentTest` (14 tests) — suite `tests/Feature/Accounting` 23/23 ; PHPStan 0 ; Pint PASS ; OpenAPI couverture 754/754.
+Note 2026-08-24 (issue #5223) : cycle de vie des documents comptables via l'API — couverture HTTP complète du contrôleur.
+- `POST /api/v1/accounting/documents` crée un brouillon numéroté (type invoice/credit_note/proforma…, lignes requises → 422 sinon, totaux HT/TVA/TTC calculés, série paramétrable via `number_series`).
+- `GET /api/v1/accounting/documents` liste avec filtres (`type`, `status`, `contact_id`, `from`, `to`, `per_page`) ; `GET /api/v1/accounting/documents/{id}` détail lignes + paiements ; `GET /api/v1/accounting/documents/next-number?type=` aperçu du prochain numéro.
+- `POST /api/v1/accounting/documents/{id}/send` draft → sent (facture/avoir sans contact → 422) ; `POST .../payments` encaissement (partiel → `partially_paid`, solde → `paid`, excédent → 422) ; `POST .../cancel` annulation motivée ; `POST .../credit-note` avoir lié à une facture émise (montant borné au reste à payer, 422 si facture brouillon/annulée/payée).
+- Overdue : lecture rafraîchit les statuts échus (`due_date` dépassée sur sent/partially_paid → `overdue`).
+- RBAC : manager principal/comptable autorisés, employé → 403 ; isolation tenant → 404 cross-company.
+- Couverture : `tests/Feature/Accounting/AccountingDocumentApiTest.php` (12 tests) — gate coverage module Accounting ≥ 70 % (DoD #5228) : 67,4 % → 86,5 % sur #5230, 87,7 % sur #5288.
+
+
+Note 2026-08-24 (issue #5235) : notes de frais approuvées → écritures comptables automatiques (Phase C expense → comptabilité).
+- Déclenchement automatique : à l'approbation d'une `ExpenseClaim`, l'observer `ExpenseAccountingEntryObserver` génère la partie double (D charge catégorie dominante 6251/6256/6064/626/658 / C 425 personnel), équilibre débit = crédit garanti (`UnbalancedExpenseEntriesException`), référence traçable `EXPENSE-{id}` ; rejet d'une note approuvée → écritures annulées ; régénération IDEMPOTENTE (contrainte unique note/compte).
+- `GET /api/v1/expense-claims/{id}/accounting-entries` : lignes d'écriture d'une note (RBAC `api.manager:principal,comptable`, employé → 403, isolation tenant fail-closed → 404).
+- `POST /api/v1/expense-claims/{id}/accounting-entries/regenerate` : régénération des lignes (réservée comptable, 403 `INSUFFICIENT_ROLE` sinon).
+- Scénarios à vérifier : golden 10 000 → D 6251 / C 425 balance 0, déclenchement auto à l'approbation, idempotence de la régénération, rejet → void, RBAC ×3, isolation tenant, refus d'un journal déséquilibré.
+- Couverture : `tests/Feature/Expense/ExpenseAccountingEntriesFlowTest.php` (13 tests) — OpenAPI documenté (2 opérations + schéma `ExpenseAccountingEntry`, 803 routes couvertes), SDK JS/Python régénérés.
+
+Note 2026-08-24 (issue #5227) : i18n ×4 du module Comptabilité — messages API localisés (fr/en/tr/ar), zéro chaîne hardcodée, parité des catalogues.
+- Surface API : les messages d'erreur et de validation du module Accounting passent par `__('accounting.*')` / `__('errors.*')` (renderer #4171) — plus aucun littéral `message => '...'` ni `throw '...'` français brut (hors codes machine MAJUSCULES et clés de catalogue) dans `api/app/Modules/Accounting/**` ; la locale est pilotée par `preferred_language` de l'utilisateur authentifié (pattern #4592, fallback Accept-Language).
+- Catalogues : `api/lang/{fr,en,tr,ar}/accounting.php` (labels documents `document_type_*` ×6, statuts `status_*` ×6, TVA, workflow) et `errors.php` (codes des DomainException : `PAYMENT_EXCEEDS_TOTAL`, `PAYMENT_ON_UNSENT_DOCUMENT`, `CREDIT_NOTE_REQUIRES_SOURCE_INVOICE`, `DELIVERY_NOTE_REQUIRES_DELIVERY_DATE`, `DOCUMENT_NOT_FULLY_PAID`, `INVALID_DOCUMENT_TRANSITION`…) — parité stricte des clés ×4 (garde CI `dev-hub/tools/check-accounting-i18n.py`, job « i18n Comptabilité ×4 » du workflow `accounting-ci.yml`).
+- PDF : labels des documents comptables (`accounting-document.blade.php`) localisés ×4 via les mêmes catalogues ; RTL arabe vérifié ; libellés de données (ex. TVA `label_key`) laissés aux données seed.
+- Scénarios à vérifier : chaque erreur métier renvoie un message dans la langue de l'utilisateur (fr/en/tr/ar) sans retomber sur la clé brute ; parité des clés ×4 des deux catalogues ; zéro littéral non localisé dans le module (scan CI) ; libellés PDF ×4 (type + statut) ; RTL arabe.
+- Couverture : `tests/Feature/Accounting/AccountingI18nTest.php`, `AccountingI18nMessagesTest.php`, `DocumentPdfRendererTest.php` + suite module Accounting (coverage 86,45 % ≥ 70 % DoD #5228) — garde `check-accounting-i18n.py` verte.
+HEAD
+Note 2026-08-25 (issue #5436) : 2FA/TOTP comptes entreprise. Scénarios à vérifier : (1) login sans 2FA → token direct (rétrocompat) ; (2) enroll → confirm (code invalide 422 / valide 201 + recovery codes) ; (3) login avec 2FA → `mfa_challenge` + token révoqué (jamais délivré) ; (4) verify code valide → token utilisable sur `/auth/me` ; (5) challenge à usage unique (2ᵉ use → 401) ; (6) recovery code à usage unique (2ᵉ use → 422) ; (7) politique `mfa_required_roles` → 403 `TWO_FACTOR_REQUIRED` ; (8) disable avec code ; (9) remember device → login suivant sans challenge ; (10) parité i18n ×4.
+
+Note 2026-08-25 (issue #5437) : garde anti-collision de préfixes de migrations inter-PRs — `dev-hub/tools/check-migration-prefixes.mjs` branché dans Hygiene Guards. Scénarios à vérifier : (1) PR introduisant un préfixe déjà sur main → échec ; (2) PR introduisant un préfixe déjà pris par une AUTRE PR ouverte → échec (cas réel détecté : `2026_08_24_000003` partagé entre #5406 attendance et #5394/#5424 paie→compta) ; (3) préfixe libre → vert ; (4) branche sans migrations → vert ; (5) main reste vert (0 faux positif — préfixes déjà sur main exclus du contrôle).
+
+Note 2026-08-24 (issues #5353/#5354/#5355) : ADR-0016 — consolidation des routes pointage sous `/api/v1/attendance/*` + fusion SmartAttendance.
+- Phases 2-5 : chemin d'usage unique de la géofence (`GeofenceZoneService`) et surface API pointage consolidée sous `/attendance/*` (sessions → `/geo-sessions`, geo-events, mode) — alias `/smart-attendance/*` SUPPRIMÉS en Phase 5 (#5356), 404 attendus sur les anciens chemins.
+- Phase 4 : fusion des modèles/services/commandes SmartAttendance → Attendance (shims `@deprecated` dans SmartAttendance pour BC) ; commande console `AutoCloseGeoSessionsCommand` → `AutoCloseAttendanceCommand` (alias conservé, `api/routes/console.php`).
+- Scénarios à vérifier : routes `/attendance/*` uniquement (sessions/geo-events/mode), 404 sur `/smart-attendance/*` (alias supprimés Phase 5 #5356), migration console (schedule `attendance:auto-close` unique), isolation tenant géofence, PHPStan Strict vert sur les fichiers fusionnés.
+- Couverture : `tests/Feature/Attendance/Geo*` (6 tests migrés) + `GeoRoutesMigrationTest`.
+HEAD
+
+
+## Rapprochement bancaire (Phase D, #5435) — scénarios Feature
+
+- `BankStatementImportTest` : import CSV valide (201, 2 lignes) ; en-tête invalide (422, rien d'inséré) ; doublon d'import (409 `BANK_STATEMENT_DUPLICATE_IMPORT`) ; lignes partielles signalées (`errors[]` avec numéros de ligne) ; RBAC employé (403) ; relevé cross-tenant (404).
+- `BankReconciliationTest` : matching exact (score 100 → paiement `matched`, ligne `matched`, relevé `reconciled`) ; approximatif (score < 100 → ligne `pending` + proposition, relevé `reconciling`) ; sans candidat (ligne `pending`) ; idempotence (second passage sans nouvel auto-match).
+- `BankReconciliationManualTest` : rapprochement manuel + lettrage (`reconciled_at`) ; re-match d'une ligne déjà rapprochée (409) ; ligne cross-tenant (404).
+- `BankStatementStatusTest` : soldes attendus/réels, lignes matched/pending, écart de clôture.
+
+Note 2026-08-26 (PM hygiene, PR #5597) : retour au vert des checks backend — RBAC Comptabilité restauré + webhooks idempotents + 2FA.
+- RBAC : `GET /api/v1/accounting/reports/vat-declaration` et `POST /api/v1/accounting/currency/convert` retrouvés HORS groupe `api.manager` (merge) → **regroupés sous `api.manager:principal,comptable`**. Scénarios à vérifier : employé simple → 403 (avant : 200) ; comptable/principal → 200 ; non authentifié → 401 ; les deux endpoints restent sous le préfixe `/accounting` (aucun changement de chemin).
+- Webhooks entrant : `webhook_events` qualifiée `public.webhook_events` (modèle + garde `Schema::hasTable`) → l'idempotence (rejeu Stripe/Chargily/email-bounce/marketing-lead) fonctionne quel que soit le search_path de session. Scénarios : rejeu du même événement → `replayed: true` + aucun effet double ; table absente (fixtures MVP) → traitement sans déduplication (fail-open journalisé) ; migration `webhook_events` rejouée (`artisan migrate` idempotent) → no-op (garde F-17).
+- 2FA/TOTP (#5436) : `mfa_required_roles` lu comme réglage de schéma (sans `company_id` — colonne inexistante). Scénarios : login sans politique → token direct ; politique active pour `rh,principal` → 403 `TWO_FACTOR_REQUIRED` pour RH sans 2FA ; aucun 500 sur les flux auth (régression 2026-08-25 : 30+ tests en échec).
+- Audit partages (#5522) : actions `accounting.share.info` / `accounting.share.download` (préfixe module, convention #5439) → `GET /accounting/documents/shared/{document}/accesses` liste bien les accès (avant : 0 ligne).
+- Payroll : `PayrollPaymentOrder::items()` a une FK explicite `payment_order_id` → l'ordre de virement prépare ses lignes sans QueryException (`column payroll_payment_order_id does not exist`).
+- Couverture : `VatDeclarationTest`, `AccountingMultiCurrencyTest`, `WebhookIdempotenceTest`, `EmailBounceWebhookControllerTest`, `ShareAccessAuditTest`, `PayrollPaymentOrderFlowTest`, `TwoFactorAuthTest`, `AccountingActivationTest` (route `/activation/complete`), `LangCatalogParityTest` (fins de fichier `];` tolérées), `OpenApiDocsTest` (`openapi: "3.0.3"` quoté).
+
+## BC-24 TRAVEL — API réseau & trajets (TRAVEL-306..311, 2026-08-30)
+
+Deuxième tranche de l'épic 3xx : `GET|POST /travel/vehicles`, `GET|PUT|DELETE /travel/vehicles/{travelVehicle}` ;
+`GET|POST /travel/routes`, `GET|PUT|DELETE /travel/routes/{travelRoute}` ; sous-ressource étapes
+`GET|POST /travel/routes/{travelRoute}/stops` + `PUT|DELETE /travel/routes/{travelRoute}/stops/{travelRouteStop}`
+(rank auto-attribué, réordonnancement) ; `GET|POST /travel/trips` (génération transactionnelle des sièges),
+`GET|PUT|DELETE /travel/trips/{travelTrip}` ; `GET|POST /travel/trips/{travelTrip}/prices` +
+`GET|PUT|DELETE /travel/trips/{travelTrip}/prices/{travelTripPrice}` (409 sur doublon (trip, classe)) ;
+`POST /travel/trips/{travelTrip}/publish|cancel` (transitions validées, motif obligatoire à l'annulation,
+événements outbox `travel.trip.published.v1`/`travel.trip.cancelled.v1`) ; `GET /travel/trips/search`
+(filtres origin/destination/date/plage/moyen/statut/prix).
+- Scénarios à vérifier : 401 sans auth ; 403 feature flag inactif ; référence cross-tenant (ville, route,
+  carrier, classe) → 422 ; ressource cross-tenant → 404 ; trajet publié verrouillé → 422 ; doublon
+  (trip, classe) → 409 ; doublon code classe → 422 ; sièges générés en nombre exact ; outbox dédup par
+  (tenant, idempotency_key) ; recherche paginée sans N+1.
+- Couverture : `api/tests/Feature/Travel/TravelVehicleApiTest.php`, `TravelRouteApiTest.php`,
+  `TravelTripApiTest.php`, `TravelTripPriceApiTest.php`, `TravelTripWorkflowTest.php`, `TravelTripSearchTest.php`
+  (+ 135 tests Travel au total, dont correctifs d'invariants 2xx protégés par savepoint).
+
+## BC-24 TRAVEL — API réservations & billetterie (TRAVEL-312..318, 2026-08-30)
+
+Troisième tranche de l'épic 3xx : `GET|POST /travel/bookings` (+ détails), `POST /travel/bookings/{booking}/confirm|cancel|refund|issue-ticket`,
+`POST /travel/tickets/{ticket}/check-in`, `GET /travel/trips/{trip}/manifest`.
+- Scénarios à vérifier : création avec verrouillage transactionnel des sièges (2 réservations concurrentes → 1 seule obtient le siège) ;
+  idempotence (`idempotency_key` rejouée → même réservation, pas de doublon) ; total calculé côté serveur depuis les tarifs ;
+  PII jamais exposée (`has_document` booléen, jamais le n° de pièce) ; trajet non publié → 409 ; siège explicite indisponible → 409 ;
+  transition invalide → 422 ; motif obligatoire (cancel/refund) ; billets : 1 par passager, ré-émission idempotente, check-in → checked_in ;
+  manifeste trié par siège sans n° de pièce ; cross-tenant → 404.
+- Couverture : `api/tests/Feature/Travel/TravelBookingApiTest.php`, `TravelBookingWorkflowTest.php` (148 tests Travel au total).
+
+## BC-24 TRAVEL — API locations, hôtels & RBAC (TRAVEL-319..322, 2026-08-30)
+
+Dernière tranche de l'épic 3xx : `GET|POST /travel/rental-vehicles` (+ images), `GET|POST /travel/rental-bookings` + cancel,
+`GET|POST /travel/hotels` + chambres, matrice RBAC globale.
+- Scénarios à vérifier : non-chevauchement des réservations de location (409) ; montant calculé serveur (prix/jour × durée) ;
+  idempotence ; classification hôtel 1-5 (422 hors bornes) ; recherche par ville ; image sous-ressource (404/403) ;
+  matrice RBAC : employé simple → 403 sur toutes les écritures, lecture ouverte, cross-tenant → 404, flag inactif → 403,
+  non authentifié → 401.
+- Couverture : `api/tests/Feature/Travel/TravelRentalApiTest.php`, `TravelHotelApiTest.php`, `TravelRbacMatrixTest.php`
+  (168 tests Travel au total) + `docs/security/TRAVEL_RBAC_MATRIX.md`.
+## BC-24 TRAVEL — Boutique en ligne & paiements (TRAVEL-401..409, 2026-08-30)
+Début de l'épic 4xx : `GET /travel/shop/trips` (recherche trajets publiés), `GET /travel/shop/trips/{trip}` (+ available_seats),
+`POST /travel/shop/bookings` (source online, expiration), `GET /travel/shop/bookings/{reference}` (suivi sans code en clair),
+`POST /travel/payments/initiate` (idempotent), `POST /travel/payments/callback` (webhook public signé HMAC, résolution par référence),
+`GET /travel/payments/{payment}`.
+- Scénarios à vérifier : seuls les trajets publiés sont vendables (404/409 sinon) ; disponibilité dérivée de l'inventaire ;
+  réservation online idempotente + expiration 15 min ; initiation idempotente (rejeu → 200) ; callback : signature invalide → 403,
+  montant incohérent → 422, référence inconnue → 404, rejeu → `replayed: true` sans effet de bord, confirmation → payment_status
+  confirmé + événement outbox ; PII jamais exposée.
+- Couverture : `api/tests/Feature/Travel/TravelShopTest.php`, `TravelPaymentTest.php` (184 tests Travel au total).
+## BC-24 TRAVEL — Re-conciliation, remboursement & billets PDF (TRAVEL-410..413, 2026-08-30)
+Suite de l'épic 4xx : `POST /travel/payments/{payment}/verify`, `POST /travel/payments/{payment}/refund`,
+`GET /travel/tickets/{ticket}/pdf` (URL signée), `POST /travel/tickets/{ticket}/revoke`.
+- Scénarios à vérifier : verify() ne re-concilie que les paiements pending (idempotent) ; refund() exige un paiement
+  confirmé + motif (422 sinon), réservé manage ; PDF généré localement (magic %PDF) ; URL signée 30 min ; révocation → void
+  + PDF supprimé + 410 au téléchargement ; cross-tenant → 404.
+- Couverture : `api/tests/Feature/Travel/TravelPaymentReconcileTest.php`, `TravelTicketPdfTest.php` (192 tests Travel au total).
+## BC-24 TRAVEL — Outbox & expiration des réservations (TRAVEL-414/418, 2026-08-30)
+`travel:outbox-dispatch` (consommation outbox événementielle, retry/backoff, dead-letter) et `travel:expire-bookings`
+(expiration des pending + libération des sièges + événement `travel.booking.expired.v1`).
+- Scénarios à vérifier : réservation pending expirée → cancelled + sièges libérés + événement outbox ; non-expirée
+  intacte ; rejeu idempotent (0 re-traitement) ; claim atomique (2 workers → 1 seul traite) ; outbox : aucun
+  consommateur → dead-letter, erreur transitoire → retry avec backoff, attempts ≥ max → failed.
+- Couverture : `api/tests/Feature/Travel/TravelBookingExpiryTest.php` (195 tests Travel au total).
+## BC-24 TRAVEL — Formulaire de contact (TRAVEL-416, 2026-08-30)
+`POST /travel/contact` → événement `travel.contact.submitted.v1` (lead CRM par événement, jamais d'import direct).
+- Scénarios à vérifier : 202 + événement publié ; consentement absent/faux → 422 ; message > 2000 → 422 ; email invalide → 422.
+- Couverture : `api/tests/Feature/Travel/TravelContactTest.php` (198 tests Travel au total).
+## BC-24 TRAVEL — Rapports & exports (TRAVEL-501..507, 2026-08-30)
+`GET /travel/reports/{sales,occupancy,revenue,cancellations,dashboard,export}` (permission `travel.reports`).
+- Scénarios à vérifier : agrégats exacts (count, passagers, montants minor units) ; isolation tenant ; taux d'occupation
+  = vendus/total borné [0,1] trié décroissant ; recettes = confirmés − remboursés ; annulations groupées par motif/source ;
+  employé simple → 403 ; export idempotent (même requête = même hash sha256 = même fichier, URL signée 30 min) ; type
+  inconnu → 422 ; read models recalculés → état identique après reprise.
+- Couverture : `api/tests/Feature/Travel/TravelReportApiTest.php` (208 tests Travel au total).
+## BC-24 TRAVEL — Webhooks transporteurs (TRAVEL-806, 2026-08-30)
+`GET/POST/DELETE /travel/webhook-subscriptions` (travel.manage) + livraison HMAC depuis l'outbox.
+- Scénarios à vérifier : création → secret jamais exposé (préfixe hash 8 car.) ; upsert par transporteur (pas de doublon) ;
+  employé simple → 403 ; événement outbox → livraison signée (en-têtes HMAC + timestamp) ; rejeu → pas de doublon ;
+  échec HTTP → retry/backoff puis dead-letter après 5 tentatives.
+- Couverture : `api/tests/Feature/Travel/TravelWebhookTest.php` (215 tests Travel au total).
+Note 2026-08-28 (issues #5725/#5727/#5728/#5729) : nouveau module CRM client tenant (`App\Modules\CRM`) — surface API ajoutee :
+- Canaux de communication : `GET/POST /crm/channels`, `PATCH /crm/channels/{channel}`, `POST /crm/channels/{channel}/send`, `GET /crm/channels/{channel}/messages|conversations|observability` (api.manager:principal,rh) ; webhooks publics `GET/POST /crm/webhooks/whatsapp` (signature HMAC fail-closed, anti-rejeu).
+- Automatisations : `GET/POST /crm/automations`, `GET/PUT/DELETE /crm/automations/{automation}`, `POST .../activate|pause|simulate`, `GET .../runs`, `POST /crm/automations/emergency-stop`, `POST /crm/automations/events/{event}`.
+- Exports/read models : `GET/POST /crm/exports`, `GET /crm/exports/{export}`, `GET /crm/exports/{export}/download`, `GET /crm/read-models`.
+Scenarios CI requis : RBAC (employee 403), isolation cross-tenant (404), consentement/quota/dead-letter canaux, webhook signature + rejeu, automatisations idempotence/simulation/emergency-stop, exports expiration/allowlist.
+## Billing ops — recouvrement & supervision (DEP-BC21, #6251/#6249/#6248)
+
+- Scheduler billing dédupliqué (PR #6263) : les commandes `billing:check-trials`, `billing:check-overdue`, `billing:generate-invoices` ne sont plus déclarées dans `api/routes/console.php` (source canonique : `bootstrap/app.php` → `withSchedule`) ; `billing:enforce-delinquency` planifié quotidien (06:30). Scénarios : `php artisan schedule:list` ne liste chaque commande billing QU'UNE fois ; rejouer la commande deux fois → aucun effet double (idempotence).
+- `billing:report` : agrège des compteurs non nominatifs (souscriptions/factures/paiements par statut) ; base vide → exit 0 sans erreur. Couverture : `BillingReportCommandTest`.
+- `billing:reconcile-payments` : dry-run par défaut (aucune mutation) ; `--apply` corrige uniquement les écarts sûrs (montant + company concordants, via `Invoice::transitionTo(Paid)`) ; doublons `provider_reference` et factures `paid` orphelines signalés (jamais corrigés) ; code retour 0 = aucun écart / 2 = écarts ; rejoué → idempotent. Couverture : `BillingReconcilePaymentsTest`.
+- Grace period par facture (`billing:enforce-delinquency`) : `active` avec facture due impayée → `past_due` ; `past_due` dont `due_date` + grâce dépassée → `expired` (repli `current_period_end` si aucune facture). Couverture : `InvoiceStateMachineTest`.
+
+Note 2026-08-28 (FUEL-001..008) : module FuelStation — solution verticale (manifest + stations/sites + équipements + relevés + shifts + présence + caisse + ventes).
+- Manifest de solution : `App\Core\Solutions` (contrat `SolutionManifest`, catalogue allowlist fail-closed, activateur audité, commande `leopardo:solution:activate`) + `FuelStationManifest` (FUEL-001). Activation idempotente par feature flag, dépendances manquantes → 422 `SOLUTION_MISSING_DEPENDENCY`, code inconnu → 404 `SOLUTION_NOT_FOUND`. Tests : `SolutionManifestTest`.
+- Stations et sites tenant-first (FUEL-002) : tables `fuel_stations` (code unique par tenant, timezone, statut CHECK active|inactive|archived) et `fuel_sites` (FK composite `(station_id, company_id)` → `fuel_stations`, statut CHECK active|inactive) — company_id non nullable partout, références cross-tenant physiquement impossibles. Tests : `FuelStationMigrationTest`, `FuelSitesInvariantTest`.
+- Équipements (FUEL-003) : `fuel_pumps`, `fuel_tanks` (capacity_minor CHECK > 0, unit_code CHECK l|gal), `fuel_meter_registers` (meter_type/status/unit CHECKs, `UNIQUE (company_id, pump_id, meter_code)`) — FK composites anti cross-tenant. Tests : `FuelEquipmentTest`.
+- Relevés de compteur (FUEL-004) : `POST/GET /fuel-station/stations/{station}/pumps/{pump}/meters/{meter}/readings` — cumul en unités mineures, heure UTC + locale, delta/rollover/anomalie, idempotence par `UNIQUE (company_id, idempotency_key)` (zéro doublon au rejeu), correction versionnée `POST /fuel-station/meter-readings/{reading}/corrections` et revue `POST /fuel-station/meter-intervals/{interval}/review` (RBAC `api.manager`). Tests : `FuelMeterReadingTest`.
+- Shifts et affectations (FUEL-005) : `GET/POST /fuel-station/shifts`, affectations par date, chevauchements contrôlés (`FuelShiftService::assertNoOverlap`), self-service pompiste `GET /fuel-station/me/shifts`. Tests : `FuelShiftApiTest`.
+- Présence opérateur (FUEL-006) : `GET /fuel-station/me/presence`, `GET /fuel-station/shifts/{shift}/presence` — résolue via la logique Attendance (pas de duplication). Tests : `FuelPresenceApiTest`.
+- Sessions de caisse (FUEL-007) : ouverture `POST /fuel-station/cash-sessions`, mouvements, clôture idempotente `POST /fuel-station/cash-sessions/{session}/close` (écarts + approbation manager, événement `FuelCashSessionClosed`). Tests : `FuelCashSessionApiTest`.
+- Ventes (FUEL-008) : `POST/GET /fuel-station/sales` — transactions par pompe liées shift/session. Tests : `FuelSaleApiTest`.
+- Couverture globale : solution inactive → 403 `FUEL_SOLUTION_INACTIVE` (fail-closed) ; OpenAPI 3 chemins `/fuel-station/*` + SDK régénérés (885 ops) ; i18n ×4 (`FUEL_*`).
+
+## BC-24 TRAVEL — Verticale TravelAgency (TRAVEL-101..305, 2026-08-30)
+
+Surface API ajoutée par la verticale TravelAgency (module `api/app/Modules/TravelAgency`,
+préfixe `/api/v1/travel/*`, groupe `module.travelagency` — feature flag `travelagency`).
+
+- Fondations : `GET /api/v1/travel/ping` (smoke, feature flag actif).
+- Référentiel (lecture tenant) : `GET /travel/countries`, `GET /travel/cities`.
+- CRUD back-office (policies `travel.manage` — principal/rh/manager ; lecture tout employé du tenant) :
+  `GET|POST /travel/stations`, `GET|PUT|DELETE /travel/stations/{travelStation}`,
+  idem `/travel/offices`, `/travel/carriers`, `/travel/classes`.
+- Scénarios à vérifier : (1) sans auth → 401 ; (2) feature flag inactif → 403 ; (3) création
+  type hors enum (`spaceship`) → 422 ; (4) ressource cross-tenant → 404 (jamais 403 sur la
+  ressource) ; (5) suppression → 204 ; (6) liste paginée `per_page` borné (1..1000).
+- Couverture : `api/tests/Feature/Travel/Travel*CrudTest.php`, `TravelGeoReadEndpointsTest.php`,
+  `TravelFeatureFlagTest.php`, `TravelIsolationTest.php` (harness verticale TRAVEL-108).
+
+## BC-24 TRAVEL — API réseau & trajets (TRAVEL-306..311, 2026-08-30)
+
+Deuxième tranche de l'épic 3xx : `GET|POST /travel/vehicles`, `GET|PUT|DELETE /travel/vehicles/{travelVehicle}` ;
+`GET|POST /travel/routes`, `GET|PUT|DELETE /travel/routes/{travelRoute}` ; sous-ressource étapes
+`GET|POST /travel/routes/{travelRoute}/stops` + `PUT|DELETE /travel/routes/{travelRoute}/stops/{travelRouteStop}`
+(rank auto-attribué, réordonnancement) ; `GET|POST /travel/trips` (génération transactionnelle des sièges),
+`GET|PUT|DELETE /travel/trips/{travelTrip}` ; `GET|POST /travel/trips/{travelTrip}/prices` +
+`GET|PUT|DELETE /travel/trips/{travelTrip}/prices/{travelTripPrice}` (409 sur doublon (trip, classe)) ;
+`POST /travel/trips/{travelTrip}/publish|cancel` (transitions validées, motif obligatoire à l'annulation,
+événements outbox `travel.trip.published.v1`/`travel.trip.cancelled.v1`) ; `GET /travel/trips/search`
+(filtres origin/destination/date/plage/moyen/statut/prix).
+- Scénarios à vérifier : 401 sans auth ; 403 feature flag inactif ; référence cross-tenant (ville, route,
+  carrier, classe) → 422 ; ressource cross-tenant → 404 ; trajet publié verrouillé → 422 ; doublon
+  (trip, classe) → 409 ; doublon code classe → 422 ; sièges générés en nombre exact ; outbox dédup par
+  (tenant, idempotency_key) ; recherche paginée sans N+1.
+- Couverture : `api/tests/Feature/Travel/TravelVehicleApiTest.php`, `TravelRouteApiTest.php`,
+  `TravelTripApiTest.php`, `TravelTripPriceApiTest.php`, `TravelTripWorkflowTest.php`, `TravelTripSearchTest.php`
+  (+ 135 tests Travel au total, dont correctifs d'invariants 2xx protégés par savepoint).
+
+## BC-24 TRAVEL — API réservations & billetterie (TRAVEL-312..318, 2026-08-30)
+
+Troisième tranche de l'épic 3xx : `GET|POST /travel/bookings` (+ détails), `POST /travel/bookings/{booking}/confirm|cancel|refund|issue-ticket`,
+`POST /travel/tickets/{ticket}/check-in`, `GET /travel/trips/{trip}/manifest`.
+- Scénarios à vérifier : création avec verrouillage transactionnel des sièges (2 réservations concurrentes → 1 seule obtient le siège) ;
+  idempotence (`idempotency_key` rejouée → même réservation, pas de doublon) ; total calculé côté serveur depuis les tarifs ;
+  PII jamais exposée (`has_document` booléen, jamais le n° de pièce) ; trajet non publié → 409 ; siège explicite indisponible → 409 ;
+  transition invalide → 422 ; motif obligatoire (cancel/refund) ; billets : 1 par passager, ré-émission idempotente, check-in → checked_in ;
+  manifeste trié par siège sans n° de pièce ; cross-tenant → 404.
+- Couverture : `api/tests/Feature/Travel/TravelBookingApiTest.php`, `TravelBookingWorkflowTest.php` (148 tests Travel au total).
+
+## BC-24 TRAVEL — API locations, hôtels & RBAC (TRAVEL-319..322, 2026-08-30)
+
+Dernière tranche de l'épic 3xx : `GET|POST /travel/rental-vehicles` (+ images), `GET|POST /travel/rental-bookings` + cancel,
+`GET|POST /travel/hotels` + chambres, matrice RBAC globale.
+- Scénarios à vérifier : non-chevauchement des réservations de location (409) ; montant calculé serveur (prix/jour × durée) ;
+  idempotence ; classification hôtel 1-5 (422 hors bornes) ; recherche par ville ; image sous-ressource (404/403) ;
+  matrice RBAC : employé simple → 403 sur toutes les écritures, lecture ouverte, cross-tenant → 404, flag inactif → 403,
+  non authentifié → 401.
+- Couverture : `api/tests/Feature/Travel/TravelRentalApiTest.php`, `TravelHotelApiTest.php`, `TravelRbacMatrixTest.php`
+  (168 tests Travel au total) + `docs/security/TRAVEL_RBAC_MATRIX.md`.
+## Scenarios BC-25 RESTAURANT (verticale RestaurantManager)
+Note 2026-08-30 (lots RESTO-1xx..7xx) : la verticale `RestaurantManager` (préfixe `/restaurant/*`, feature flag `restaurantmanager`, middleware `module.restaurantmanager`) couvre POS & caisse, commandes, réservations, stock & achats, livraison, fidélité, promotions et rapports. Scénarios couverts par les tests Feature `api/tests/Feature/Restaurant/*` :
+- Activation/kill switch : `GET /restaurant/ping` 200 avec flag, 403 sans flag, 401 sans auth.
+- Isolation multitenant : toute ressource d'un autre tenant → 404 (jamais 403) ; `exists` tenant-scopées sur les requests (422 si référence étrangère).
+- RBAC `restaurant.*` : écriture référentiel/achats `principal`/`rh` ; opérationnel `manager` ; lecture `server`/`kitchen`/`rider` ; rapports via gate `restaurant.reports` (rôles opérationnels).
+- Référentiel (branches/zones/tables/catégories/produits/ingrédients/unités/menus/TVA/fournisseurs/horaires) : CRUD complet + unicité tenant-scopée.
+- Stock : niveaux + mouvements (raisons enum, référence polymorphe), invariant « jamais de stock négatif » (422), coût moyen pondéré exact à la réception, bons de commande draft→sent→received, inventaires avec approbation bloquée sur écart non justifié, alertes de seuil dédupliquées par (branche, ingrédient, jour).
+- Réservations : conflit de créneau → 409 (fenêtre ±2h), transitions confirm/check-in/no-show/cancel, disponibilité par table/couverts, politique d'annulation (pénalités serveur).
+- Livraison : cycle assign → out_for_delivery → delivered | cancel (livreur inactif refusé, annulation → commande retourne à `ready`).
+- Fidélité : opt-in RGPD requis, crédit unique par commande payée, solde jamais négatif.
+- Promotions : bornes (période, minimum, plafond d'utilisation), cumul contrôlé.
+- Rapports/KPIs : agrégats cohérents avec les données ; export CSV idempotent + URL signée (TTL 10 min, signature invalide → 403).
+  (+ 135 tests Travel au total, dont correctifs d'invariants 2xx protégés par savepoint).
+## BC-24 TRAVEL — API réservations & billetterie (TRAVEL-312..318, 2026-08-30)
+Troisième tranche de l'épic 3xx : `GET|POST /travel/bookings` (+ détails), `POST /travel/bookings/{booking}/confirm|cancel|refund|issue-ticket`,
+`POST /travel/tickets/{ticket}/check-in`, `GET /travel/trips/{trip}/manifest`.
+- Scénarios à vérifier : création avec verrouillage transactionnel des sièges (2 réservations concurrentes → 1 seule obtient le siège) ;
+  idempotence (`idempotency_key` rejouée → même réservation, pas de doublon) ; total calculé côté serveur depuis les tarifs ;
+  PII jamais exposée (`has_document` booléen, jamais le n° de pièce) ; trajet non publié → 409 ; siège explicite indisponible → 409 ;
+  transition invalide → 422 ; motif obligatoire (cancel/refund) ; billets : 1 par passager, ré-émission idempotente, check-in → checked_in ;
+  manifeste trié par siège sans n° de pièce ; cross-tenant → 404.
+- Couverture : `api/tests/Feature/Travel/TravelBookingApiTest.php`, `TravelBookingWorkflowTest.php` (148 tests Travel au total).
+## BC-24 TRAVEL — API locations, hôtels & RBAC (TRAVEL-319..322, 2026-08-30)
+Dernière tranche de l'épic 3xx : `GET|POST /travel/rental-vehicles` (+ images), `GET|POST /travel/rental-bookings` + cancel,
+`GET|POST /travel/hotels` + chambres, matrice RBAC globale.
+- Scénarios à vérifier : non-chevauchement des réservations de location (409) ; montant calculé serveur (prix/jour × durée) ;
+  idempotence ; classification hôtel 1-5 (422 hors bornes) ; recherche par ville ; image sous-ressource (404/403) ;
+  matrice RBAC : employé simple → 403 sur toutes les écritures, lecture ouverte, cross-tenant → 404, flag inactif → 403,
+  non authentifié → 401.
+- Couverture : `api/tests/Feature/Travel/TravelRentalApiTest.php`, `TravelHotelApiTest.php`, `TravelRbacMatrixTest.php`
+  (168 tests Travel au total) + `docs/security/TRAVEL_RBAC_MATRIX.md`.
+Note 2026-08-31 (BC-22 ANALYTICS, PR #6280) : snapshots horodatés des read models de reporting + golden journey Analytics.
+- `GET /api/v1/accounting/dashboard` expose désormais un bloc `data.snapshot` (`source: live|snapshot`, `version`, `refreshed_at`) — scénarios : lecture live par défaut (aucun snapshot actif → `source: live`) ; après activation du recompute (budget p95 dépassé, jamais préventif) → `source: snapshot` avec `version` incrémentée uniquement si le contenu change (2 recomputes identiques → même version) ; rejeu de la commande `accounting:reporting-snapshot` → aucune écriture dupliquée (clé unique `(company_id, report, period_from, period_to)`).
+- Seed pilote synthétique `analytics-pilot-001` (DZD, 100 % synthétique, refusé en production MAT-012) : agrégats cohérents + déterminisme (2 lectures → mêmes totaux), export CSV impayés téléchargeable et sanitisé (`CsvCellSanitizer`), tenant vide → agrégats zéro, RBAC 403 pour un employé simple. Tests : `AccountingReportingSnapshotTest`, `AccountingAnalyticsGoldenJourneyTest`.
+
+Note 2026-09-02 (Cabinet, #6674) : partages orphelins/legacy — robustesse de /cabinet/shares.
+- Scénario legacy : un `cabinet_shares` au `shareable_type` legacy (classe supprimée, refactor DDD v4.21.0) faisait 500 sur `GET /api/v1/cabinet/shares` (échec de l'eager-load morph `with('shareable')`) — l'index et l'accès public par token (`GET /cabinet/shared/{token}`) ne traitent désormais que les types supportés (`CabinetFolder`, `CabinetDocument`) → le share legacy est ignoré, réponse 200.
+- Scénario orphelin : share valide dont le shareable a été supprimé → 200 avec `shareable_name: null` (plus de 500).
+- Scénario suppression : `DELETE /cabinet/documents/{id}` et `DELETE /cabinet/folders/{id}` révoquent les partages du document/dossier (récursif documents + sous-dossiers) avant suppression → plus d'orphelins créés.
+- Tests : `CabinetShareOrphanRegressionTest` (4 scénarios ci-dessus).
+||||||| /tmp/doc_base.md
+
+Note 2026-08-30 (BC-26 DELIVERY, #6281..#6304) : module DeliveryAgency — livraison générique multi-tenant.
+- Socle : manifest `DeliveryManifest` (DELIVERY-101, #6282), schéma tenant 5 tables `delivery_*` avec `company_id` non nullable + FK composites (DELIVERY-102, #6283), domaine (machine à états livraison, VOs, enums) (DELIVERY-103, #6284), modèles + repository tenant-scoped (DELIVERY-104, #6304).
+- API : CRUD colis dispatcher versionné (DELIVERY-201, #6285), tournées création/affectation livreur+véhicule/ordre des stops/clôture (DELIVERY-202, #6286), mobile livreur tournée du jour/statuts/POD (DELIVERY-203, #6287), tracking idempotent + lien destinataire borné (DELIVERY-204, #6288), COD & commissions posting BC-08 idempotent (DELIVERY-205, #6289), notifications destinataire outbox + opt-out RGPD (DELIVERY-206, #6290), rapports KPIs déterministes + export CSV (DELIVERY-207, #6291), contrats sources restaurant/retail/ecommerce/crm (DELIVERY-208, #6299).
+- Dimensions : glossaire (D01, #6292), isolation cross-tenant (D03, #6293), asynchronisme jobs tenant-scoped DLQ/replay (D07, #6294/#6295), budgets p95 (D10, #6296), golden journey E2E + seed pilote (D12, #6297).
+- Scénarios à vérifier : CRUD colis RBAC dispatcher (403 employé), tournée chevauchement rejeté (409), POD photo/signature, tracking idempotent (rejeu zéro doublon), COD posting comptable idempotent, notification opt-out respecté, rapport recalculé déterministe, contrat source idempotent par `external_ref`, isolation cross-tenant (404 sur IDs connus d'un autre tenant), jobs replay sans perte ni doublon.
+- Couverture : `tests/Feature/Delivery/*` (129 tests, 522 assertions) + `DeliveryReferenceTest`, `DeliveryOutboxTest`, `DeliveryIsolationTest`, `DeliveryGoldenJourneyTest`.
+
+- Manifest de solution : `App\Core\Solutions` (contrat `SolutionManifest`, catalogue allowlist fail-closed, activateur audité, commande `leopardo:solution:activate`) + `FuelStationManifest` (FUEL-001). Activation idempotente par feature flag, dépendances manquantes → 422 `SOLUTION_MISSING_DEPENDENCY`, code inconnu → 404 `SOLUTION_NOT_FOUND`. Tests : `SolutionManifestTest`.
+- Stations et sites tenant-first (FUEL-002) : tables `fuel_stations` (code unique par tenant, timezone, statut CHECK active|inactive|archived) et `fuel_sites` (FK composite `(station_id, company_id)` → `fuel_stations`, statut CHECK active|inactive) — company_id non nullable partout, références cross-tenant physiquement impossibles. Tests : `FuelStationMigrationTest`, `FuelSitesInvariantTest`.
+- Équipements (FUEL-003) : `fuel_pumps`, `fuel_tanks` (capacity_minor CHECK > 0, unit_code CHECK l|gal), `fuel_meter_registers` (meter_type/status/unit CHECKs, `UNIQUE (company_id, pump_id, meter_code)`) — FK composites anti cross-tenant. Tests : `FuelEquipmentTest`.
+- Relevés de compteur (FUEL-004) : `POST/GET /fuel-station/stations/{station}/pumps/{pump}/meters/{meter}/readings` — cumul en unités mineures, heure UTC + locale, delta/rollover/anomalie, idempotence par `UNIQUE (company_id, idempotency_key)` (zéro doublon au rejeu), correction versionnée `POST /fuel-station/meter-readings/{reading}/corrections` et revue `POST /fuel-station/meter-intervals/{interval}/review` (RBAC `api.manager`). Tests : `FuelMeterReadingTest`.
+- Shifts et affectations (FUEL-005) : `GET/POST /fuel-station/shifts`, affectations par date, chevauchements contrôlés (`FuelShiftService::assertNoOverlap`), self-service pompiste `GET /fuel-station/me/shifts`. Tests : `FuelShiftApiTest`.
+- Présence opérateur (FUEL-006) : `GET /fuel-station/me/presence`, `GET /fuel-station/shifts/{shift}/presence` — résolue via la logique Attendance (pas de duplication). Tests : `FuelPresenceApiTest`.
+- Sessions de caisse (FUEL-007) : ouverture `POST /fuel-station/cash-sessions`, mouvements, clôture idempotente `POST /fuel-station/cash-sessions/{session}/close` (écarts + approbation manager, événement `FuelCashSessionClosed`). Tests : `FuelCashSessionApiTest`.
+- Ventes (FUEL-008) : `POST/GET /fuel-station/sales` — transactions par pompe liées shift/session. Tests : `FuelSaleApiTest`.
+- Couverture globale : solution inactive → 403 `FUEL_SOLUTION_INACTIVE` (fail-closed) ; OpenAPI 3 chemins `/fuel-station/*` + SDK régénérés (885 ops) ; i18n ×4 (`FUEL_*`).
+Note 2026-08-30 (BC-26 DELIVERY, #6281..#6304) : module DeliveryAgency — livraison générique multi-tenant.
+- Socle : manifest `DeliveryManifest` (DELIVERY-101, #6282), schéma tenant 5 tables `delivery_*` avec `company_id` non nullable + FK composites (DELIVERY-102, #6283), domaine (machine à états livraison, VOs, enums) (DELIVERY-103, #6284), modèles + repository tenant-scoped (DELIVERY-104, #6304).
+- API : CRUD colis dispatcher versionné (DELIVERY-201, #6285), tournées création/affectation livreur+véhicule/ordre des stops/clôture (DELIVERY-202, #6286), mobile livreur tournée du jour/statuts/POD (DELIVERY-203, #6287), tracking idempotent + lien destinataire borné (DELIVERY-204, #6288), COD & commissions posting BC-08 idempotent (DELIVERY-205, #6289), notifications destinataire outbox + opt-out RGPD (DELIVERY-206, #6290), rapports KPIs déterministes + export CSV (DELIVERY-207, #6291), contrats sources restaurant/retail/ecommerce/crm (DELIVERY-208, #6299).
+- Dimensions : glossaire (D01, #6292), isolation cross-tenant (D03, #6293), asynchronisme jobs tenant-scoped DLQ/replay (D07, #6294/#6295), budgets p95 (D10, #6296), golden journey E2E + seed pilote (D12, #6297).
+- Scénarios à vérifier : CRUD colis RBAC dispatcher (403 employé), tournée chevauchement rejeté (409), POD photo/signature, tracking idempotent (rejeu zéro doublon), COD posting comptable idempotent, notification opt-out respecté, rapport recalculé déterministe, contrat source idempotent par `external_ref`, isolation cross-tenant (404 sur IDs connus d'un autre tenant), jobs replay sans perte ni doublon.
+- Couverture : `tests/Feature/Delivery/*` (129 tests, 522 assertions) + `DeliveryReferenceTest`, `DeliveryOutboxTest`, `DeliveryIsolationTest`, `DeliveryGoldenJourneyTest`.
+## Billing ops — recouvrement & supervision (DEP-BC21, #6251/#6249/#6248)
+
+- Scheduler billing dédupliqué (PR #6263) : les commandes `billing:check-trials`, `billing:check-overdue`, `billing:generate-invoices` ne sont plus déclarées dans `api/routes/console.php` (source canonique : `bootstrap/app.php` → `withSchedule`) ; `billing:enforce-delinquency` planifié quotidien (06:30). Scénarios : `php artisan schedule:list` ne liste chaque commande billing QU'UNE fois ; rejouer la commande deux fois → aucun effet double (idempotence).
+- `billing:report` : agrège des compteurs non nominatifs (souscriptions/factures/paiements par statut) ; base vide → exit 0 sans erreur. Couverture : `BillingReportCommandTest`.
+- `billing:reconcile-payments` : dry-run par défaut (aucune mutation) ; `--apply` corrige uniquement les écarts sûrs (montant + company concordants, via `Invoice::transitionTo(Paid)`) ; doublons `provider_reference` et factures `paid` orphelines signalés (jamais corrigés) ; code retour 0 = aucun écart / 2 = écarts ; rejoué → idempotent. Couverture : `BillingReconcilePaymentsTest`.
+- Grace period par facture (`billing:enforce-delinquency`) : `active` avec facture due impayée → `past_due` ; `past_due` dont `due_date` + grâce dépassée → `expired` (repli `current_period_end` si aucune facture). Couverture : `InvoiceStateMachineTest`.
+
+Note 2026-08-28 (FUEL-001..008) : module FuelStation — solution verticale (manifest + stations/sites + équipements + relevés + shifts + présence + caisse + ventes).
+
+## Addendum 2026-09-04 — consolidation 126 branches (PR #6816/#6817)
+
+Consolidation du 2026-09-04 : intégration des verticales Travel/Edu/Fuel/Restaurant/CRM/Delivery + lots audit. Rounds de verdissement CI (#6817) : purge des résidus de merge (parse errors), restauration de routes orphelines (13 contrôleurs, EduManager/RestaurantManager/Attendance/Fuel/Travel), imports de namespace API corrigés, artefacts i18n/OpenAPI régénérés, restaurations de constantes de modèles perdues par les merges union (Fuel/Edu/Travel). Périmètre de tests couvert inchangé — voir registre des scénarios par domaine.
+
+Note 2026-09-05 (audit architecture, PR #6832) : **aucun changement de surface API** — refactor structurel Cameras + suppression de contrats morts Fleet :
+- `Modules/Cameras/Domain/{Camera,CameraAccessLog,CameraAccessToken,CameraPermission}` déplacés vers `Domain/Models/` (namespace `App\Modules\Cameras\Domain\Models`) ; endpoints, contrats JSON, routes et policies **inchangés** (refactor interne, PSR-4). Fichiers touchés à titre de consommateurs : controllers, `Infrastructure/Services/CameraService`, `app/Policies/Cameras/CameraPolicy.php` (registre policy), `AuthServiceProvider` (imports).
+- 10 erreurs PHPStan strict corrigées en code (aucun changement de comportement) ; trait `HasFactory` retirée des 3 modèles (aucune factory ni usage `::factory()` dans le repo) ; garde explicite `camera_id NOT NULL` dans `CameraService::log()` (chemin auparavant en erreur SQL) ; `fresh() ?? $instance` sur retours.
+- `Modules/Fleet/Domain/Contracts/{Trip,Vehicle}RepositoryInterface` supprimées (0 référence, 0 implémentation) — aucun endpoint concerné.
+- Couverture de la surface Cameras inchangée et existante : `api/tests/Feature/Cameras/{CamerasCrudTest,CameraAccessTokensTest,CameraStreamTokenVerifyTest,CameraRtspSecurityTest}.php` (endpoints caméras, tokens d'accès, vérification stream, sécurité RTSP).
+
+Note 2026-09-06 (fix boot, #6914) : **aucune modification de surface API** — suppression d'un `->name()` dupliqué sur une route RestaurantManager :
+- `api/routes/modules/restaurantmanager.php` : la route legacy `GET /reports/exports/{export}/download` (`RestaurantReportController@download`) ne porte plus le nom `restaurant.reports.export.download` (réservé à la route canonique signée `GET /restaurant/reports/export/{export}`, `RestaurantReportExportController`) — le doublon cassait `php artisan route:cache` au boot (conteneur exit 1, deploys `update_failed`). URL et comportement inchangés.
+- Couverture : scénario de boot — `php artisan route:cache` doit passer sur `main` (garde à ajouter en CI, cf. #6914) ; endpoints exports RestaurantManager inchangés (tests existants `RestaurantReport*Test`).
+
+Note 2026-09-06 (fix auth #6956) : login super-admin — hash stocké invalide ⇒ 401, jamais de 500.
+- `POST /api/v1/platform/auth/login` (et surface web `/platform/login`) : un compte dont `password_hash` est NULL/non-string (dérive de schéma ou seed partiel, constaté DEV 2026-09-06) doit répondre `401 INVALID_CREDENTIALS` — même traitement que compte inconnu ou mauvais mot de passe — et **jamais** `500 INTERNAL_ERROR` (un `Hash::check()` sur NULL levait un TypeError).
+- Scénarios : email inconnu → 401 ; email connu + mauvais mot de passe → 401 ; email connu + bon mot de passe + hash bcrypt valide → 200 + token ; email connu + hash stocké NULL/vide (dérive) → 401 (pas de 500).
+- Couverture : `api/tests/Feature/PlatformAuthTest.php` (login 2FA off/on, verrouillage 5 échecs, session plateforme). Le cas hash NULL n'est pas reproductible en schéma propre (`password_hash` NOT NULL en migration) — couvert par la garde défensive + contrôle ops de la ligne `super_admins` (cf. issue #6956).
+
+Note 2026-09-07 (Part of #6974) : login super-admin — toute exception inattendue est loggée (structured `platform.login.unexpected_error[.web]`) et répond en erreur générique 500 / message web générique ; aucun détail serveur exposé au client. Scénarios : email inconnu → 401 ; mauvais mot de passe → 401 ; hash NULL/invalide (dérive DEV) → 401 (jamais 500, garde #6956) ; exception imprévue → 500 générique + log structuré exploitable (diagnostic DEV en cours, #6974).
+
+## Addendum 2026-09-14 — contenus d'e-mails éditables depuis l'admin (#7347)
+
+Nouvelle surface plateforme (guard `super_admin_api`, préfixe `/v1/admin`) : surcharge du
+contenu des e-mails par `(template_key, locale)`. Table `public.email_templates`
+(migration `2026_09_14_000001_7347`).
+
+- `GET /api/v1/admin/email-templates` → liste des modèles éditables (clé, variables
+  autorisées) avec, **par langue** (fr/en/ar/tr), la valeur **effective** (surcharge si
+  elle existe, sinon valeur par défaut du catalogue) et les drapeaux `overridden`.
+- `PUT /api/v1/admin/email-templates` → surcharge **partielle** de `(template_key, locale)`
+  sur `subject` / `heading` / `body` / `cta_label` ; le corps est du **texte** (échappé au
+  rendu, retours à la ligne conservés) et seules les variables déclarées par le registre
+  sont substituées. Clé inconnue ou locale non supportée → **422**.
+- `DELETE /api/v1/admin/email-templates` → **retour au défaut** (suppression de la surcharge).
+- `POST /api/v1/admin/email-templates/preview` → rendu réel dans le layout
+  (`emails/layouts/base.blade.php`), `dir` déduit de la locale.
+
+Scénarios verrouillés par `api/tests/Feature/Mail/EmailTemplateEditingTest.php` :
+**sans surcharge, la valeur rendue est identique à celle du catalogue** (propriété
+centrale : un template non modifié ne change pas de rendu) ; la surcharge prime champ par
+champ et journalise `updated_by` ; un champ vidé revient au défaut ; le corps est échappé
+et une variable non déclarée n'est **pas** substituée ; les 4 langues sont indépendantes ;
+la réinitialisation supprime la surcharge ; les endpoints exigent une session super-admin
+(**401** sinon).
+
+Garde de rendu : `api/tests/Feature/Mail/EmailTemplateIntegrityTest.php` compile **tous**
+les templates d'e-mail et vérifie que le PHP produit est valide (la CI ne compile aucune
+vue Blade), plus le RTL, le pré-en-tête, l'adresse de contact ≠ adresse d'envoi et
+l'absence de terme interne (ex. « node Edge », `localhost`, `/admin/edge-nodes`).
+
+## Addendum 2026-09-14 — le flux Google exige une session sur ses routes (#7372)
+
+- `GET /api/v1/auth/google` et `GET /api/v1/auth/google/callback` déclarent désormais
+  `EncryptCookies` + `AddQueuedCookiesToResponse` + `StartSession` (groupe de routes
+  **dédié** : la session n'est **pas** étendue au reste du groupe `api`, sinon la protection
+  CSRF Sanctum s'appliquerait aux routes de la SPA admin et des clients mobiles).
+- Raison : le state anti-CSRF (#2619) et l'intention de parcours (`intent=signup`, `plan`)
+  sont stockés en **session** à l'initiation puis relus au callback. Sans middleware de
+  session, l'initiation répondait `503 GOOGLE_OAUTH_UNAVAILABLE`
+  (`auth.google.redirect_failed {"message":"Session store not set on request."}`) — **même
+  avec des clés Google valides**, en dev comme en prod. Le groupe `api` ne comporte ni
+  `StartSession` ni `EncryptCookies`, et `statefulApi()` (Sanctum) n'a jamais été activé.
+- Scénarios à rejouer en ligne : initiation → **302** vers `accounts.google.com` portant le
+  `redirect_uri` de la **vitrine** ; retour sur la vitrine → cookie de session relayé par
+  `front/web/src/app/api/v1/auth/google/callback/route.ts` → état validé ; `intent=signup`
+  avec e-mail inconnu → identité Google **vérifiée** renvoyée pour pré-remplir le tunnel
+  (aucun tenant créé depuis le callback — #3724) ; `intent=login` avec e-mail inconnu →
+  `401 UNKNOWN_ACCOUNT` ; state absent ou invalide → `400 INVALID_OAUTH_STATE`.
+
+## Addendum 2026-09-14 — réglages et suivi de l'assistant IA (#7384, #7385)
+
+Les réglages de l'assistant vivaient **uniquement dans l'environnement** : aucun endpoint
+ne permettait de les lire ni de les modifier, et chaque changement de modèle ou de clé
+imposait un redéploiement. Six opérations super-admin (`auth:super_admin_api` +
+`throttle:platform-sensitive`) :
+
+- `GET /api/v1/admin/platform/ai/settings` → catalogue (clé, type, groupe, libellé,
+  `secret`) + valeurs publiques + état effectif. **Aucune clé n'est renvoyée, même à un
+  super-admin** : seuls `has_value`, `updated_at` et `updated_by` sont exposés.
+- `PUT /api/v1/admin/platform/ai/settings` → surcharge partielle. Une valeur **vide sur un
+  réglage secret conserve la clé enregistrée** (changer de modèle ne doit pas effacer la
+  clé) ; une clé inconnue est refusée en **422 `AI_SETTING_UNKNOWN`** plutôt qu'ignorée en
+  silence (une faute de frappe côté client ne doit pas passer pour un enregistrement
+  réussi) ; `null` supprime la surcharge.
+- `POST /api/v1/admin/platform/ai/settings/reset` → retour à la valeur d'environnement.
+- `POST /api/v1/admin/platform/ai/test-connection` → appel minimal au fournisseur
+  configuré, pour valider une clé **avant** d'activer l'assistant pour tous les tenants.
+  Le message est actionnable : **401** → clé refusée par le fournisseur, **429** → quota
+  atteint, timeout → connectivité sortante du serveur ; driver `fake` → réponse explicite
+  **sans appel réseau** (jamais un faux « succès »).
+- `GET /api/v1/admin/platform/ai/monitoring?from=&to=` → agrégats de la période (requêtes,
+  tokens, coût, erreurs, taux d'erreur, p95) + répartition **par entreprise** (nom de
+  société résolu — un UUID seul est inexploitable en supervision), **par outil** (appels /
+  confirmations en attente / échecs) et **par workflow**, + dernières erreurs **tronquées à
+  300 caractères** : on veut la cause, jamais le contenu des échanges.
+- `GET /api/v1/admin/platform/ai/health` → assistant actif, driver, modèle, clé fournisseur
+  configurée, activité des 24 h.
+
+**Priorité base > environnement**, appliquée au boot (`PlatformAiSettingsApplier`) : tout
+le code IA existant (`AIFeatureCheck`, `Orchestrator`, `AiCloudPolicy`, clients
+fournisseurs) lit la valeur éditée **sans une seule ligne modifiée**. Une base vide
+reproduit exactement le comportement d'avant ; table absente ou cache indisponible → repli
+silencieux sur l'environnement, **jamais d'exception au boot** (fail-safe).
+
+Les secrets sont **chiffrés au repos** (`Crypt::encryptString`), modèle calqué sur
+l'existant `PlatformMarketingOAuthConfigController`.
+
+Scénarios verrouillés par `api/tests/Feature/Platform/PlatformAiSettingsTest.php` : la clé
+n'est **pas** renvoyée par le `GET` et n'apparaît en clair dans **aucune** colonne ; un
+`PUT` sans nouvelle valeur **préserve** la clé ; une clé inconnue est refusée en **422** ;
+la base prime sur l'environnement ; les agrégats de suivi sont calculés (dont le taux
+d'erreur) ; l'accès est refusé sans session super-admin (**401**).
+
+Corrigé dans le même lot : `.env.example` livrait `GROQ_BASE_URL=` **vide**, et
+`env($cle, 'défaut')` renvoie la chaîne vide, pas le défaut — le client Groq postait donc
+sans hôte (« URI must include a scheme and host »). Les trois `base_url` (Groq, OpenAI,
+Anthropic) passent en `env(...) ?: 'défaut'`. Un `orderBy` sur une requête d'agrégation
+(`max(created_at)`) faisait échouer Postgres en `SQLSTATE 42803` — soit un **500** sur
+l'écran de santé.
+## Addendum 2026-09-14 — Espace voyageur : code de contrôle délivré et surface publique (#7394, #7395)
+
+Deux bugs de recette BC-24 TRAVEL rendaient le parcours passager inutilisable. **(1) Le code
+de contrôle n'était délivré à personne** : `IssueTicketsAction` le générait puis n'en
+persistait que le SHA-256 ; la réponse d'émission ne portait que `ticket_number`, et le PDF
+imprimait ce même numéro sous l'étiquette « Code de contrôle » — le passager saisissait donc
+un code que l'API refusait (**404**). Le code est désormais une **dérivation canonique** du
+billet (HMAC-SHA256 + `APP_KEY`, `XXXX-XXXX-XXXX`), **délivré une seule fois** par
+`POST /api/v1/travel/bookings/{booking}/issue-ticket` (clé `validation_code` sur chaque
+billet) et imprimé sur l'e-billet ; la saisie tolère minuscules et absence de tirets ; un
+rejeu d'émission ne redélivre rien. **(2) Le portail passager appelait la surface STAFF**
+(`/travel/shop/bookings/{ref}`, `/travel/tickets/{id}/pdf`, `POST /travel/shop/bookings/{ref}/cancel`)
+→ **401** pour un passager, et `code` y était ignoré en silence (faux contrôle d'accès).
+
+Surface PUBLIQUE de l'espace voyageur (aucun compte, aucun jeton boutique du tenant) :
+
+- `GET /api/v1/public/travel/shop/bookings/{reference}?code=` → suivi (statut, trajet,
+  `passenger_count`, billets `{id, ticket_number, status}`) ; **422** sans code, **404** si le
+  code ne correspond à aucun billet de la réservation.
+- `GET /api/v1/public/travel/tickets/{ticket}/pdf?code=` → URL signée du PDF ; **403** si le
+  code est faux, **410** si le billet est révoqué.
+- `POST /api/v1/public/travel/shop/bookings/{reference}/cancel` (`{code, reason}`) → annulation
+  en ligne, sièges libérés, motif conservé (audit) ; **422** `TRAVEL_BOOKING_CODE_INVALID` /
+  `TRAVEL_BOOKING_DEPARTURE_PAST` / `VALIDATION_ERROR`, **404** si la référence est inconnue.
+
+Règles d'accès : le tenant est résolu **par la ressource** (référence ou billet) quand aucune
+route n'est bornée (recherche, réservation, paiement → jeton `X-Travel-Shop-Token` toujours
+exigé, **401** sinon) ; une référence ambiguë ou inconnue est un **404** (fail-closed) ; la
+preuve de possession (code du billet) est vérifiée **avant** toute donnée. Le suivi staff
+`GET /api/v1/travel/shop/bookings/{reference}` reste réservé aux employés authentifiés et
+**refuse désormais le paramètre `code`** (422 `TRAVEL_SHOP_CODE_NOT_SUPPORTED`) au lieu de
+l'ignorer. Côté front, `front/web/src/app/(dashboard)/travel/portal/page.tsx` consomme
+exclusivement ces endpoints publics.
+
+Couverture : `api/tests/Feature/Travel/TravelTicketValidationCodeDeliveryTest.php` (délivrance
+unique, hash seul en base, routes de lecture muettes, suivi public 200/404, PDF réel) et
+`api/tests/Feature/Travel/TravelPublicShopPassengerPortalTest.php` (suivi, PDF, annulation sans
+jeton boutique ; 401/404/422 ; cross-tenant ; suivi staff qui refuse `code`), plus le golden
+journey GJ-TRAVEL-01 requalifié.
+
+## Addendum 2026-09-14 — 27 routes appelaient une méthode de contrôleur inexistante (#7398)
+
+`Route::getRoutes()` listait **27 routes** dont l'action pointait vers une méthode **non définie**
+(`500 Call to undefined method`) et rien ne le voyait. L'audit route → méthode (1728 routes) est
+désormais à **broken=0**.
+
+BC-24 TRAVEL — `api/routes/modules/travelagency.php` (8 routes)
+- Alias périmés réalignés sur les méthodes réellement définies : `indexAdverts→index`,
+  `storeAdvert→store`, `showAdvert→show`, `payAdvert→pay`, `renewAdvert→renew`,
+  `indexManage→manageIndex`, `validateAd→validateAdvert`.
+- `destroyAdvert` **implémentée** (`DELETE /travel/adverts/{travelAdvert}`) : policy `delete`,
+  annonce d'un autre tenant ⇒ **404** (comme `show`/`pay`/`renew`), succès ⇒ **204**.
+- Les **deux blocs d'annonces** qui déclaraient les mêmes URI avec des méthodes divergentes sont
+  fusionnés : une seule déclaration par couple (verbe, URI). `/adverts/manage` est déclaré **avant**
+  `/adverts/{travelAdvert}` — sinon « manage » est capturé comme identifiant d'annonce (404 de
+  l'écran de modération).
+
+BC-15 FUEL — `api/routes/modules/fuel_station.php` (19 routes)
+- `FuelReportController` : `dailyVolumes`/`sales`/`stock`/`variances`/`shifts` délèguent au rapport
+  typé `show()` ; `createExport` (pending + job), `exports`, `download` (409/410).
+- `FuelStockController` : `deliveries` et `verifyDelivery` implémentées (isolation tenant, acte
+  tracé) ; `movements`/`storeAdjustment` = alias canoniques de `index`/`store`.
+- `FuelIncidentController` : `transition` (graphe de transitions du modèle, **422** si illégal) et
+  `attach` (allowlist MIME/taille **avant** écriture).
+- Divers : `FuelImportController@show`, `FuelStationController@sitesIndex`, `FuelProductController@show`.
+
+Garde ajoutée : `api/tests/Feature/RouteControllerMethodContractTest.php` parcourt `Route::getRoutes()`,
+résout l'action (`uses`) et **échoue si la classe existe mais la méthode est absente**. Elle
+**échoue sur `main`** (27 routes listées) et passe après correctif — c'est la garde qui manquait pour
+que 27 routes cassées passent inaperçues.
+
+Scénarios verrouillés par `api/tests/Feature/Travel/TravelAdvertDestroyTest.php` : suppression d'une
+annonce de son tenant ⇒ **204** ; annonce d'un autre tenant ⇒ **404** ; `/adverts/manage` n'est pas
+capturé par `/adverts/{travelAdvert}`.
+
+Réserve documentée : les suites `TravelAdvert*` citées par l'issue portent des défauts **préexistants**
+(closures sans `use ($company)`, contrat d'une autre génération d'API, `$fillable` `label` vs colonne
+`name` sur `TravelAdvertType`/`TravelAdvertPosition`, `principal()` typé `string` appelé avec `null`) ;
+même constat côté Fuel (`fuel_stock_movements` inexistante, désyncs de schéma). Ensembles en échec
+**identiques avant/après** — aucune régression introduite par cet audit.
+
+## Addendum 2026-09-14 — verticale EDU : portail parents, responsables légaux et tarifs scolaires (#7409, #7408)
+
+Recette **tenant propriétaire d'école** (base fraîche v4.24.0). Le module EDU était
+inatteignable dès la première action de mise en route ; ce lot raccorde trois surfaces
+développées séparément et jamais reliées.
+
+### Scénarios verrouillés par `api/tests/Feature/EduManager/EduGuardianCrudTest.php`
+
+| Scénario | Attendu |
+|---|---|
+| `POST /edu-manager/guardians` (direction) | **201**, `data.id` > 0, `contact_reference` relu en clair (cast `encrypted`) |
+| `POST /edu-manager/students/{student}/guardians` | **201**, `data.can_view_grades` = true |
+| Ré-appel du même rattachement | **201** (idempotent, UNIQUE `company_id, student_id, guardian_id`) |
+| `POST /edu-manager/guardians/access-links` sur un responsable fraîchement créé | **201** (chaînage qui était impossible) |
+| `GET|POST /edu-manager/guardians` par un employé lambda | **403** |
+| Rattachement avec un `guardian_id` d'un autre tenant | **422** (jamais inséré) |
+| Rattachement sur un élève d'un autre tenant | **404** (isolation fail-closed) |
+
+### Scénarios vérifiés manuellement (API réelle, ANONYME pour le portail)
+
+| Scénario | Attendu |
+|---|---|
+| `POST /edu-manager/guardians/{guardian}/access-links` | **201**, token affiché une seule fois, `expires_at` |
+| `POST /edu-manager/guardian-portal/access-links/{token}/consume` (sans session) | **200**, `data.guardian` + `data.children[]` (présence + bulletins publiés si `can_view_grades`) |
+| Réutilisation du même lien | **410** (expiré ou déjà utilisé — indistinguables côté client) |
+| Jeton inconnu | **404** |
+| `GET|POST /edu-manager/fee-types` (direction) | **200** / **201** ; code dupliqué dans le tenant → **422** |
+| `GET|POST /edu-manager/fee-types` par un employé lambda | **403** |
+| `GET /edu-manager/fee-types` sans authentification | **401** |
+
+### Scénarios de mise en route (base fraîche, bout en bout)
+
+campus → année scolaire → matières → classe → élèves → inscriptions → évaluation → notes →
+**bulletin généré (201) → validé → publié** → frais de scolarité. Avant ce lot, les trois
+premiers `POST` répondaient **500** (`SQLSTATE 42703`, colonnes absentes) et
+`report-cards/generate` répondait **403** (ability `create` absente de la policy).
+
+Contrat OpenAPI : les 8 routes ajoutées sont documentées dans `api/openapi.yaml`
+(tag `EduManager`) et le miroir + SDK sont régénérés —
+`python3 dev-hub/tools/check-openapi-route-coverage.py --strict-staleness` → 0 nouvelle route
+non couverte.
+
+
+### Addendum 2026-09-14 (BC-16 EDU) — facturation détaillée, portail parents, RBAC enseignant
+
+Surface ajoutée à `/edu-manager` (2ᵉ passe du parcours « client propriétaire d'école ») :
+
+- `POST /edu-manager/fee-charges` — facturation d'un frais à un élève (idempotente sur
+  `external_id`), écriture de **2 lignes comptables équilibrées** (411 Clients / 706
+  Prestations) + événement d'outbox `edu.fee.charge.created.v1` ;
+- `POST /edu-manager/fee-charges/{charge}/payments` — encaissement (partiel → soldé),
+  rejeu idempotent, refus du **surdébit** (`EDU_FEE_OVERPAYMENT`, 422) et de toute
+  écriture sur une charge **terminale** (`EDU_FEE_TERMINAL`, 422), lignes 512/531 / 411 ;
+- `POST /edu-manager/fee-charges/{charge}/waive` — abandon du solde restant (654 / 411) ;
+- `GET /edu-manager/fee-accounting-entries` — vue de rapprochement paginée (`meta.total`),
+  bornée au tenant ;
+- `POST /edu-manager/guardians/{guardian}/portal-link` — émission d'un lien de portail
+  parents (direction uniquement, 404 cross-tenant) ;
+- `GET /edu-manager/portal/{token}` — **route publique** (le token est la credential) :
+  résumé borné aux enfants liés, journalisé dans `edu_portal_access_logs`, 404 si le lien
+  est expiré, révoqué ou inconnu.
+
+Scénarios CI correspondants (verts) : `api/tests/Feature/EduManager/EduFeeTest.php`
+(catalogue, idempotence, écritures équilibrées, transitions et refus, rapprochement,
+isolation), `EduGuardianPortalTest.php` (émission admin-only, résumé, expiration et
+révocation, isolation), `EduRbacPolicyTest.php` / `EduRbacMatrixTest.php` (périmètre
+enseignant : référent de classe, affectation, séance ; titulaire ≠ enseignant de séance
+pour les actes pédagogiques), `EduApiTest.php` (parcours complet campus → bulletin),
+`EduClassEnrollmentTest.php`, `EduAdmissionCampaignTest.php`, `EduAttendanceTest.php`,
+`EduManagerMigrationsTest.php` (inventaire et cycle up/down des migrations canoniques).
+État de la suite au 2026-09-14 : `tests/Feature/EduManager/` **280 tests, 0 échec**.

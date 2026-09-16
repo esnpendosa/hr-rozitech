@@ -1,0 +1,289 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use Database\Seeders\DemoCompanyOnceSeeder;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class DemoUserControllerTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+    }
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+    }
+
+    public function test_demo_users_expose_operational_personas(): void
+    {
+        // Demo mode must be explicitly opted into for this endpoint to serve
+        // anything; see docs/security/AUDIT_API_2026-07-19.md, section 1.
+        config(['app.demo_mode_enabled' => true]);
+
+        $response = $this->getJson('/api/v1/demo-users')
+            ->assertOk()
+            ->assertJsonPath('data.super_admin.role', 'super_admin')
+            ->assertJsonPath('data.companies.0.slug', 'techcorp-algerie');
+
+        $users = collect($response->json('data.companies.0.users'));
+
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['manager_role'] === 'principal'));
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['manager_role'] === 'rh'));
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['manager_role'] === 'dept'));
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['manager_role'] === 'comptable'));
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['manager_role'] === 'superviseur'));
+        $this->assertTrue($users->contains(fn (array $user): bool => $user['role'] === 'employee'));
+
+        $this->assertSame('kiosk-supervisor', $users->firstWhere('manager_role', 'superviseur')['surface']);
+        $this->assertSame('/me', $users->firstWhere('role', 'employee')['primary_path']);
+    }
+
+    public function test_demo_users_endpoint_is_a_404_in_production_unless_explicitly_enabled(): void
+    {
+        // A prior version of this test asserted the opposite (200 in
+        // production with demo mode off) which is exactly the data leak
+        // documented in docs/security/AUDIT_API_2026-07-19.md, section 1:
+        // real-looking credentials for demo tenants were served on every
+        // environment, including production, with no way to opt out. The
+        // route must 404 whenever DEMO_MODE_ENABLED is not explicitly true,
+        // regardless of environment.
+        app()->detectEnvironment(fn (): string => 'production');
+        config(['app.demo_mode_enabled' => false]);
+
+        $this->getJson('/api/v1/demo-users')->assertNotFound();
+    }
+
+    public function test_demo_users_endpoint_can_be_opted_into_in_production_for_tester_guides(): void
+    {
+        // Operators may still explicitly opt in (e.g. a dedicated demo/staging
+        // environment flagged as "production") via DEMO_MODE_ENABLED=true.
+        app()->detectEnvironment(fn (): string => 'production');
+        config(['app.demo_mode_enabled' => true]);
+
+        $this->getJson('/api/v1/demo-users')
+            ->assertOk()
+            ->assertJsonPath('data.companies.0.users.0.email', 'ahmed.benali@techcorp-algerie.dz');
+    }
+
+    public function test_demo_once_seeder_keeps_public_super_admin_credentials_usable(): void
+    {
+        // The seeder itself is a separate opt-in gate from the HTTP endpoint
+        // (config/database seeding step vs. runtime request), so it is
+        // exercised here with demo mode explicitly enabled.
+        config(['app.demo_mode_enabled' => true]);
+
+        DB::table('public.super_admins')->insert([
+            'name' => 'Super Administrateur',
+            'email' => 'admin@leopardo-rh.com',
+            'password_hash' => Hash::make('old-random-password'),
+            'two_fa_secret' => 'ABCDEFGHIJKLMNOP',
+            'created_at' => now(),
+        ]);
+
+        Schema::create('seed_locks', function (Blueprint $table): void {
+            $table->string('lock_key')->primary();
+            $table->timestampTz('ran_at')->nullable();
+            $table->timestampsTz();
+        });
+
+        foreach (['techcorp-algerie', 'pharmaplus-casablanca', 'digitalflow-tunis'] as $slug) {
+            Company::factory()->create([
+                'slug' => $slug,
+                'schema_name' => 'shared_tenants',
+                'tenancy_type' => 'shared',
+                'status' => 'active',
+            ]);
+        }
+
+        $this->seed(DemoCompanyOnceSeeder::class);
+
+        $superAdmin = DB::table('public.super_admins')
+            ->where('email', 'admin@leopardo-rh.com')
+            ->first();
+
+        $this->assertNotNull($superAdmin);
+        $this->assertTrue(Hash::check('password123', $superAdmin->password_hash));
+        $this->assertNull($superAdmin->two_fa_secret);
+    }
+
+    public function test_demo_once_seeder_backfills_launch_readiness_signals_for_existing_demos(): void
+    {
+        Schema::create('seed_locks', function (Blueprint $table): void {
+            $table->string('lock_key')->primary();
+            $table->timestampTz('ran_at')->nullable();
+            $table->timestampsTz();
+        });
+
+        $companies = collect(['techcorp-algerie', 'pharmaplus-casablanca', 'digitalflow-tunis'])
+            ->mapWithKeys(fn (string $slug): array => [
+                $slug => Company::factory()->create([
+                    'slug' => $slug,
+                    'schema_name' => 'shared_tenants',
+                    'tenancy_type' => 'shared',
+                    'status' => 'active',
+                    'metadata' => [],
+                ]),
+            ]);
+
+        $employeeId = DB::table('shared_tenants.employees')->insertGetId([
+            'company_id' => $companies['techcorp-algerie']->id,
+            'first_name' => 'Readiness',
+            'last_name' => 'Demo',
+            'email' => 'readiness.demo@techcorp-algerie.dz',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+            'salary_type' => 'fixed',
+            'salary_base' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->seed(DemoCompanyOnceSeeder::class);
+
+        $salaryBase = DB::table('shared_tenants.employees')
+            ->where('id', $employeeId)
+            ->value('salary_base');
+
+        $this->assertGreaterThan(0, (float) $salaryBase);
+        $this->assertTrue(DB::table('shared_tenants.attendance_kiosks')
+            ->where('company_id', $companies['techcorp-algerie']->id)
+            ->where('status', 'active')
+            ->exists());
+        $this->assertTrue(DB::table('shared_tenants.client_events')
+            ->where('company_id', $companies['techcorp-algerie']->id)
+            ->where('event_name', 'launch_readiness_backfilled')
+            ->exists());
+
+        $metadata = DB::table('public.companies')
+            ->where('id', $companies['techcorp-algerie']->id)
+            ->value('metadata');
+        $metadata = is_string($metadata) ? json_decode($metadata, true) : $metadata;
+
+        $this->assertIsArray($metadata);
+        $this->assertArrayHasKey('attendance_geofence', $metadata);
+    }
+
+    public function test_demo_once_seeder_backfills_existing_demo_readiness_when_demo_creation_is_disabled(): void
+    {
+        putenv('DISABLE_DEMO_SEEDING=true');
+        $_ENV['DISABLE_DEMO_SEEDING'] = 'true';
+        $_SERVER['DISABLE_DEMO_SEEDING'] = 'true';
+
+        try {
+            Schema::create('seed_locks', function (Blueprint $table): void {
+                $table->string('lock_key')->primary();
+                $table->timestampTz('ran_at')->nullable();
+                $table->timestampsTz();
+            });
+
+            $companies = collect(['techcorp-algerie', 'pharmaplus-casablanca', 'digitalflow-tunis'])
+                ->mapWithKeys(fn (string $slug): array => [
+                    $slug => Company::factory()->create([
+                        'slug' => $slug,
+                        'schema_name' => 'shared_tenants',
+                        'tenancy_type' => 'shared',
+                        'status' => 'active',
+                        'metadata' => [],
+                    ]),
+                ]);
+
+            $employeeId = DB::table('shared_tenants.employees')->insertGetId([
+                'company_id' => $companies['techcorp-algerie']->id,
+                'first_name' => 'Disabled',
+                'last_name' => 'Backfill',
+                'email' => 'disabled.backfill@techcorp-algerie.dz',
+                'password_hash' => Hash::make('password123'),
+                'role' => 'employee',
+                'status' => 'active',
+                'salary_type' => 'fixed',
+                'salary_base' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $this->seed(DemoCompanyOnceSeeder::class);
+
+            $this->assertGreaterThan(0, (float) DB::table('shared_tenants.employees')
+                ->where('id', $employeeId)
+                ->value('salary_base'));
+            $this->assertTrue(DB::table('shared_tenants.attendance_kiosks')
+                ->where('company_id', $companies['techcorp-algerie']->id)
+                ->where('status', 'active')
+                ->exists());
+            $this->assertTrue(DB::table('shared_tenants.client_events')
+                ->where('company_id', $companies['techcorp-algerie']->id)
+                ->where('event_name', 'launch_readiness_backfilled')
+                ->exists());
+        } finally {
+            putenv('DISABLE_DEMO_SEEDING');
+            unset($_ENV['DISABLE_DEMO_SEEDING'], $_SERVER['DISABLE_DEMO_SEEDING']);
+        }
+    }
+
+    public function test_demo_login_recovers_missing_lookup_from_shared_tenant_schema(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'first_name' => 'Ahmed',
+            'last_name' => 'Benali',
+            'email' => 'ahmed.benali@techcorp-algerie.dz',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'manager',
+            'manager_role' => 'principal',
+            'status' => 'active',
+            'salary_type' => 'fixed',
+            'salary_base' => 100000,
+            'leave_balance' => 12,
+        ]);
+
+        // Avec les vraies migrations (RefreshTenantDatabase), `companies` vit
+        // dans public et `shared_tenants` est déjà le schéma tenant des tests :
+        // on simule simplement la perte du lookup (comme une base migrée avant
+        // le backfill) sans changer le search_path.
+        DB::table('public.user_lookups')->where('email', $employee->email)->delete();
+
+        $loginResponse = $this->postJson('/api/v1/auth/login', [
+            'email' => $employee->email,
+            'password' => 'password123',
+            'device_name' => 'Feature test',
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.email', $employee->email)
+            ->assertJsonPath('data.company.id', $company->id)
+            ->assertJsonStructure(['token']);
+
+        $this->withToken($loginResponse->json('token'))
+            ->getJson('/api/v1/auth/me')
+            ->assertOk()
+            ->assertJsonPath('data.email', $employee->email)
+            ->assertJsonPath('data.company.id', $company->id);
+
+        $this->assertDatabaseHas('user_lookups', [
+            'email' => $employee->email,
+            'company_id' => $company->id,
+            'schema_name' => 'shared_tenants',
+        ]);
+    }
+}
+

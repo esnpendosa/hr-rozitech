@@ -1,0 +1,139 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Web;
+
+use App\Http\Controllers\Controller;
+use App\Modules\Attendance\Domain\Models\AttendanceLog;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Modules\Planning\Infrastructure\Services\EstimationService;
+use App\Support\I18nCatalog;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Contracts\View\View;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\App;
+
+class WebEmployeeController extends Controller
+{
+    public function __construct(private readonly EstimationService $estimationService) {}
+
+    public function show(string $employeeId): View
+    {
+        $this->authorize('viewAny', Employee::class);
+        $employee = Employee::query()->findOrFail($employeeId);
+
+        $company = currentCompany();
+
+        $historyLogs = AttendanceLog::query()
+            ->where('employee_id', $employee->id)
+            ->orderByDesc('date')
+            ->orderBy('session_number')
+            ->orderByDesc('id')
+            ->limit(120)
+            ->get();
+
+        $history = $historyLogs
+            ->groupBy(fn (AttendanceLog $log) => $log->date?->format('Y-m-d') ?? '')
+            ->take(30)
+            ->map(function (\Illuminate\Support\Collection $logs, string $date) use ($employee, $company): array {
+                /** @var \Illuminate\Support\Collection<int, AttendanceLog> $logs */
+                $summary = $this->estimationService->dailySummaryFromLogs(
+                    employee: $employee,
+                    logs: $logs,
+                    date: $date,
+                );
+                /** @var AttendanceLog|null $firstLog */
+                $firstLog = $logs->sortBy('session_number')->first();
+                /** @var AttendanceLog|null $lastLog */
+                $lastLog = $logs->sortByDesc('session_number')->first();
+
+                $tz = (string) $company->timezone;
+
+                return [
+                    'date' => $date,
+                    'check_in' => $firstLog?->check_in?->setTimezone($tz)->format('H:i'),
+                    'check_out' => $lastLog?->check_out?->setTimezone($tz)->format('H:i'),
+                    'sessions_count' => $summary['sessions_count'] ?? $logs->count(),
+                    'hours_worked' => $summary['hours_worked'] ?? 0.0,
+                    'total_estimated' => $summary['total_estimated'] ?? 0.0,
+                    'currency' => $summary['currency'] ?? (string) $company->currency,
+                    'status' => $summary['status'] ?? 'absent',
+                ];
+            })->values();
+
+        $defaultTo = now('UTC')->setTimezone($company->timezone)->toDateString();
+        $defaultFrom = now('UTC')->setTimezone($company->timezone)->subDays(7)->toDateString();
+
+        return view('employees.show', [
+            'company' => $company,
+            'employee' => $employee,
+            'history' => $history,
+            'defaultFrom' => $defaultFrom,
+            'defaultTo' => $defaultTo,
+        ]);
+    }
+
+    public function quickEstimate(Request $request, string $employeeId): JsonResponse
+    {
+        $this->authorize('viewAny', Employee::class);
+        $employee = Employee::query()->findOrFail($employeeId);
+
+        $validated = $request->validate([
+            'from' => ['required', 'date_format:Y-m-d'],
+            'to' => ['required', 'date_format:Y-m-d', 'after_or_equal:from'],
+        ]);
+
+        $estimate = $this->estimationService->quickEstimate(
+            employee: $employee,
+            from: $validated['from'],
+            to: $validated['to'],
+        );
+
+        return new JsonResponse(['data' => $estimate]);
+    }
+
+    public function receipt(Request $request, string $employeeId): Response
+    {
+        $this->authorize('viewAny', Employee::class);
+        $employee = Employee::query()->findOrFail($employeeId);
+
+        $validated = $request->validate([
+            'from' => ['required', 'date_format:Y-m-d'],
+            'to' => ['required', 'date_format:Y-m-d', 'after_or_equal:from'],
+        ]);
+
+        $estimate = $this->estimationService->quickEstimate(
+            employee: $employee,
+            from: $validated['from'],
+            to: $validated['to'],
+        );
+
+        $company = currentCompany();
+
+        // This is a `web`-group route: SetLocale (api-only middleware) never
+        // runs here, so the PDF would otherwise always render in the app's
+        // default locale regardless of the employee's preference.
+        App::setLocale(I18nCatalog::normalizeLocale(
+            $employee->preferred_language ?? $company?->language
+        ));
+
+        $pdf = Pdf::loadView('pdf.receipt', [
+            'company' => $company,
+            'employee' => $employee,
+            'estimate' => $estimate,
+        ]);
+
+        $fileName = sprintf(
+            'receipt_estimate_employee_%s_%s_%s.pdf',
+            (string) $employee->id,
+            (string) $validated['from'],
+            (string) $validated['to']
+        );
+
+        return $pdf->download($fileName);
+    }
+}
+

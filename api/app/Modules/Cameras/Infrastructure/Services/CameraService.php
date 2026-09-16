@@ -1,0 +1,679 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Cameras\Infrastructure\Services;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Exceptions\DomainException;
+use App\Modules\Cameras\Domain\Models\Camera;
+use App\Modules\Cameras\Domain\Models\CameraAccessLog;
+use App\Modules\Cameras\Domain\Models\CameraAccessToken;
+use App\Modules\Cameras\Infrastructure\Streaming\CameraStreamTokenService;
+use App\Rules\NotPrivateUrl;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+/**
+ * Service métier du module Surveillance Caméras.
+ * Centralise : contrôle de plan, génération de tokens tiers, création
+ * de caméras, révocation, journalisation des accès.
+ */
+class CameraService
+{
+    public function __construct(private readonly CameraStreamTokenService $streamTokens) {}
+
+    /**
+     * Crée une caméra en s'assurant que la limite du plan n'est pas dépassée.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public function create(Company $company, Employee $actor, array $data): Camera
+    {
+        $this->assertPlanCanCreate($company);
+
+        $camera = new Camera;
+        $camera->company_id = $company->id;
+        $camera->name = $data['name'];
+        $camera->rtsp_url = $data['rtsp_url'];
+        $camera->location = $data['location'] ?? null;
+        $camera->sort_order = (int) ($data['sort_order'] ?? 0);
+        $camera->stream_path_override = $data['stream_path_override'] ?? null;
+        $camera->metadata = $data['metadata'] ?? [];
+        $camera->created_by = $actor->id;
+        $camera->is_active = true;
+        $camera->save();
+
+        $this->log(
+            company: $company,
+            camera: $camera,
+            actor: $actor,
+            action: 'create',
+            reason: null,
+            accessTokenId: null,
+            ipAddress: null,
+            metadata: ['name' => $camera->name]
+        );
+
+        return $camera->fresh() ?? $camera;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function update(Camera $camera, Employee $actor, array $data): Camera
+    {
+        foreach (['name', 'location', 'sort_order', 'stream_path_override', 'metadata', 'is_active'] as $field) {
+            if (array_key_exists($field, $data)) {
+                $camera->{$field} = $data[$field];
+            }
+        }
+
+        if (array_key_exists('rtsp_url', $data) && is_string($data['rtsp_url']) && $data['rtsp_url'] !== '') {
+            $camera->rtsp_url = $data['rtsp_url'];
+        }
+
+        $camera->save();
+
+        $this->log(
+            company: $camera->company,
+            camera: $camera,
+            actor: $actor,
+            action: 'update',
+            reason: null,
+            accessTokenId: null,
+            ipAddress: null,
+            metadata: ['fields' => array_keys($data)]
+        );
+
+        return $camera->fresh() ?? $camera;
+    }
+
+    public function softDelete(Camera $camera, Employee $actor): void
+    {
+        $camera->is_active = false;
+        $camera->save();
+        $camera->delete();
+
+        $this->log(
+            company: $camera->company,
+            camera: $camera,
+            actor: $actor,
+            action: 'delete',
+            reason: null,
+            accessTokenId: null,
+            ipAddress: null,
+            metadata: null
+        );
+    }
+
+    /**
+     * Produit la charge API pour l'app : caméra + stream_token signé.
+     */
+    /**
+     * @return array<string, mixed>
+     */
+    public function buildStreamPayload(Camera $camera, Employee $actor): array
+    {
+        $issued = $this->streamTokens->issue($camera, $actor->id);
+
+        return [
+            'id' => (int) $camera->id,
+            'name' => $camera->name,
+            'location' => $camera->location,
+            'is_active' => (bool) $camera->is_active,
+            'sort_order' => (int) $camera->sort_order,
+            'thumbnail_url' => $this->thumbnailUrl($camera),
+            'stream_url' => $this->streamUrl($camera),
+            'stream_token' => $issued['token'],
+            'token_expires_at' => $issued['expires_at']->toIso8601ZuluString(),
+            'created_at' => optional($camera->created_at)->toIso8601ZuluString(),
+        ];
+    }
+
+    /**
+     * Crée un token d'accès tiers (lien public partageable).
+     */
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function issueAccessToken(Camera $camera, Employee $actor, array $data): CameraAccessToken
+    {
+        $duration = (int) ($data['expires_in_minutes'] ?? 60);
+        $allowed = Config::get('cameras.access_token_durations', []);
+        $maxDuration = (int) Config::get('cameras.access_token_max_duration_minutes', 30 * 24 * 60);
+
+        if (! empty($allowed) && ! in_array($duration, $allowed, true)) {
+            throw new DomainException(
+                'The requested duration is not allowed.',
+                422,
+                'VALIDATION_ERROR'
+            );
+        }
+
+        $duration = max(1, min($duration, $maxDuration));
+
+        $token = new CameraAccessToken;
+        $token->company_id = $camera->company_id;
+        $token->camera_id = $camera->id;
+        $token->token = $this->generateOpaqueToken();
+        $token->label = $data['label'] ?? null;
+        $token->granted_to_email = $data['granted_to_email'] ?? null;
+        $token->granted_to_name = $data['granted_to_name'] ?? null;
+        $token->granted_by = $actor->id;
+        $token->permissions = $data['permissions'] ?? ['view' => true];
+        $token->ip_whitelist = $data['ip_whitelist'] ?? null;
+        $token->expires_at = Carbon::now('UTC')->addMinutes($duration);
+        $token->is_revoked = false;
+        $token->save();
+
+        $this->log(
+            company: $camera->company,
+            camera: $camera,
+            actor: $actor,
+            action: 'share',
+            reason: null,
+            accessTokenId: $token->id,
+            ipAddress: null,
+            metadata: ['label' => $token->label, 'expires_at' => $token->expires_at->toIso8601ZuluString()]
+        );
+
+        return $token->fresh() ?? $token;
+    }
+
+    public function revokeAccessToken(CameraAccessToken $token, Employee $actor): CameraAccessToken
+    {
+        if (! $token->is_revoked) {
+            $token->is_revoked = true;
+            $token->save();
+
+            $this->log(
+                company: $token->camera?->company,
+                camera: $token->camera,
+                actor: $actor,
+                action: 'revoke',
+                reason: null,
+                accessTokenId: $token->id,
+                ipAddress: null,
+                metadata: null
+            );
+        }
+
+        return $token->fresh() ?? $token;
+    }
+
+    /**
+     * Construit la réponse /internal/camera-token/verify pour MediaMTX.
+     * Résout aussi bien un stream_token JWT qu'un access_token opaque.
+     */
+    /**
+     * @return array<string, mixed>
+     */
+    public function verifyTokenForMediamtx(string $token, int $cameraId, ?string $clientIp): array
+    {
+        /** @var Camera|null $camera */
+        $camera = Camera::withoutGlobalScopes()
+            ->whereKey($cameraId)
+            ->whereNull('deleted_at')
+            ->first();
+
+        if ($camera === null || ! $camera->is_active) {
+            return ['allowed' => false, 'reason' => 'camera_not_found'];
+        }
+
+        /** @var Company|null $company */
+        $company = Company::query()->find($camera->company_id);
+
+        if ($company === null || in_array($company->status, ['suspended', 'expired'], true)) {
+            $this->log(
+                company: $company,
+                camera: $camera,
+                actor: null,
+                action: 'token_verify_denied',
+                reason: 'company_suspended',
+                accessTokenId: null,
+                ipAddress: $clientIp,
+                metadata: null
+            );
+
+            return ['allowed' => false, 'reason' => 'company_suspended'];
+        }
+
+        if (! $company->hasFeature('cameras')) {
+            $this->log(
+                company: $company,
+                camera: $camera,
+                actor: null,
+                action: 'token_verify_denied',
+                reason: 'feature_disabled',
+                accessTokenId: null,
+                ipAddress: $clientIp,
+                metadata: null
+            );
+
+            return ['allowed' => false, 'reason' => 'feature_disabled'];
+        }
+
+        // 1) Tentative stream_token JWT
+        $reason = $this->streamTokens->invalidReasonFor($token, (int) $camera->id);
+        if ($reason === null) {
+            $this->log(
+                company: $company,
+                camera: $camera,
+                actor: null,
+                action: 'token_verify',
+                reason: null,
+                accessTokenId: null,
+                ipAddress: $clientIp,
+                metadata: ['type' => CameraStreamTokenService::TYPE_STREAM]
+            );
+
+            return [
+                'allowed' => true,
+                'company_id' => (string) $company->id,
+                'type' => CameraStreamTokenService::TYPE_STREAM,
+            ];
+        }
+
+        // 2) Tentative access_token tiers (opaque, table camera_access_tokens)
+        /** @var CameraAccessToken|null $access */
+        $access = CameraAccessToken::withoutGlobalScopes()
+            ->where('token', $token)
+            ->where('camera_id', $camera->id)
+            ->first();
+
+        if ($access === null) {
+            $this->log(
+                company: $company,
+                camera: $camera,
+                actor: null,
+                action: 'token_verify_denied',
+                reason: 'token_invalid',
+                accessTokenId: null,
+                ipAddress: $clientIp,
+                metadata: null
+            );
+
+            return ['allowed' => false, 'reason' => 'token_invalid'];
+        }
+
+        $expiration = $access->expirationReason();
+
+        if ($expiration !== null) {
+            $this->log(
+                company: $company,
+                camera: $camera,
+                actor: null,
+                action: 'token_verify_denied',
+                reason: $expiration,
+                accessTokenId: $access->id,
+                ipAddress: $clientIp,
+                metadata: null
+            );
+
+            return ['allowed' => false, 'reason' => $expiration];
+        }
+
+        // Optionnel : whitelist IP (Phase 2, spec)
+        if (is_array($access->ip_whitelist) && $access->ip_whitelist !== [] && $clientIp !== null) {
+            if (! in_array($clientIp, $access->ip_whitelist, true)) {
+                $this->log(
+                    company: $company,
+                    camera: $camera,
+                    actor: null,
+                    action: 'token_verify_denied',
+                    reason: 'ip_not_allowed',
+                    accessTokenId: $access->id,
+                    ipAddress: $clientIp,
+                    metadata: null
+                );
+
+                return ['allowed' => false, 'reason' => 'ip_not_allowed'];
+            }
+        }
+
+        DB::table($access->getTable())
+            ->where('id', $access->id)
+            ->update([
+                'last_used_at' => Carbon::now('UTC'),
+                'use_count' => DB::raw('use_count + 1'),
+            ]);
+
+        $this->log(
+            company: $company,
+            camera: $camera,
+            actor: null,
+            action: 'token_verify',
+            reason: null,
+            accessTokenId: $access->id,
+            ipAddress: $clientIp,
+            metadata: ['type' => 'access_token']
+        );
+
+        return [
+            'allowed' => true,
+            'company_id' => (string) $company->id,
+            'type' => 'access_token',
+            'camera_id' => (int) $camera->id,
+        ];
+    }
+
+    /**
+     * Teste la joignabilité d'une URL RTSP via ffprobe (best-effort).
+     * Retourne ['ok' => bool, 'error' => ?string].
+     *
+     * Note sécurité (#6560, audit F3) : TOCTOU accepté et documenté — la
+     * validation d'hôte (NotPrivateUrl::isPublicHost + isPrivateRtspTarget)
+     * s'applique au moment de l'appel ; un DNS rebinding entre la
+     * résolution et l'exécution de ffprobe reste théoriquement possible.
+     * Accepté car : (1) ffprobe n'émet que des requêtes RTSP en lecture,
+     * (2) le secret RTSP n'est jamais transmis en clair hors du conteneur,
+     * (3) une protection par IP figée casserait les caméras à DNS dynamique.
+     * Ne pas retirer les gardes existantes.
+     */
+    /**
+     * @return array<string, mixed>
+     */
+    public function testRtsp(string $rtspUrl): array
+    {
+        if (! (bool) Config::get('cameras.test_rtsp.enabled', true)) {
+            return ['ok' => true, 'error' => null, 'skipped' => true];
+        }
+
+        $binary = (string) Config::get('cameras.test_rtsp.binary', 'ffprobe');
+        $timeout = (int) Config::get('cameras.test_rtsp.timeout', 5);
+
+        // Validation stricte pour éviter l'injection — seul rtsp:// est permis.
+        if (! preg_match('#^rtsp://[^\s\'"]+$#i', $rtspUrl)) {
+            return ['ok' => false, 'error' => 'invalid_url', 'skipped' => false];
+        }
+        // QA #3147 — SSRF : ffprobe est lancé sur l'URL fournie par l'utilisateur.
+        // Bloquer les cibles internes (loopback, privées, link-local, réservées)
+        // avant tout accès réseau, y compris après résolution DNS. Refus métier
+        // `host_not_allowed` (contrat #3147) — distinct de `invalid_url`.
+        if ($this->isPrivateRtspTarget($rtspUrl)) {
+            return ['ok' => false, 'error' => 'host_not_allowed', 'skipped' => false];
+        }
+
+        // SSRF (issue #3147) : interdire les cibles loopback/privées/réservées
+        // (réutilise la garde fail-closed NotPrivateUrl des webhooks) pour que
+        // le serveur API ne puisse pas sonder le réseau interne via ffprobe.
+        //
+        // #6560 (audit sécurité F3, 2026-08-31) — TOCTOU DNS rebinding
+        // ACCEPTÉ et documenté : la cible est résolue par ffprobe APRÈS le
+        // contrôle `NotPrivateUrl::isPublicHost`, une résolution DNS hostile
+        // pourrait théoriquement pointer vers une IP privée entre les deux.
+        // Mitigations en place : contrôle sur le host littéral + résolution
+        // au moment du contrôle ; risque résiduel faible (attaque DNS
+        // active), accepté pour ce module caméras — ne pas durcir sans
+        // revue (bind local résolu avant exécution).
+        $host = parse_url($rtspUrl, PHP_URL_HOST);
+        if (! is_string($host) || $host === '' || ! NotPrivateUrl::isPublicHost($host)) {
+            return ['ok' => false, 'error' => 'host_not_allowed', 'skipped' => false];
+        }
+
+        $cmd = sprintf(
+            '%s -v error -rtsp_transport tcp -stimeout %d -i %s -show_streams -of json 2>&1',
+            escapeshellcmd($binary),
+            $timeout * 1_000_000,
+            escapeshellarg($rtspUrl)
+        );
+
+        $startedAt = microtime(true);
+        $output = @shell_exec($cmd);
+        $duration = microtime(true) - $startedAt;
+
+        if ($output === null) {
+            return ['ok' => false, 'error' => 'ffprobe_unavailable', 'skipped' => false];
+        }
+
+        $trimmed = trim((string) $output);
+
+        if ($trimmed === '' || str_starts_with($trimmed, '{')) {
+            $decoded = json_decode($trimmed ?: '{}', true);
+            if (is_array($decoded) && isset($decoded['streams'])) {
+                return ['ok' => true, 'error' => null, 'duration_ms' => (int) round($duration * 1000)];
+            }
+        }
+
+        if ($duration >= $timeout) {
+            return ['ok' => false, 'error' => 'timeout', 'skipped' => false];
+        }
+
+        return ['ok' => false, 'error' => 'connection_failed', 'skipped' => false];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $metadata
+     */
+    public function log(
+        ?Company $company,
+        ?Camera $camera,
+        ?Employee $actor,
+        string $action,
+        ?string $reason,
+        ?int $accessTokenId,
+        ?string $ipAddress,
+        ?array $metadata,
+    ): void {
+        $log = new CameraAccessLog;
+        $log->company_id = $company?->id ?? $camera?->company_id;
+        if ($camera === null) {
+            // camera_id est NOT NULL en base (migration create_cameras_module_tables)
+            throw new \InvalidArgumentException("camera requise pour un log d'accès (camera_id NOT NULL)");
+        }
+        $log->camera_id = $camera->id;
+        $log->employee_id = $actor?->id;
+        $log->access_token_id = $accessTokenId;
+        $log->actor_type = match (true) {
+            $actor !== null => CameraAccessLog::ACTOR_EMPLOYEE,
+            $accessTokenId !== null => CameraAccessLog::ACTOR_EXTERNAL_TOKEN,
+            default => CameraAccessLog::ACTOR_SYSTEM,
+        };
+        $log->action = $action;
+        $log->reason = $reason;
+        $log->ip_address = $ipAddress;
+        $log->metadata = $metadata;
+        $log->save();
+    }
+
+    /**
+     * Nombre de caméras (hors soft-deletées) d'une company.
+     */
+    public function countActive(Company $company): int
+    {
+        return Camera::withoutGlobalScopes()
+            ->where('company_id', $company->id)
+            ->whereNull('deleted_at')
+            ->count();
+    }
+
+    /**
+     * Limite max_cameras pour la company (null = illimité).
+     * Source : companies.features.max_cameras, fallback plans.features.max_cameras,
+     * fallback config cameras.default_max_cameras.
+     */
+    public function maxCameras(Company $company): ?int
+    {
+        $features = $company->features ?? [];
+
+        if (array_key_exists('max_cameras', $features)) {
+            $value = $features['max_cameras'];
+
+            return $value === null ? null : (int) $value;
+        }
+
+        if ($company->plan_id) {
+            $plan = DB::table('plans')->where('id', $company->plan_id)->first();
+            $planFeatures = $plan && isset($plan->features) ? json_decode((string) $plan->features, true) : null;
+
+            if (is_array($planFeatures) && array_key_exists('max_cameras', $planFeatures)) {
+                return $planFeatures['max_cameras'] === null ? null : (int) $planFeatures['max_cameras'];
+            }
+        }
+
+        return (int) Config::get('cameras.default_max_cameras', 0);
+    }
+
+    private function assertPlanCanCreate(Company $company): void
+    {
+        if (! $company->hasFeature('cameras')) {
+            throw new DomainException(
+                'Your plan does not include the cameras module. Upgrade to Business.',
+                403,
+                'FEATURE_NOT_ENABLED'
+            );
+        }
+
+        $max = $this->maxCameras($company);
+
+        if ($max === null) {
+            return;
+        }
+
+        if ($this->countActive($company) >= $max) {
+            throw new DomainException(
+                'Camera limit reached for your plan ('.$max.' max). Upgrade to Enterprise.',
+                403,
+                'CAMERA_LIMIT_REACHED'
+            );
+        }
+    }
+
+    private function generateOpaqueToken(): string
+    {
+        // 32 bytes aléatoires → 64 caractères hex. Non devinable.
+        return bin2hex(random_bytes(32));
+    }
+
+    private function thumbnailUrl(Camera $camera): ?string
+    {
+        if ($camera->thumbnail_path === null || $camera->thumbnail_path === '') {
+            return null;
+        }
+
+        $base = Config::get('app.url');
+        if (! is_string($base) || $base === '') {
+            return $camera->thumbnail_path;
+        }
+
+        return rtrim($base, '/').'/storage/'.ltrim((string) $camera->thumbnail_path, '/');
+    }
+
+    private function streamUrl(Camera $camera): string
+    {
+        $base = rtrim((string) Config::get('cameras.stream_base_url', 'wss://proxy.leopardo-rh.com/cam'), '/');
+        $path = $camera->stream_path_override !== null && $camera->stream_path_override !== ''
+            ? (string) $camera->stream_path_override
+            : (string) $camera->id;
+
+        return $base.'/'.trim($path, '/').'/webrtc';
+    }
+
+    /**
+     * Clé idempotente utilisable par les clients pour retry (Phase 2).
+     */
+    public function idempotencyKey(Camera $camera, Employee $actor): string
+    {
+        return Str::uuid()->toString().':'.$camera->id.':'.$actor->id;
+    }
+
+    /**
+     * QA #3147 — anti-SSRF : détermine si une URL RTSP cible une adresse
+     * interne (loopback, RFC1918, link-local, CGNAT, réservée/multicast) ou
+     * un nom d'hôte qui y résout. Aucun ffprobe n'est lancé sur ces cibles.
+     */
+    private function isPrivateRtspTarget(string $rtspUrl): bool
+    {
+        $host = parse_url($rtspUrl, PHP_URL_HOST);
+        if (! is_string($host) || $host === '') {
+            return true;
+        }
+
+        $host = strtolower(trim($host, '[]'));
+        if (in_array($host, ['localhost', 'localhost.localdomain'], true)) {
+            return true;
+        }
+        if (str_ends_with($host, '.local') || str_ends_with($host, '.internal') || str_ends_with($host, '.lan')) {
+            return true;
+        }
+
+        $candidates = [];
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            $candidates[] = $host;
+        } else {
+            $resolved = @gethostbynamel($host);
+            if ($resolved === false) {
+                return true; // non résolu — ne pas laisser ffprobe tenter l'accès
+            }
+            $candidates = $resolved;
+        }
+
+        foreach ($candidates as $ip) {
+            if ($this->isPrivateIp($ip)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isPrivateIp(string $ip): bool
+    {
+        $packed = @inet_pton($ip);
+        if ($packed === false) {
+            return true; // IP illisible → on refuse par défaut
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $parts = array_map('intval', explode('.', $ip));
+
+            return $parts[0] === 0        // 0.0.0.0/8
+                || $parts[0] === 10       // 10.0.0.0/8
+                || $parts[0] === 127      // 127.0.0.0/8 loopback
+                || ($parts[0] === 100 && $parts[1] >= 64 && $parts[1] <= 127) // 100.64.0.0/10 CGNAT
+                || ($parts[0] === 169 && $parts[1] === 254) // 169.254.0.0/16 link-local
+                || ($parts[0] === 172 && $parts[1] >= 16 && $parts[1] <= 31) // 172.16.0.0/12
+                || ($parts[0] === 192 && $parts[1] === 168) // 192.168.0.0/16
+                || ($parts[0] === 192 && $parts[1] === 0 && $parts[2] === 0) // 192.0.0.0/24
+                || ($parts[0] === 192 && $parts[1] === 0 && $parts[2] === 2) // 192.0.2.0/24 TEST-NET
+                || ($parts[0] === 198 && ($parts[1] === 18 || $parts[1] === 19)) // 198.18.0.0/15
+                || ($parts[0] === 198 && $parts[1] === 51 && $parts[2] === 100) // 198.51.100.0/24
+                || ($parts[0] === 203 && $parts[1] === 0 && $parts[2] === 113) // 203.0.113.0/24
+                || $parts[0] >= 224;      // multicast + réservé
+        }
+
+        // IPv6 : boucle (::1), unspecified (::), lien-local (fe80::/10),
+        // ULA (fc00::/7), multicast (ff00::/8), documentation (2001:db8::/32),
+        // et IPv4-mappée (::ffff:a.b.c.d) — déléguée au filtre IPv4.
+        $hex = bin2hex($packed);
+        $firstWord = substr($hex, 0, 4);
+
+        if ($firstWord === '0000') {
+            $suffix = substr($hex, 20);
+            if ($suffix === '') {
+                return true; // :: ou ::1
+            }
+            if (str_starts_with($suffix, 'ffff')) {
+                $v4 = implode('.', [
+                    hexdec(substr($suffix, 4, 2)),
+                    hexdec(substr($suffix, 6, 2)),
+                    hexdec(substr($suffix, 8, 2)),
+                    hexdec(substr($suffix, 10, 2)),
+                ]);
+
+                return $this->isPrivateIp($v4);
+            }
+
+            return true; // autre 0000 non-mappé — refuse par défaut
+        }
+
+        return $firstWord === 'fe80' || $firstWord === 'fec0'
+            || $firstWord === 'fc00' || $firstWord === 'fd00'
+            || $firstWord === 'ff00'
+            || $firstWord === '2001' && substr($hex, 4, 4) === '0db8';
+    }
+}

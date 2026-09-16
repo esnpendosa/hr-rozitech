@@ -1,0 +1,301 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\Payroll;
+
+use App\Core\Tenant\Domain\Models\Company;
+use App\Modules\Payroll\Domain\Models\IslamicCalendar;
+use App\Modules\Payroll\Domain\Models\PublicHoliday;
+use App\Modules\Payroll\Infrastructure\Services\IslamicCalendarService;
+use App\Modules\Payroll\Infrastructure\Services\PublicHolidayService;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+/**
+ * Issue #1811 — PublicHolidayService : jours ouvrés dynamiques par pays.
+ */
+class PublicHolidayServiceTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    private function service(): PublicHolidayService
+    {
+        // Issue #1812 : le service jours fériés fusionne les fêtes islamiques
+        // mobiles avec les fériés fixes (test_islamic_holidays_merged_with_fixed).
+        return new PublicHolidayService(Cache::store(), new IslamicCalendarService(Cache::store()));
+    }
+
+    public function test_working_days_excludes_holidays_and_weekends(): void
+    {
+        PublicHoliday::create([
+            'company_id' => null,
+            'country_code' => 'DZ',
+            'name' => 'Fête de la Révolution',
+            'date' => '2026-11-01',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => '11-01',
+            'holiday_type' => 'fixed',
+        ]);
+
+        // Nov 2026 DZ : week-end vendredi/samedi (8 jours) + 1er nov férié
+        // (dimanche, jour ouvré en DZ) → 30 - 8 - 1 = 21 jours ouvrés.
+        $days = $this->service()->workingDaysBetween(
+            Carbon::parse('2026-11-01'),
+            Carbon::parse('2026-11-30'),
+            'DZ',
+            restDays: [5, 6],
+        );
+
+        $this->assertSame(21.0, $days);
+    }
+
+    public function test_company_holiday_overrides_national(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create();
+
+        PublicHoliday::create([
+            'company_id' => null,
+            'country_code' => 'DZ',
+            'name' => 'Fête nationale',
+            'date' => '2026-07-05',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => '07-05',
+            'holiday_type' => 'fixed',
+        ]);
+
+        // Férié d'entreprise supplémentaire le 2026-07-15 (jour ouvré).
+        PublicHoliday::create([
+            'company_id' => $company->id,
+            'country_code' => 'DZ',
+            'name' => 'Pont interne',
+            'date' => '2026-07-15',
+            'year' => 2026,
+            'is_recurring' => false,
+            'holiday_type' => 'custom',
+        ]);
+
+        $national = $this->service()->workingDaysBetween(
+            Carbon::parse('2026-07-13'),
+            Carbon::parse('2026-07-19'),
+            'DZ',
+            companyId: null,
+            restDays: [5, 6],
+        );
+
+        $withCompany = $this->service()->workingDaysBetween(
+            Carbon::parse('2026-07-13'),
+            Carbon::parse('2026-07-19'),
+            'DZ',
+            companyId: (string) $company->id,
+            restDays: [5, 6],
+        );
+
+        // Semaine du 13/07/2026 : lun 13, mar 14, mer 15, jeu 16, ven 17 (repos),
+        // sam 18 (repos), dim 19 (ouvré en DZ — week-end = vendredi/samedi).
+        $this->assertSame(5.0, $national);
+        $this->assertSame(4.0, $withCompany); // le pont du 15 retire un jour ouvré
+    }
+
+    public function test_fallback_when_no_holidays_configured(): void
+    {
+        // Pays sans fériés en base → calendrier hors week-ends (≈ 22 mensuel).
+        $days = $this->service()->workingDaysBetween(
+            Carbon::parse('2026-11-01'),
+            Carbon::parse('2026-11-30'),
+            'MA',
+            restDays: [6, 7],
+        );
+
+        $this->assertSame(21.0, $days);
+    }
+
+    public function test_get_holidays_returns_national_and_company(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create();
+
+        PublicHoliday::create([
+            'company_id' => null,
+            'country_code' => 'DZ',
+            'name' => 'Jour de l\'an',
+            'date' => '2026-01-01',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => '01-01',
+            'holiday_type' => 'fixed',
+        ]);
+        PublicHoliday::create([
+            'company_id' => $company->id,
+            'country_code' => 'DZ',
+            'name' => 'Pont entreprise',
+            'date' => '2026-01-02',
+            'year' => 2026,
+            'is_recurring' => false,
+            'holiday_type' => 'custom',
+        ]);
+
+        $national = $this->service()->getHolidays('DZ', 2026);
+        $withCompany = $this->service()->getHolidays('DZ', 2026, (string) $company->id);
+
+        $this->assertCount(1, $national);
+        $this->assertCount(2, $withCompany);
+    }
+
+    public function test_islamic_holidays_merged_with_fixed(): void
+    {
+        // Issue #1812 — les fêtes islamiques mobiles (table islamic_calendar)
+        // enrichissent le calendrier des fériés fixes au runtime. #1930 : la
+        // fusion ne concerne que les dates CONFIRMÉES par un admin plateforme.
+        IslamicCalendar::create([
+            'holiday_key' => 'eid_al_adha',
+            'year' => 2026,
+            'gregorian_date' => '2026-05-27',
+            'duration_days' => 2,
+            'source' => 'manual',
+            'confirmed' => true,
+            'confirmed_by' => 42,
+        ]);
+
+        PublicHoliday::create([
+            'company_id' => null,
+            'country_code' => 'CM',
+            'name' => 'Fête nationale',
+            'date' => '2026-05-20',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => '05-20',
+            'holiday_type' => 'fixed',
+        ]);
+
+        // CM fête l'Aïd el-Adha 2 jours (config islamic_holidays_map).
+        $holidays = $this->service()->getHolidays('CM', 2026);
+
+        $dates = array_column($holidays, 'date');
+        $this->assertContains('2026-05-20', $dates); // fixe
+        $this->assertContains('2026-05-27', $dates); // islamique jour 1
+        $this->assertContains('2026-05-28', $dates); // islamique jour 2
+
+        $islamic = collect($holidays)->firstWhere('date', '2026-05-27');
+        $this->assertNotNull($islamic);
+        $this->assertSame('islamic', $islamic['holiday_type']);
+
+        // workingDaysBetween intègre les deux fériés islamiques.
+        $days = $this->service()->workingDaysBetween(
+            Carbon::parse('2026-05-25'),
+            Carbon::parse('2026-05-29'),
+            'CM',
+            holidays: $holidays,
+            restDays: [6, 7],
+        );
+        $this->assertSame(3.0, $days); // lun 25, mar 26, jeu 28 chômé… → mer 27 & jeu 28 chômés → 25,26,29
+    }
+
+    public function test_forget_all_scopes_invalidates_tenant_keys(): void
+    {
+        // BUG #1897 — après édition d'un férié NATIONAL ou confirmation d'une
+        // date islamique, les clés tenant-scopées restaient périmées 24 h.
+        /** @var Company $company */
+        $company = Company::factory()->create(['country' => 'DZ']);
+        // « Autre tenant » : un vrai UUID (colonne company_id type uuid en
+        // base — 'some-other-tenant' → SQLSTATE[22P02] sur PostgreSQL, #1968).
+        /** @var Company $otherCountryCompany */
+        $otherCountryCompany = Company::factory()->create(['country' => 'CM']);
+        $otherTenantId = (string) $otherCountryCompany->id;
+        $service = $this->service();
+
+        // Chauffe les 3 clés (nationale + 2 scopes tenant).
+        $service->getHolidays('DZ', 2026);
+        $service->getHolidays('DZ', 2026, (string) $company->id);
+        $service->getHolidays('DZ', 2026, $otherTenantId);
+
+        // Vérifie que les 3 clés sont bien en cache.
+        $this->assertNotNull(Cache::store()->get('public-holidays:DZ:2026:null'));
+        $this->assertNotNull(Cache::store()->get(sprintf('public-holidays:DZ:2026:%s', $company->id)));
+        $this->assertNotNull(Cache::store()->get('public-holidays:DZ:2026:'.$otherTenantId));
+
+        $service->forgetAllScopes('DZ', 2026);
+
+        $this->assertNull(Cache::store()->get('public-holidays:DZ:2026:null'));
+        $this->assertNull(Cache::store()->get(sprintf('public-holidays:DZ:2026:%s', $company->id)));
+        // Les tenants d'autres pays gardent leur cache (pas d'invalidation croisée).
+        $this->assertNotNull(Cache::store()->get('public-holidays:DZ:2026:'.$otherTenantId));
+    }
+
+    // ── #1936 : fériés récurrents appliqués à toutes les années ─────────────
+
+    public function test_recurring_holiday_applies_to_later_years(): void
+    {
+        Cache::flush();
+
+        // Férié national RÉCURRENT créé pour 2026 (date = première occurrence).
+        PublicHoliday::create([
+            'country_code' => 'DZ',
+            'name' => 'Fete du travail',
+            'date' => '2026-05-01',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => '05-01',
+            'holiday_type' => 'fixed',
+        ]);
+
+        $service = $this->service();
+
+        // 2026 : date stockée.
+        $h2026 = $service->getHolidays('DZ', 2026);
+        $this->assertContains('2026-05-01', array_column($h2026, 'date'));
+
+        // 2028 : le récurrent s'applique avec l'année demandée.
+        $h2028 = $service->getHolidays('DZ', 2028);
+        $this->assertContains('2028-05-01', array_column($h2028, 'date'));
+    }
+
+    public function test_non_recurring_holiday_stays_scoped_to_its_year(): void
+    {
+        Cache::flush();
+
+        PublicHoliday::create([
+            'country_code' => 'DZ',
+            'name' => 'Evenement unique',
+            'date' => '2026-09-15',
+            'year' => 2026,
+            'is_recurring' => false,
+            'holiday_type' => 'custom',
+        ]);
+
+        $service = $this->service();
+
+        $this->assertContains('2026-09-15', array_column($service->getHolidays('DZ', 2026), 'date'));
+        $this->assertNotContains('2027-09-15', array_column($service->getHolidays('DZ', 2027), 'date'));
+    }
+
+    public function test_recurring_legacy_without_month_day_applies_to_later_years(): void
+    {
+        Cache::flush();
+
+        // Ligne récurrente legacy : créée avant que l'UI n'envoie month_day
+        // (#1936) — la date stockée est la première occurrence.
+        PublicHoliday::create([
+            'country_code' => 'DZ',
+            'name' => 'Fete du travail (legacy)',
+            'date' => '2026-05-01',
+            'year' => 2026,
+            'is_recurring' => true,
+            'month_day' => null,
+            'holiday_type' => 'fixed',
+        ]);
+
+        $service = $this->service();
+
+        // 2026 : la date stockée est renvoyée.
+        $this->assertContains('2026-05-01', array_column($service->getHolidays('DZ', 2026), 'date'));
+
+        // 2028 : month_day est dérivé de la date stockée → le férié s'applique.
+        $this->assertContains('2028-05-01', array_column($service->getHolidays('DZ', 2028), 'date'));
+    }
+}

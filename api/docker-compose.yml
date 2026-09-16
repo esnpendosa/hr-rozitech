@@ -1,0 +1,54 @@
+# ============================================================
+# COMPOSE LARAVEL SAIL — LEGACY (issue #6700)
+# ============================================================
+# App + pgsql en local (hérité Sail). Pour le stack dev complet
+# (api + postgres + redis + mailpit), utiliser le compose RACINE :
+#   docker compose up -d   (à la racine du repo)
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php84/Dockerfile
+    container_name: leopardo-app
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: "5432"
+      DB_DATABASE: leopardo
+      DB_USERNAME: sail
+      DB_PASSWORD: password
+      DB_SEARCH_PATH: "shared_tenants,public"
+    depends_on:
+      pgsql:
+        condition: service_healthy
+    command: php artisan serve --host=0.0.0.0 --port=8000
+
+  pgsql:
+    # The Debian-based image is more reliable than alpine on some Windows Docker
+    # Desktop setups during initdb and healthcheck startup.
+    image: postgres:16
+    container_name: leopardo-pgsql
+    environment:
+      POSTGRES_DB: leopardo
+      POSTGRES_USER: sail
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - leopardo-pgsql:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sail -d leopardo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  leopardo-pgsql:

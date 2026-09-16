@@ -1,0 +1,183 @@
+# ============================================================
+# STACK DEV LOCAL CANONIQUE (issue #6700)
+# ============================================================
+# Full-stack dev environment — run from repo root:
+#   docker compose up -d
+#   docker compose exec api php artisan leopardo:migrate --seed
+#
+# NOTE (issue #6700) : `api/docker-compose.yml` est le compose Laravel Sail
+# legacy (app+pgsql) — le stack dev complet vit ICI. `edge/docker-compose.yml`
+# est le stack Edge installé chez le client (surface séparée, voir edge/README.md).
+# Full-stack dev environment — run from repo root:
+#   docker compose up -d
+#   docker compose exec api php artisan leopardo:migrate --seed
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: docker/php84/Dockerfile
+    container_name: leopardo-api
+    working_dir: /var/www/html
+    volumes:
+      - ./api:/var/www/html
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: leopardo
+      DB_USERNAME: leopardo
+      DB_PASSWORD: secret
+      DB_SEARCH_PATH: "shared_tenants,public"
+      REDIS_HOST: redis
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    # `./api` is bind-mounted over the image's /var/www/html, so a fresh clone
+    # has no vendor/ until `docker compose exec api composer install` runs (the
+    # documented onboarding step, see DEVELOPMENT.md). Without this wait guard,
+    # `php artisan serve` crashes immediately on first boot (missing
+    # vendor/autoload.php) and, with no restart policy, the container stays
+    # `exited` forever — breaking every documented `docker compose exec api ...`
+    # command. `restart: unless-stopped` + this loop make the container survive
+    # long enough for `composer install` to run, then start serving.
+    command: >
+      sh -c "while [ ! -f vendor/autoload.php ]; do echo 'Waiting for composer install (run: docker compose exec api composer install)...'; sleep 2; done; php artisan serve --host=0.0.0.0 --port=8000"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: leopardo-postgres
+    environment:
+      POSTGRES_DB: leopardo
+      POSTGRES_USER: leopardo
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./api/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leopardo -d leopardo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: leopardo-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  queue:
+    build:
+      context: ./api
+      dockerfile: docker/php84/Dockerfile
+    container_name: leopardo-queue
+    working_dir: /var/www/html
+    volumes:
+      - ./api:/var/www/html
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: leopardo
+      DB_USERNAME: leopardo
+      DB_PASSWORD: secret
+      DB_SEARCH_PATH: "shared_tenants,public"
+      REDIS_HOST: redis
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "while [ ! -f vendor/autoload.php ]; do sleep 2; done; php artisan queue:work --sleep=3 --tries=3 --max-time=3600"
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: ./api
+      dockerfile: docker/php84/Dockerfile
+    container_name: leopardo-scheduler
+    working_dir: /var/www/html
+    volumes:
+      - ./api:/var/www/html
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: leopardo
+      DB_USERNAME: leopardo
+      DB_PASSWORD: secret
+      DB_SEARCH_PATH: "shared_tenants,public"
+      REDIS_HOST: redis
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "while [ ! -f vendor/autoload.php ]; do sleep 2; done; while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done"
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: leopardo-mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    profiles:
+      - full
+
+  dashboard:
+    build:
+      context: ./front/admin-dashboard
+      dockerfile: Dockerfile.dev
+    container_name: leopardo-dashboard
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./front/admin-dashboard:/app
+      - /app/node_modules
+    profiles:
+      - full
+
+  web:
+    build:
+      context: ./front/web
+      dockerfile: Dockerfile.dev
+    container_name: leopardo-web
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./front/web:/app
+      - /app/node_modules
+    profiles:
+      - full
+
+volumes:
+  pgdata:

@@ -1,0 +1,622 @@
+name: Architecture Quality
+
+on:
+  pull_request:
+    # #4719 (audit 360° 2026-08-16) : branches feat/* supprimées du trigger
+    # (elles n'existent nulle part — workflow porteur de 3 checks requis).
+    branches: [main]
+  push:
+    branches: [main]
+  # Issue #2032 : checks requis (PHPStan Strict, Module Structure, Frontend
+  # ESLint+TS) — doivent tourner sur le ref de merge de la merge queue.
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: architecture-check-${{ github.workflow }}-${{ github.ref }}
+  # Issue #2131 : porte 3 checks REQUIS (PHPStan Strict, Module Structure,
+  # Frontend ESLint+TS) — sur main, un push ne doit jamais annuler le run du
+  # commit précédent (sinon le dernier commit de main reste pending 20+ min).
+  # Les runs PR gardent l'annulation (feedback rapide sur une même branche).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #5629 : annuler les runs PR obsolètes pour libérer les runners
+
+jobs:
+  # Fast-path CI (#5629/#2131) : ce workflow porte 3 checks REQUIS (PHPStan
+  # Strict, Module Structure Validator, Frontend ESLint+TS) qui doivent
+  # tourner sur CHAQUE PR (leçon #1125/#2032). Mais les jobs lourds
+  # (composer install + analyse complète PHPStan, npm ci + tsc) sont inutiles
+  # quand le PR ne touche ni api/ ni front/web/ (docs, gouvernance,
+  # workflows) : ils sont alors SKIPPÉS (job skip dans un workflow qui tourne
+  # = succès pour le check requis) et le statut est posté en ~1 min. Le job
+  # hygiene-guards reste TOUJOURS exécuté (gardes migrations #1962/#5437
+  # critiques pour les PRs gouvernance). Push main et merge_group re-toujours
+  # tout vérifier (pas de base PR).
+  detect-changes:
+    name: Detect changed paths (fast-path CI)
+    runs-on: ubuntu-latest
+    outputs:
+      api_changed: ${{ steps.diff.outputs.api_changed }}
+      web_changed: ${{ steps.diff.outputs.web_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Compute changed paths
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [[ -z "${BASE}" || "${BASE}" == "null" ]]; then
+            echo "api_changed=true" >> "$GITHUB_OUTPUT"
+            echo "web_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "${BASE}...HEAD" > /tmp/changed.txt
+          if grep -qE '^api/' /tmp/changed.txt; then
+            echo "api_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "api_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -qE '^front/web/' /tmp/changed.txt; then
+            echo "web_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Issue #3708 : les gardes dev-hub (bash pur) n'étaient appelées par aucun
+  # workflow — la dérive APP_VERSION (#3528, régression b0630dd5) et la
+  # parité .env.example (#1487) sont passées inaperçues sur main. Ce job
+  # exécute les gardes non-PHP existantes sur PR et sur push main.
+  hygiene-guards:
+    timeout-minutes: 45
+    name: Hygiene Guards (env, migrations, pays)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+          # check-app-version-sync.sh / check-duplicate-routes.sh comparent
+          # GITHUB_BASE_SHA..HEAD — il faut l'historique complet (#5698).
+          fetch-depth: 0
+
+      # check-duplicate-routes.sh (issue #5577) exécute `php artisan route:list`
+      # — sans vendor/ le pipeline échoue en 255 (constat #5698, audit 2026-08-27).
+      - name: Setup PHP + Composer (duplicate routes guard)
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+
+      - name: Install API dependencies (duplicate routes guard)
+        working-directory: api
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: APP_VERSION drift guard (issue #3528)
+        run: bash dev-hub/tools/check-app-version-sync.sh api
+
+      - name: .env.example parity guard (issue #1487)
+        run: bash dev-hub/tools/check-env-example-parity.sh api
+
+      - name: Migration basename collision guard (issue #1962)
+        run: bash dev-hub/tools/check-migration-basename-collisions.sh
+
+      - name: Migration prefix inter-PR guard (issue #5437)
+        run: node dev-hub/tools/check-migration-prefixes.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+
+      - name: Country catalog guard (issue #2600)
+        run: bash dev-hub/tools/check-country-catalog.sh
+
+      - name: Canonical domains guard (issue #3706)
+        run: bash dev-hub/tools/check-canonical-domains.sh
+
+      - name: Mobile Firebase stubs guard (issue #3152)
+        run: bash dev-hub/tools/check-mobile-firebase-configs.sh
+
+      - name: Migrations tenant — convention #1613 (search_path, audit PM 2026-08-17)
+        run: bash dev-hub/tools/check-migrations-tenant-schema.sh
+      - name: Migrations BC conventions guard (MAT-005 #5863)
+        run: bash dev-hub/tools/check-migrations-bc-conventions.sh
+      - name: Geofence single usage path guard (ADR-0016 Phase 2, issue #5353)
+        run: bash dev-hub/tools/check-geofence-single-usage.sh
+
+      - name: SmartAttendance purge guard (ADR-0016 Phase 5, issue #5356)
+        run: bash dev-hub/tools/check-smartattendance-purged.sh
+
+      - name: MVP schema parity guard — CreatesMvpSchema ↔ migrations tenant (issue #5443)
+        run: bash dev-hub/tools/check-mvp-schema-parity.sh api
+
+      - name: Duplicate routes guard (issue #5577)
+        run: bash dev-hub/tools/check-duplicate-routes.sh api
+
+      - name: Public routes canonical guard — route:list doit contenir le portail public (issue #5519)
+        run: bash dev-hub/tools/check-public-routes.sh api
+
+      - name: Duplicate use imports guard — routes/ + Providers/ (issue #5519)
+        run: bash dev-hub/tools/check-duplicate-use-imports.sh api
+
+      - name: Providers syntax guard — php -l sur *ServiceProvider.php (issue #5519)
+        run: bash dev-hub/tools/check-providers-syntax.sh api
+
+      - name: Gate::policy single point guard — AuthServiceProvider only (PA2-ARCH-008, issue #6575)
+        run: bash dev-hub/tools/check-policies-single-point.sh api
+
+      - name: Module isolation guard — no new cross-module imports (issue #5584)
+        run: bash dev-hub/tools/check-module-isolation.sh api
+
+      - name: Attendance/Payroll boundary guard — presence events owned by Attendance (ATT-001, issue #6760)
+        run: bash dev-hub/tools/check-attendance-boundary.sh api
+
+      - name: AI vendor boundary guard (QLT-003 #6777)
+        run: bash dev-hub/tools/check-ai-vendor-boundary.sh
+
+      - name: Routes tenant/platform separation guard (MAT-003, issue #5861)
+        run: bash dev-hub/tools/check-routes-tenant-platform.sh
+
+      - name: Routes tenant/platform guard self-test (MAT-003, issue #5861)
+        run: bash dev-hub/tools/check-routes-tenant-platform-test.sh
+
+      - name: .claim-marker forbidden in working tree (issue #5447)
+        run: bash dev-hub/tools/check-no-claim-marker.sh
+
+      - name: Runbook coverage guard par BC — backup/restore/rollback (issue #5873, MAT-015)
+        run: bash dev-hub/tools/check-runbooks.sh
+      - name: Golden journeys guard — routes des parcours critiques (issue #5871, MAT-013)
+        run: bash dev-hub/tools/check-golden-journeys.sh api
+      - name: Security threat models guard — surfaces uploads/OCR/WhatsApp/POS/devices (issue #5875, MAT-017)
+        run: bash dev-hub/tools/check-security-threat-models.sh
+      - name: Pilot go/no-go gates guard (issue #5876, MAT-018)
+        run: bash dev-hub/tools/check-pilot-gates.sh
+      - name: Release Train compat matrix guard (issue #5874, MAT-016)
+        run: bash dev-hub/tools/check-release-compat.sh api
+
+      - name: Performance budgets guard — scans lents, N+1, index (issue #5872, MAT-014)
+        run: bash dev-hub/tools/check-performance-budgets.sh api
+
+      - name: Queue strategy coherence guard — database partout (issue #5578)
+        run: bash dev-hub/tools/check-queue-strategy-coherence.sh
+
+      - name: Deterministic tests guard — no multi-status assertions (issue #5585)
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash dev-hub/tools/check-tests-deterministic.sh
+
+
+  phpstan-modules:
+    timeout-minutes: 45
+    name: PHPStan — Modules Architecture
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.4'
+          tools: composer
+
+      - name: Install dependencies
+        working-directory: api
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Run PHPStan on modules
+        working-directory: api
+        run: vendor/bin/phpstan analyse --configuration=phpstan-modules.neon --memory-limit=1G --no-progress
+
+  # Audit §2.3 / Plan P1: phpstan-strict.neon existed in the repo (level 8 on
+  # app/Core, app/Modules, app/Shared) but was never invoked by any workflow
+  # — the audit flagged this as a dead config that quietly gave a false sense
+  # of stricter coverage. Wired in below, alongside the existing
+  # phpstan-modules job it was designed to complement.
+  #
+  # Issue #1413: level 8 had never run against this codebase in CI, so a
+  # baseline (`phpstan-strict-baseline.neon`, dette pré-existante actée —
+  # generated via `phpstan analyse --generate-baseline`) now freezes that
+  # existing debt. continue-on-error is removed: this job is now blocking on
+  # the delta only — any *new* level-8 finding on app/Core/app/Modules/
+  # app/Shared fails the PR, while the pre-existing baseline is silenced.
+  # See api/ARCHITECTURE.md "Trajectoire PHPStan" for the per-module
+  # breakdown and the plan to shrink the baseline over time.
+  phpstan-strict:
+    needs: detect-changes
+    timeout-minutes: 45
+    name: PHPStan — Strict (Core/Modules/Shared, level 8)
+    runs-on: ubuntu-latest
+
+    steps:
+      # #7269 — un check requis ne doit pas être vert parce que le gate de
+      # chemins n'a rien dit. `detect-changes` doit rendre un verdict EXPLICITE
+      # (`true`/`false`) : une sortie vide (output perdu, job cassé) faisait
+      # sauter toutes les étapes d'analyse et le check restait vert sans avoir
+      # rien vérifié. Coût : une comparaison de chaîne, aucun runner en plus.
+      - name: Gate verdict (issue #7269)
+        shell: bash
+        env:
+          CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+        run: |
+          set -euo pipefail
+          if [[ "${CHANGED}" != "true" && "${CHANGED}" != "false" ]]; then
+            echo "::error::Aucun verdict du gate de chemins (api_changed='${CHANGED}') : l'analyse n'a rien vérifié et ce check requis ne peut pas être vert (issue #7269)."
+            exit 1
+          fi
+          if [[ "${CHANGED}" == "false" ]]; then
+            echo "::notice::Aucun chemin api/ modifié — analyse non applicable, verdict du gate explicitement vérifié (issue #7269)."
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+
+      - name: Setup PHP
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.4'
+          tools: composer
+
+      - name: Install dependencies
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        working-directory: api
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Run PHPStan (strict, blocking on delta vs baseline)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        working-directory: api
+        run: vendor/bin/phpstan analyse --configuration=phpstan-strict.neon --memory-limit=1G --no-progress
+
+  module-structure-check:
+    needs: detect-changes
+    timeout-minutes: 45
+    name: Module Structure Validator
+    runs-on: ubuntu-latest
+
+    steps:
+      # #7269 — un check requis ne doit pas être vert parce que le gate de
+      # chemins n'a rien dit. `detect-changes` doit rendre un verdict EXPLICITE
+      # (`true`/`false`) : une sortie vide (output perdu, job cassé) faisait
+      # sauter toutes les étapes d'analyse et le check restait vert sans avoir
+      # rien vérifié. Coût : une comparaison de chaîne, aucun runner en plus.
+      - name: Gate verdict (issue #7269)
+        shell: bash
+        env:
+          CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+        run: |
+          set -euo pipefail
+          if [[ "${CHANGED}" != "true" && "${CHANGED}" != "false" ]]; then
+            echo "::error::Aucun verdict du gate de chemins (api_changed='${CHANGED}') : l'analyse n'a rien vérifié et ce check requis ne peut pas être vert (issue #7269)."
+            exit 1
+          fi
+          if [[ "${CHANGED}" == "false" ]]; then
+            echo "::notice::Aucun chemin api/ modifié — analyse non applicable, verdict du gate explicitement vérifié (issue #7269)."
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+          # Issue #5629 : le checkout par défaut (depth 1) ne contient pas le
+          # base_sha des PRs à base ancienne → les gardes de diff (cross-module
+          # imports, strict_types, accented messages, baseline PHPStan)
+          # échouent en exit 128 sur `git rev-parse` → check requis rouge
+          # systématique. Historique complet requis.
+          fetch-depth: 0
+
+      - name: Check module structure
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: |
+          echo "Checking Clean Architecture module structure..."
+          ERRORS=0
+          # Discover modules dynamically instead of a hard-coded list, so new
+          # modules (or renamed ones) are covered automatically (PA2-ARCH-006).
+          MODULES=$(find api/app/Modules -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort)
+
+          if [ -z "$MODULES" ]; then
+            echo "❌ No modules discovered under api/app/Modules — check the path."
+            exit 1
+          fi
+
+          # PA2-ARCH-002 : Modules/Absence n'a plus que Interfaces/ + Providers/.
+          # Domain/Application/Infrastructure ont ete supprimes car ils dupliquaient
+          # integralement les modeles/services reels du module Planning (Absence,
+          # AbsenceType, LeaveBalance, LeaveBalanceLog, AbsenceService). Derogation
+          # documentee dans api/ARCHITECTURE.md.
+          #
+          # PA2-ARCH-011 (issue #1414) : derogation HISTORIQUE pour Modules/Expense
+          # (Domain/Application/Infrastructure supprimes car ils dupliquaient le
+          # modele/service reel du module Planning). Depuis #5235 le module a evolue
+          # en DDD partiel (ecritures comptables) et le 2026-09-06 (#6894) sa couche
+          # Application/Actions a ete creee : Expense n'est PLUS exempte — seule
+          # Absence (facade pure Interfaces/ + Providers/, PA2-ARCH-002) reste dans
+          # FACADE_ONLY_MODULES. Derogation documentee dans api/ARCHITECTURE.md.
+          FACADE_ONLY_EXEMPT_LAYERS="Application Domain Infrastructure"
+          FACADE_ONLY_MODULES="Absence"
+
+          for MODULE in $MODULES; do
+            BASE="api/app/Modules/$MODULE"
+            for LAYER in Application Domain Infrastructure Interfaces Providers; do
+              if echo "$FACADE_ONLY_MODULES" | grep -qw "$MODULE" && echo "$FACADE_ONLY_EXEMPT_LAYERS" | grep -qw "$LAYER"; then
+                continue
+              fi
+              if [ ! -d "$BASE/$LAYER" ]; then
+                echo "❌ Missing: $BASE/$LAYER"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+          done
+
+          # Core structure
+          for LAYER in Auth Tenant; do
+            if [ ! -d "api/app/Core/$LAYER" ]; then
+              echo "❌ Missing: api/app/Core/$LAYER"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo ""
+            echo "Found $ERRORS structure violations."
+            exit 1
+          fi
+          echo "✅ All module structures valid ($(echo "$MODULES" | wc -l) modules checked)."
+
+      - name: Bounded context registry guard (MAT-001 / issue #5859)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        # Registre canonique des bounded contexts : tout répertoire métier doit
+        # être déclaré (chemins actifs existants, planned tolérés), CODEOWNERS
+        # cohérent, dépendances référencées valides, routes/migrations déclarées
+        # présentes. Échoue avec un message actionnable sinon.
+        run: bash dev-hub/tools/check-bounded-context-registry.sh
+
+      - name: Check module isolation (issue #5584)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        # Garde archunit-style : bloque TOUT nouvel import croisé
+        # (`use App\Modules\<X>\` dans un autre module ou dans Core/) — la
+        # dette existante (comptage affiché par la garde à l'exécution) est actée dans
+        # dev-hub/tools/module-isolation-allowlist.txt.
+        run: dev-hub/tools/check-module-isolation.sh
+
+      - name: Bounded context dependencies guard (MAT-002 / issue #5860)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        # Deny-by-default : toute arête cross-BC (fichier→import) absente de
+        # dev-hub/governance/bounded-context-dependencies.json fait échouer la CI.
+        # Baseline v2 régénérée le 2026-09-05 (audit PM) — ne pas ajouter d'arête
+        # « pour passer » sans justification (même règle que l'allowlist #5584).
+        run: dev-hub/tools/check-bounded-context-dependencies.sh .
+
+      - name: CRM boundary imports guard (issue #5745, ADR 0018)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        # HARD BLOCK : aucun import Modules/{Platform,Marketing,Payroll,Accounting}
+        # depuis Modules/CRM ; toute autre import inter-module exige une exemption
+        # justifiée dans dev-hub/tools/crm-boundary-allowlist.txt.
+        run: dev-hub/tools/check-crm-boundary-imports.sh
+
+      - name: Event catalogue guard self-test (MAT-006 / issue #5864)
+        run: python3 dev-hub/tools/check-event-catalogue-test.py
+
+      - name: Event catalogue guard (MAT-006 / issue #5864)
+        # Chaque classe App\Events\*.php doit avoir une entrée à jour dans
+        # dev-hub/governance/event-catalogue.json (owner, version, payload,
+        # consumers). Détecte les breaking changes de payload non versionnés
+        # et les événements supprimés du code sans dépréciation actée.
+        run: python3 dev-hub/tools/check-event-catalogue.py .
+
+      - name: Check for orphan (unrouted) controllers
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: dev-hub/tools/check-unrouted-controllers.sh api
+
+      - name: Architecture docs parity guard — modules réels ↔ docs (issue #5589)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: bash dev-hub/tools/check-architecture-docs-parity.sh
+
+      - name: Check migration basename collisions (issue #1962)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: dev-hub/tools/check-migration-basename-collisions.sh
+
+      - name: Report test-schema drift vs migrations (issue #1489, non blocking)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        continue-on-error: true
+        run: dev-hub/tools/check-test-schema-drift.sh api
+
+      - name: Check newly added files declare strict_types (PA2-ARCH-009)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          dev-hub/tools/check-strict-types-new-files.sh "${base_sha}" "${head_sha}" api
+
+      - name: Check no new hardcoded accented messages in controllers (PA2-I18N-007)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          dev-hub/tools/check-hardcoded-accented-messages.sh "${base_sha}" "${head_sha}" api
+
+      - name: Check no touched module regresses its PHPStan baseline count (PA2-ARCH-005)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          dev-hub/tools/check-phpstan-baseline-delta.sh "${base_sha}" "${head_sha}" api
+
+      - name: Check no PR adds PHPStan baseline debt (#5448 - garde 0 nouvelle entree)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${DIFF_BASE_SHA:-}"
+          head_sha="${DIFF_HEAD_SHA:-}"
+
+          if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD~1)"
+            else
+              base_sha="$(git rev-parse HEAD)"
+            fi
+          fi
+
+          if [[ -z "${head_sha}" ]]; then
+            head_sha="$(git rev-parse HEAD)"
+          fi
+
+          dev-hub/tools/check-phpstan-baseline-debt.sh guard "${base_sha}" "${head_sha}" api
+
+      - name: Check layer purity — Domain/Application vs Application/Infrastructure + facades (issue #6568)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: |
+          bash dev-hub/tools/check-layer-purity.sh api
+
+  frontend-lint:
+    needs: detect-changes
+    timeout-minutes: 15
+    name: Frontend — ESLint + TypeScript
+    runs-on: ubuntu-latest
+
+    steps:
+      # #7269 — un check requis ne doit pas être vert parce que le gate de
+      # chemins n'a rien dit. `detect-changes` doit rendre un verdict EXPLICITE
+      # (`true`/`false`) : une sortie vide (output perdu, job cassé) faisait
+      # sauter toutes les étapes d'analyse et le check restait vert sans avoir
+      # rien vérifié. Coût : une comparaison de chaîne, aucun runner en plus.
+      - name: Gate verdict (issue #7269)
+        shell: bash
+        env:
+          CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+        run: |
+          set -euo pipefail
+          if [[ "${CHANGED}" != "true" && "${CHANGED}" != "false" ]]; then
+            echo "::error::Aucun verdict du gate de chemins (web_changed='${CHANGED}') : l'analyse n'a rien vérifié et ce check requis ne peut pas être vert (issue #7269)."
+            exit 1
+          fi
+          if [[ "${CHANGED}" == "false" ]]; then
+            echo "::notice::Aucun chemin front/web/ modifié — analyse non applicable, verdict du gate explicitement vérifié (issue #7269)."
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+
+      - name: Setup Node.js
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: front/web/package-lock.json
+
+      - name: Install dependencies
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        working-directory: front/web
+        run: npm ci
+
+      - name: TypeScript check
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        working-directory: front/web
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        working-directory: front/web
+        run: npx eslint src --ext .ts,.tsx --max-warnings 0
+
+      # La suite jest du web n'était exécutée par AUCUN workflow : 5 tests
+      # pouvaient rester rouges sur main sans que rien ne le signale (boutique,
+      # travel portal, absences, lettering). Exécutée ici, dans le check requis
+      # « Frontend — ESLint + TypeScript », elle empêche toute régression
+      # silencieuse de la suite unitaire.
+      - name: Jest unit tests
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        working-directory: front/web
+        run: npx jest --ci
+
+      # Garde config Vercel (incident 2026-09-10) : un `ignoreCommand` de plus
+      # de 256 caractères fait échouer la validation du schéma et met TOUS les
+      # déploiements en ERROR ; un pathspec relatif au cwd (`front/web` alors que
+      # le cwd vaut déjà `front/web`) saute TOUS les builds. Les deux sont
+      # arrivés — cette étape les attrape avant la production.
+      - name: Vercel config guard (ignoreCommand)
+        if: needs.detect-changes.outputs.web_changed == 'true'
+        run: node dev-hub/tools/check-vercel-config.js

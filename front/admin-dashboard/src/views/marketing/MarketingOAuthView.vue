@@ -1,0 +1,150 @@
+<template>
+  <div class="space-y-8 animate-fade-in max-w-3xl">
+    <!-- En-tete -->
+    <div>
+      <h1 class="text-4xl font-black tracking-tight text-slate-900 dark:text-white">
+        {{ $t('marketing.oauth.title') }}
+      </h1>
+      <p class="mt-1 text-slate-500 dark:text-slate-400 font-medium text-lg">
+        {{ $t('marketing.oauth.subtitle') }}
+      </p>
+    </div>
+
+    <!-- Bandeau d information Ayrshare -->
+    <div
+      class="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-700 dark:bg-sky-900/20"
+    >
+      <InformationCircleIcon class="mt-0.5 h-5 w-5 flex-shrink-0 text-sky-500" />
+      <p class="text-sm text-sky-700 dark:text-sky-300">
+        {{ $t('marketing.oauth.ayrshare_info') }}
+      </p>
+    </div>
+
+    <!-- LinkedIn -->
+    <OAuthProviderCard
+      provider="linkedin"
+      :label="$t('marketing.oauth.providers.linkedin.label')"
+      :description="$t('marketing.oauth.providers.linkedin.description')"
+      icon-classes="text-blue-700"
+      :loading="saving.linkedin"
+      :form="forms.linkedin"
+      :label-client-id="$t('marketing.oauth.fields.client_id')"
+      :label-client-secret="$t('marketing.oauth.fields.client_secret')"
+      :label-redirect-uri="$t('marketing.oauth.fields.redirect_uri')"
+      :label-secret-hint="$t('marketing.oauth.fields.secret_hint')"
+      :placeholder-id="$t('marketing.oauth.fields.placeholder_id')"
+      :placeholder-secret="$t('marketing.oauth.fields.placeholder_secret')"
+      :placeholder-uri="$t('marketing.oauth.fields.placeholder_uri')"
+      :label-save="$t('marketing.oauth.save')"
+      @save="saveProvider('linkedin')"
+    />
+
+    <!-- Facebook / Meta -->
+    <OAuthProviderCard
+      provider="facebook"
+      :label="$t('marketing.oauth.providers.facebook.label')"
+      :description="$t('marketing.oauth.providers.facebook.description')"
+      icon-classes="text-blue-600"
+      :loading="saving.facebook"
+      :form="forms.facebook"
+      :label-client-id="$t('marketing.oauth.fields.client_id')"
+      :label-client-secret="$t('marketing.oauth.fields.client_secret')"
+      :label-redirect-uri="$t('marketing.oauth.fields.redirect_uri')"
+      :label-secret-hint="$t('marketing.oauth.fields.secret_hint')"
+      :placeholder-id="$t('marketing.oauth.fields.placeholder_id')"
+      :placeholder-secret="$t('marketing.oauth.fields.placeholder_secret')"
+      :placeholder-uri="$t('marketing.oauth.fields.placeholder_uri')"
+      :label-save="$t('marketing.oauth.save')"
+      @save="saveProvider('facebook')"
+    />
+
+    <!-- X (Twitter) -->
+    <OAuthProviderCard
+      provider="twitter"
+      :label="$t('marketing.oauth.providers.twitter.label')"
+      :description="$t('marketing.oauth.providers.twitter.description')"
+      icon-classes="text-slate-900 dark:text-white"
+      :loading="saving.twitter"
+      :form="forms.twitter"
+      :label-client-id="$t('marketing.oauth.fields.client_id')"
+      :label-client-secret="$t('marketing.oauth.fields.client_secret')"
+      :label-redirect-uri="$t('marketing.oauth.fields.redirect_uri')"
+      :label-secret-hint="$t('marketing.oauth.fields.secret_hint')"
+      :placeholder-id="$t('marketing.oauth.fields.placeholder_id')"
+      :placeholder-secret="$t('marketing.oauth.fields.placeholder_secret')"
+      :placeholder-uri="$t('marketing.oauth.fields.placeholder_uri')"
+      :label-save="$t('marketing.oauth.save')"
+      @save="saveProvider('twitter')"
+    />
+  </div>
+</template>
+
+<script setup>
+import { onMounted, reactive } from 'vue'
+import { InformationCircleIcon } from '@heroicons/vue/24/outline'
+import OAuthProviderCard from '@/components/marketing/OAuthProviderCard.vue'
+import { useToast } from 'vue-toastification'
+import api from '@/services/api'
+import { translate } from '@/i18n/index.js'
+import { useLocaleStore } from '@/stores/locale.js'
+
+const localeStore = useLocaleStore()
+/** Traduction avec fallback sur la clé elle-même pour faciliter le débogage */
+const t = (key, vars = {}) => {
+  let msg = translate(localeStore.current, key) || key
+  // Interpolation : supporte {var} (ICU, format ARB) et {{ var }} (Vue legacy).
+  for (const [k, v] of Object.entries(vars)) {
+    msg = msg.replace(`{${k}}`, String(v)).replace(`{{ ${k} }}`, String(v))
+  }
+  return msg
+}
+const toast = useToast()
+
+const forms = reactive({
+  linkedin: { clientId: '', clientSecret: '', redirectUri: '' },
+  facebook: { clientId: '', clientSecret: '', redirectUri: '' },
+  twitter:  { clientId: '', clientSecret: '', redirectUri: '' },
+})
+
+const saving = reactive({ linkedin: false, facebook: false, twitter: false })
+
+async function saveProvider(provider) {
+  saving[provider] = true
+  try {
+    const form = forms[provider]
+    const payload = { provider, client_id: form.clientId, redirect_uri: form.redirectUri }
+    if (form.clientSecret.trim()) {
+      payload.client_secret = form.clientSecret
+    }
+    await api.put('/admin/platform/marketing/oauth-config', payload)
+    toast.success(t('marketing.oauth.saved_ok', { provider }))
+    forms[provider].clientSecret = ''
+  } catch (e) {
+    // errors handled by global api.js interceptor
+    console.warn('[admin] marketing oauth config save failed', e)
+  } finally {
+    saving[provider] = false
+  }
+}
+
+/** Charge la configuration existante (GET /admin/platform/marketing/oauth-config). */
+async function loadConfig() {
+  try {
+    const { data } = await api.get('/admin/platform/marketing/oauth-config')
+    const configs = data?.data || {}
+    for (const [provider, cfg] of Object.entries(configs)) {
+      if (forms[provider]) {
+        forms[provider].clientId = cfg.client_id || ''
+        forms[provider].redirectUri = cfg.redirect_uri || ''
+      }
+    }
+  } catch (e) {
+    // errors handled by global api.js interceptor — écran reste éditable
+    console.warn('[admin] marketing oauth load failed', e)
+  }
+}
+
+onMounted(loadConfig)
+</script>
+
+

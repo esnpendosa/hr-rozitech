@@ -1,0 +1,455 @@
+<?php
+
+namespace Tests\Feature\Contracts;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Modules\Attendance\Domain\Models\AttendanceLog;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\Sanctum;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class MobilePayloadContractTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+    }
+
+    public function test_auth_me_payload_matches_mobile_contract(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'Africa/Algiers',
+            'currency' => 'DZD',
+            'features' => ['rh' => true, 'finance' => true],
+        ]);
+
+        /** @var Employee $employee */
+        $employee = new Employee([
+            'matricule' => 'EMP-NORA',
+            'first_name' => 'Nora',
+            'last_name' => 'Ait',
+            'email' => 'nora@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/auth/me');
+
+        $response->assertOk();
+        $response->assertJsonStructure([
+            'data' => [
+                'id',
+                'matricule',
+                'company_id',
+                'first_name',
+                'last_name',
+                'email',
+                'role',
+                'status',
+                'photo_url',
+                'hire_date',
+                'language',
+                'is_rtl',
+                'features',
+                'mobile_experience' => [
+                    'stage',
+                    'modules' => [
+                        '*' => [
+                            'key',
+                            'title',
+                            'description',
+                            'domain',
+                            'route',
+                            'status',
+                        ],
+                    ],
+                    'quick_actions' => [
+                        '*' => [
+                            'key',
+                            'title',
+                            'description',
+                            'domain',
+                            'icon',
+                            'route',
+                        ],
+                    ],
+                ],
+                'company' => [
+                    'id',
+                    'name',
+                    'language',
+                    'timezone',
+                    'currency',
+                ],
+            ],
+        ]);
+        $response->assertJsonPath('data.email', 'nora@company.test');
+        $response->assertJsonPath('data.matricule', 'EMP-NORA');
+        $response->assertJsonPath('data.role', 'employee');
+        $response->assertJsonPath('data.company.name', 'Company A');
+        $response->assertJsonPath('data.features.rh', true);
+        // Employée fraîchement créée sans pointage/absence → stage 'new'
+        // (MobileExperienceService::stageFor — signaux réels d'activité).
+        $response->assertJsonPath('data.mobile_experience.stage', 'new');
+        $modules = $response->json('data.mobile_experience.modules');
+        $quickActions = $response->json('data.mobile_experience.quick_actions');
+
+        $this->assertIsArray($modules);
+        $this->assertIsArray($quickActions);
+        $this->assertContains('attendance', array_column($modules, 'key'));
+        $this->assertContains('finance', array_column($modules, 'key'));
+        $this->assertContains('settings', array_column($quickActions, 'key'));
+    }
+
+    public function test_me_daily_summary_payload_matches_mobile_contract(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'UTC',
+            'currency' => 'DZD',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = new Employee([
+            'matricule' => 'EMP-ME',
+            'first_name' => 'Ahmed',
+            'last_name' => 'B.',
+            'email' => 'ahmed@company.test',
+            'salary_type' => 'hourly',
+            'hourly_rate' => 100,
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        AttendanceLog::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-04-10',
+            'session_number' => 1,
+            'check_in' => Carbon::parse('2026-04-10 08:00:00', 'UTC'),
+            'check_out' => Carbon::parse('2026-04-10 17:00:00', 'UTC'),
+            'hours_worked' => 9.00,
+            'overtime_hours' => 1.00,
+            'status' => 'ontime',
+        ]);
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/me/daily-summary?date=2026-04-10');
+
+        $response->assertOk();
+        $response->assertJsonStructure([
+            'data' => [
+                'id',
+                'employee_id',
+                'matricule',
+                'name',
+                'checked_in',
+                'check_in_time',
+                'check_out_time',
+                'hours_worked',
+                'overtime_hours',
+                'status',
+                'late_minutes',
+                'base_gain',
+                'overtime_gain',
+                'total_estimated',
+                'currency',
+            ],
+        ]);
+        $response->assertJsonPath('data.matricule', 'EMP-ME');
+        $this->assertSame(9.0, (float) $response->json('data.hours_worked'));
+        $this->assertSame(1.0, (float) $response->json('data.overtime_hours'));
+        $this->assertSame(100 * 8 + 100 * 1 * 1.25, (float) $response->json('data.total_estimated'));
+    }
+
+    public function test_attendance_today_collection_payload_matches_mobile_contract(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'UTC',
+        ]);
+
+        /** @var Employee $manager */
+        $manager = new Employee([
+            'first_name' => 'Leila',
+            'last_name' => 'Manager',
+            'email' => 'manager@company.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'status' => 'active',
+        ])->save();
+
+        /** @var Employee $employee */
+        $employee = new Employee([
+            'first_name' => 'Sami',
+            'last_name' => 'Employee',
+            'email' => 'employee@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        AttendanceLog::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-04-18',
+            'session_number' => 1,
+            'check_in' => Carbon::parse('2026-04-18 08:00:00', 'UTC'),
+            'check_out' => null,
+            'hours_worked' => 0,
+            'overtime_hours' => 0,
+            'status' => 'incomplete',
+        ]);
+
+        Sanctum::actingAs($manager);
+        $this->travelTo(Carbon::parse('2026-04-18 09:00:00', 'UTC'));
+
+        $response = $this->getJson('/api/v1/attendance/today');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.mode', 'collection');
+        $response->assertJsonStructure([
+            'data' => [
+                'mode',
+                'items' => [
+                    '*' => [
+                        'id',
+                        'employee_id',
+                        'matricule',
+                        'name',
+                        'checked_in',
+                        'check_in_time',
+                        'check_out_time',
+                        'hours_worked',
+                        'overtime_hours',
+                        'status',
+                        'late_minutes',
+                        'base_gain',
+                        'overtime_gain',
+                        'total_estimated',
+                        'currency',
+                    ],
+                ],
+                'meta' => [
+                    'current_page',
+                    'per_page',
+                    'total',
+                ],
+            ],
+        ]);
+    }
+
+    public function test_employees_index_payload_matches_mobile_contract(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'timezone' => 'Africa/Algiers',
+            'currency' => 'DZD',
+            'features' => ['rh' => true, 'finance' => true],
+        ]);
+
+        /** @var Employee $manager */
+        $manager = new Employee([
+            'first_name' => 'Leila',
+            'last_name' => 'Manager',
+            'email' => 'manager@company.test',
+        ]);
+        $manager->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $manager->forceFill([
+            'company_id' => $company->id,
+            'role' => 'manager',
+            'status' => 'active',
+        ])->save();
+
+        $sensitiveEmployee0 = new Employee([
+            'first_name' => 'Sami',
+            'last_name' => 'Employee',
+            'email' => 'employee@company.test',
+        ]);
+        $sensitiveEmployee0->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $sensitiveEmployee0->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/employees?per_page=10');
+
+        $response->assertOk();
+        $response->assertJsonStructure([
+            'data' => [
+                '*' => [
+                    'id',
+                    'matricule',
+                    'company_id',
+                    'first_name',
+                    'last_name',
+                    'email',
+                    'role',
+                    'status',
+                    'photo_url',
+                    'hire_date',
+                    'currency',
+                    'features',
+                    'company' => [
+                        'id',
+                        'name',
+                        'language',
+                        'timezone',
+                        'currency',
+                    ],
+                ],
+            ],
+            'meta' => [
+                'current_page',
+                'per_page',
+                'total',
+            ],
+        ]);
+        $response->assertJsonPath('meta.per_page', 10);
+
+        $employeePayload = collect($response->json('data'))->firstWhere('email', 'employee@company.test');
+
+        $this->assertSame('DZD', $employeePayload['currency']);
+        $this->assertSame($company->id, $employeePayload['company']['id']);
+        $this->assertSame('Company A', $employeePayload['company']['name']);
+        $this->assertSame('Africa/Algiers', $employeePayload['company']['timezone']);
+        $this->assertSame('DZD', $employeePayload['company']['currency']);
+        $this->assertTrue($employeePayload['features']['rh']);
+    }
+
+    public function test_attendance_history_payload_matches_mobile_contract(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = new Employee([
+            'matricule' => 'EMP-H',
+            'first_name' => 'Hassen',
+            'last_name' => 'B.',
+            'email' => 'hassen@company.test',
+        ]);
+        $employee->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $employee->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        AttendanceLog::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-04-15',
+            'session_number' => 1,
+            'check_in' => Carbon::parse('2026-04-15 08:00:00', 'UTC'),
+            'check_out' => Carbon::parse('2026-04-15 17:00:00', 'UTC'),
+            'hours_worked' => 9.00,
+            'overtime_hours' => 1.00,
+            'status' => 'ontime',
+        ]);
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/attendance?date_from=2026-04-01&date_to=2026-04-30');
+
+        $response->assertOk();
+        $response->assertJsonStructure([
+            'data' => [
+                '*' => [
+                    'id',
+                    'employee_id',
+                    'employee' => [
+                        'id',
+                        'name',
+                        'matricule',
+                        'photo_url',
+                    ],
+                    'date',
+                    'check_in',
+                    'check_out',
+                    'hours_worked',
+                    'overtime_hours',
+                    'status',
+                    'late_minutes',
+                ],
+            ],
+            'meta' => [
+                'current_page',
+                'per_page',
+                'total',
+            ],
+        ]);
+    }
+}

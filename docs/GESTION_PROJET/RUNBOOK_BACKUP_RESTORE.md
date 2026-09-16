@@ -1,0 +1,153 @@
+# RUNBOOK - BACKUP / RESTORE
+
+Version 4.16.39 | 2026-05-14
+
+## 0. Procedure minimale a appliquer
+
+Pour Leopardo RH, la procedure minimale obligatoire combine automatisation et fallback manuel :
+
+- **Backup automatise quotidien** de la base PostgreSQL de production vers S3/R2
+- **Verification de restore mensuelle** sur une base scratch isolee
+- **Fallback manuel hebdomadaire** si le workflow quotidien est desactive ou sans secrets
+- **Trace obligatoire** dans `RUNBOOK_DRILLS_LOG.md`
+
+Si l'equipe n'active pas ou ne maintient pas le drill automatise, cette procedure minimale reste la reference d'exploitation.
+
+## 1. Perimetre
+
+Sauvegarde et verification de restauration de la base PostgreSQL Leopardo RH
+(Neon en production, Postgres 16 auto-herberge en pre-prod).
+
+Le "drill" (exercice de reprise) se fait sur une base **scratch isolee**,
+jamais contre la production.
+
+Cible :
+- **Production** : backup quotidien automatise + restore mensuel verifie
+- **Pre-prod** : drill automatise possible si l'infrastructure reste maintenue
+- **Reference de trace** : `RUNBOOK_DRILLS_LOG.md`
+- **RPO** : < 24h quand le workflow quotidien est configure
+- **RTO** : < 4h via restore scratch puis bascule applicative selon `RUNBOOK_ROLLBACK.md`
+
+## 2. Secrets requis
+
+| Nom | Usage | Source recommandee |
+|---|---|---|
+| `DATABASE_URL` | URL Postgres source a dumper | Render / Neon dashboard |
+| `RESTORE_DB_URL` | URL Postgres scratch ou on restaure | Neon branch dediee `leopardo-drill` |
+| `BACKUP_AGE_RECIPIENT` | cle publique `age` pour chiffrer le dump (optionnel) | generee via `age-keygen` |
+| `BACKUP_AGE_IDENTITY_FILE` | cle privee `age` (pour restaurer un dump chiffre) | secret GitHub / 1Password |
+| `BACKUP_DIR` | dossier local ou on ecrit le dump | `/var/lib/leopardo/backups` en prod |
+| `BACKUP_S3_BUCKET` | bucket S3/R2 cible pour les dumps quotidiens | secret GitHub Actions |
+| `AWS_ACCESS_KEY_ID` | acces ecriture bucket backup | IAM limite au bucket |
+| `AWS_SECRET_ACCESS_KEY` | secret ecriture bucket backup | IAM limite au bucket |
+| `AWS_REGION` | region du bucket | `eu-west-3` par defaut |
+
+## 3. Checklist operationnelle courte
+
+### Backup quotidien automatise
+
+Le workflow `.github/workflows/database-backup.yml` execute :
+
+- `Daily PostgreSQL backup` tous les jours a 02:15 UTC
+- `Monthly restore drill` le 1er jour du mois a 03:15 UTC
+- `workflow_dispatch` manuel avec `mode=backup` ou `mode=drill`
+
+Si les secrets requis manquent, le workflow sort en notice et ne produit pas de faux backup.
+
+### Fallback manuel hebdomadaire
+
+1. Exporter un dump custom PostgreSQL avec `pg_dump`
+2. Chiffrer le dump si la cle `age` est disponible
+3. Copier le dump vers un stockage froid ou un support dedie
+4. Noter la date, le nom du fichier et l'operateur dans `RUNBOOK_DRILLS_LOG.md`
+
+### Restore mensuel
+
+1. Restaurer le dernier dump valide dans une base scratch
+2. Verifier les tables critiques
+3. Consigner le resultat dans `RUNBOOK_DRILLS_LOG.md`
+
+## 4. Drill automatise
+
+Un script prêt a l'emploi est livre : `dev-hub/scripts/backup_drill.sh`.
+
+```bash
+DATABASE_URL="postgres://user:pwd@source/leopardo_db" \
+RESTORE_DB_URL="postgres://user:pwd@scratch/leopardo_drill" \
+BACKUP_DIR="/tmp/leopardo-drills" \
+BACKUP_AGE_RECIPIENT="age1..." \
+./dev-hub/scripts/backup_drill.sh
+```
+
+Le script :
+1. `pg_dump` au format custom (compression inclue, pas de proprietaire/droits)
+2. Chiffre le dump avec `age` si `BACKUP_AGE_RECIPIENT` est fournie
+3. Purge puis restaure dans `RESTORE_DB_URL`
+4. Compare les count des tables critiques (source vs cible) et echoue si delta
+5. Nettoie la base scratch pour ne garder aucune donnee sensible
+
+Sortie :
+- Dump : `${BACKUP_DIR}/leopardo-YYYYmmdd-HHMMSS.dump[.age]`
+- Log : `${BACKUP_DIR}/last-drill.log`
+- Exit 0 si OK, != 0 si mismatch
+
+## 5. Tables verifiees
+
+Le drill compte les lignes des tables suivantes (source vs restore) :
+
+| Schema | Table | Pourquoi |
+|---|---|---|
+| `public` | `companies` | catalogue des tenants |
+| `public` | `plans` | abonnements |
+| `public` | `super_admins` | comptes plateforme |
+| `shared_tenants` | `employees` | donnees metier principales |
+| `shared_tenants` | `attendance_logs` | pointages (append-only) |
+| `shared_tenants` | `user_invitations` | onboarding |
+
+Un mismatch sur l'une de ces tables = echec du drill.
+
+## 6. Procedure manuelle (fallback)
+
+```bash
+# 1. Dump source (prod)
+pg_dump --format=custom --no-owner --no-privileges \
+  --file=leopardo-$(date -u +%Y%m%d-%H%M%S).dump \
+  "$DATABASE_URL"
+
+# 2. Chiffrement (recommande)
+age --recipient "$BACKUP_AGE_RECIPIENT" \
+  --output leopardo-$(date -u +%Y%m%d).dump.age \
+  leopardo-$(date -u +%Y%m%d).dump
+rm leopardo-$(date -u +%Y%m%d).dump
+
+# 3. Transfert vers stockage froid (R2/S3 avec chiffrement SSE-KMS)
+aws s3 cp leopardo-*.dump.age \
+  s3://leopardo-backups/$(date -u +%Y/%m)/ \
+  --storage-class DEEP_ARCHIVE
+
+# 4. Restauration (uniquement en cas de besoin)
+age --decrypt --identity $BACKUP_AGE_IDENTITY_FILE \
+  --output leopardo.dump leopardo-*.dump.age
+pg_restore --no-owner --no-privileges \
+  --dbname="$RESTORE_DB_URL" leopardo.dump
+```
+
+## 7. Retention
+
+- **Dumps quotidiens chiffres** : 30 jours (R2/S3 Standard)
+- **Dumps mensuels** : 13 mois (R2/S3 Glacier Deep Archive)
+- **Dumps annuels** : 5 ans (R2/S3 Glacier Deep Archive)
+
+## 8. En cas d'echec
+
+- Si `pg_dump` echoue -> incident P1, escalade DBA
+- Si le drill detecte un mismatch -> incident P2, analyser `last-drill.log`
+- Si la base scratch devient inaccessible -> basculer sur une Neon branch fresh
+- Trace obligatoire dans `RUNBOOK_DRILLS_LOG.md` apres chaque drill
+
+## 9. References
+
+- Script : `dev-hub/scripts/backup_drill.sh`
+- Rollback DB : `RUNBOOK_ROLLBACK.md` (option B)
+- Incident P1 : `RUNBOOK_INCIDENT_P1.md`
+- Trace des drills : `RUNBOOK_DRILLS_LOG.md`

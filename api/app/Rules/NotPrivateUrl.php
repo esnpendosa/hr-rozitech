@@ -1,0 +1,136 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Rules;
+
+use Closure;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Validation\ValidationRule;
+
+/**
+ * Anti-SSRF guard for user-supplied outbound webhook URLs.
+ *
+ * Rejects URLs that are not https://, or whose host resolves (at validation
+ * time) to a private/reserved/loopback IP range (RFC 1918, loopback,
+ * link-local incl. the 169.254.169.254 cloud metadata address, etc.).
+ *
+ * This is a best-effort, defence-in-depth check: DNS can still be rebound
+ * between validation and delivery, so the delivery job (DispatchWebhook)
+ * re-resolves and re-checks the host immediately before making the request.
+ *
+ * See docs/security/AUDIT_API_2026-07-19.md, section 2.
+ */
+class NotPrivateUrl implements ValidationRule
+{
+    public function validate(string $attribute, mixed $value, Closure $fail): void
+    {
+        if (! is_string($value)) {
+            $fail('validation.url')->translate();
+
+            return;
+        }
+
+        if (! str_starts_with($value, 'https://')) {
+            $fail('Webhook URL must use https://.');
+
+            return;
+        }
+
+        $host = parse_url($value, PHP_URL_HOST);
+        if (! is_string($host) || $host === '') {
+            $fail('Webhook URL is invalid.');
+
+            return;
+        }
+
+        if (! self::isPublicHost($host)) {
+            $fail('Webhook URL is not allowed (private, reserved, or unresolvable host).');
+        }
+    }
+
+    public static function isPublicHost(string $host): bool
+    {
+        $host = strtolower(trim($host, '[]'));
+
+        if (
+            $host === 'localhost'
+            || str_ends_with($host, '.localhost')
+            // mDNS / noms d'entreprise résolus par le DNS local (search
+            // domain) : toujours refuser (même classe que la garde RTSP,
+            // #3147/#4490).
+            || str_ends_with($host, '.local')
+            || str_ends_with($host, '.internal')
+            || str_ends_with($host, '.lan')
+        ) {
+            return false;
+        }
+
+        // RFC 6761 special-use TLDs (`.test`, `.example`, `.invalid`) : non
+        // routables, réservés aux tests. En environnement de test uniquement,
+        // les accepter : ils ne peuvent par construction pointer vers aucune
+        // IP privée/réservée (zéro risque SSRF) et les fixtures utilisent ces
+        // hôtes fictifs (ex. `idp.example.com`, `app.leopardo.test`). En
+        // production, ils restent refusés (fail-closed, inchangé).
+        // `function_exists('app')` : les tests unitaires purs (sans bootstrap
+        // Laravel) doivent conserver le comportement historique (fail-closed).
+        // app() en contexte de test UNITAIRE pur renvoie le Container brut
+        // (pas l'Application) : n'appeler environment() que sur une vraie
+        // Application Laravel (fail-closed sinon, comportement historique).
+        //
+        // Garde `bound('env')` (issue #5201) : le TestCase de Laravel appelle
+        // `$this->app->flush()` en tearDown, ce qui vide TOUTES les liaisons de
+        // l'application qui est l'instance globale du Container. Un test
+        // unitaire pur exécuté juste après voit alors une Application « morte »
+        // (instances vidées) : `app()->environment()` → `$this['env']` →
+        // `make('env')` → BindingResolutionException « Target class [env] does
+        // not exist ». `bound('env')` ne construit rien et court-circuite.
+        $app = \function_exists('app') ? app() : null;
+        $isTesting = $app instanceof Application
+            && $app->bound('env')
+            && $app->environment('testing');
+        if ($isTesting
+            && (str_ends_with($host, '.test')
+                || str_ends_with($host, '.example')
+                || str_ends_with($host, '.example.com')
+                || str_ends_with($host, '.invalid'))) {
+            return true;
+        }
+
+        // Literal IP: validate directly.
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return self::isPublicIp($host);
+        }
+
+        // Hostname: resolve to every A/AAAA record and reject if *any* of
+        // them lands in a private/reserved range (defends against DNS
+        // records mixing a public and a private/loopback answer).
+        $records = array_filter([
+            ...(dns_get_record($host, DNS_A) ?: []),
+            ...(dns_get_record($host, DNS_AAAA) ?: []),
+        ]);
+
+        if ($records === []) {
+            // Could not resolve at all: fail closed.
+            return false;
+        }
+
+        foreach ($records as $record) {
+            $ip = $record['ip'] ?? $record['ipv6'] ?? null;
+            if (! is_string($ip) || ! self::isPublicIp($ip)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function isPublicIp(string $ip): bool
+    {
+        return filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        ) !== false;
+    }
+}

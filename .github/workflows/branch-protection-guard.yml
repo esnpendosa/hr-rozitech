@@ -1,0 +1,73 @@
+name: Branch Protection Guard
+
+# Issue #2011 — incident 2026-08-14 : la protection de main a été vidée
+# (checks requis + reviews supprimés) par un outillage de merge. Cette garde
+# vérifie que la protection RÉELLE de main est identique au canonique committé.
+# L’API GitHub exige un token admin dédié (`BRANCH_PROTECTION_TOKEN`).
+#
+# Issue #7270 — la garde n’était PAS planifiée : elle ne s’exécutait que sur
+# dispatch manuel ou sur une PR touchant 3 fichiers. Autrement dit, une seconde
+# disparition de la protection (l’incident même que #2011 existe pour détecter)
+# serait passée inaperçue — personne ne lance une vérification manuelle sans
+# raison de la lancer. Ajout d’un cron quotidien.
+#
+# Doctrine fail-loud (identique à `database-backup.yml` #6836 et
+# `deploy-staging.yml` #6839) : tant que le token n’est pas configuré, la
+# vérification n’a PAS lieu et le job échoue bruyamment. Un `::notice::` suivi
+# d’un job vert laissait croire que la protection était vérifiée.
+
+on:
+  schedule:
+    # Quotidien, 05:00 UTC — job court (lecture d’une API), ne concurrence pas
+    # les gates PR.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dev-hub/tools/check-branch-protection.sh'
+      - 'dev-hub/tools/branch-protection-canonical.json'
+      - '.github/workflows/branch-protection-guard.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-protection-guard-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    timeout-minutes: 15
+    name: Check branch protection (issue #2011)
+    runs-on: ubuntu-latest
+    env:
+      # Fine-grained PAT/App token with administration:read on this repo.
+      BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      # Le contexte `secrets` n'est pas disponible dans les `if` de job
+      # (actionlint) : la présence du token est testée au niveau step via env.
+      - name: Verify main protection matches canonical
+        if: ${{ env.BRANCH_PROTECTION_TOKEN != '' }}
+        env:
+          GITHUB_TOKEN: ${{ env.BRANCH_PROTECTION_TOKEN }}
+        run: dev-hub/tools/check-branch-protection.sh kitokoh/leopardo-hr main
+
+      - name: Fail when the branch protection token is not configured
+        if: ${{ env.BRANCH_PROTECTION_TOKEN == '' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "::error::Protection de branche NON vérifiée : le secret BRANCH_PROTECTION_TOKEN est absent (issue #7270)."
+            echo "::error::Ce job échoue volontairement : sans ce token, la protection de main n'est contrôlée par personne — un skip silencieux ressemblerait à une vérification réussie (leçon #3545)."
+            echo "## Protection de branche non vérifiée — FAIL-LOUD (#7270)"
+            echo ""
+            echo "Configurez le secret \`BRANCH_PROTECTION_TOKEN\` (fine-grained PAT, permission **administration: read** sur ce dépôt),"
+            echo "puis relancez ce workflow. Le contrôle planifié quotidien reprendra ensuite automatiquement."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

@@ -1,0 +1,177 @@
+import type { AppLocale } from '@/lib/i18n'
+
+// Issue #2726 — témoignages de DÉMO : aucune citation client réelle
+// (le code l'admet : « no real customer photos exist yet »). Le composant
+// d'affichage doit les marquer comme démo / ne pas les présenter comme réels.
+export const TESTIMONIALS_ARE_DEMO = true
+export type Testimonial = {
+  name: string
+  role: string
+  company: string
+  /**
+   * PA2-MKT-010: no real customer photos exist yet. Omit avatar entirely
+   * (TestimonialCard falls back to an initials avatar) instead of
+   * pointing at placeholder files that were never added to
+   * public/avatars, which rendered as a broken image icon in production.
+   */
+  avatar?: string
+  content: string
+  rating: number
+}
+
+const testimonialsByLocale: Record<AppLocale, Testimonial[]> = {
+  id: [
+    {
+      name: 'Ahmad Fauzi',
+      role: 'Head of HR',
+      company: 'Logistik Nusantara',
+      content: 'RMIH sangat memudahkan pemantauan kehadiran tim lapangan kami. Penggajian bulanan kini selesai jauh lebih cepat.',
+      rating: 5,
+    },
+    {
+      name: 'Budi Santoso',
+      role: 'Direktur Operasional',
+      company: 'Karya Prima Konstruksi',
+      content: 'Antarmuka sangat mudah dipahami karyawan lapangan. Fitur mode offline dan GPS sangat membantu di lokasi proyek.',
+      rating: 5,
+    },
+    {
+      name: 'Siti Rahma',
+      role: 'Manager Personalia',
+      company: 'Ritel Maju Bersama',
+      content: 'Absensi biometrik dan rekap otomatis menghilangkan selisih data hadir dan lembur setiap bulannya.',
+      rating: 5,
+    },
+    {
+      name: 'Hendra Wijaya',
+      role: 'General Manager',
+      company: 'Distribusi Cipta',
+      content: 'Sinkronisasi mesin absensi ke aplikasi berjalan otomatis. Sangat memangkas kerja rekap spreadsheet manual.',
+      rating: 5,
+    },
+  ],
+  fr: [
+    {
+      name: 'Amina Diallo',
+      role: 'DRH',
+      company: 'TechAfrika',
+      content: 'RMIH a transformé notre gestion du personnel. Le gain de temps est phénoménal, surtout sur la paie et le pointage.',
+      rating: 5,
+    },
+    {
+      name: 'Mehdi Benali',
+      role: 'CEO',
+      company: 'Atlas Digital',
+      content: "L'interface est intuitive et le support est excellent. Nos équipes l'ont adoptee tres vite.",
+      rating: 5,
+    },
+    {
+      name: 'Fatou Sow',
+      role: 'Responsable RH',
+      company: 'SenLogistics',
+      content: 'Le pointage biométrique et les anomalies manager ont change notre discipline terrain.',
+      rating: 5,
+    },
+    {
+      name: 'Ibrahim Toure',
+      role: 'Directeur Operations',
+      company: 'BuildAfrica',
+      content: 'Le mode hors ligne est crucial pour nos sites. La synchronisation automatique nous rassure enormement.',
+      rating: 5,
+    },
+  ],
+  en: [
+    {
+      name: 'Amina Diallo',
+      role: 'HR Director',
+      company: 'TechAfrika',
+      content: 'RMIH transformed our people operations. The time savings on payroll and attendance are dramatic.',
+      rating: 5,
+    },
+    {
+      name: 'Mehdi Benali',
+      role: 'CEO',
+      company: 'Atlas Digital',
+      content: 'The product is intuitive and the support team is sharp. Adoption across the company was extremely fast.',
+      rating: 5,
+    },
+    {
+      name: 'Fatou Sow',
+      role: 'HR Manager',
+      company: 'SenLogistics',
+      content: 'Biometric attendance and anomaly tracking gave our managers the field visibility they were missing.',
+      rating: 5,
+    },
+    {
+      name: 'Ibrahim Toure',
+      role: 'Operations Director',
+      company: 'BuildAfrica',
+      content: 'Offline mode is essential for our sites. Automatic sync removed a lot of operational stress.',
+      rating: 5,
+    },
+  ],
+  tr: [
+    {
+      name: 'Amina Diallo',
+      role: 'IK Direktoru',
+      company: 'TechAfrika',
+      content: 'RMIH, personel operasyonlarimizi donusturdu. Bordro ve devam takibinde buyuk zaman kazandik.',
+      rating: 5,
+    },
+    {
+      name: 'Mehdi Benali',
+      role: 'CEO',
+      company: 'Atlas Digital',
+      content: 'Arayuz cok sezgisel ve destek ekibi cok guclu. Sirket genelinde benimsenmesi hizli oldu.',
+      rating: 5,
+    },
+    {
+      name: 'Fatou Sow',
+      role: 'IK Muduru',
+      company: 'SenLogistics',
+      content: 'Biyometrik takip ve anomali gorunurlugu saha disiplinimizi ciddi bicimde iyilestirdi.',
+      rating: 5,
+    },
+    {
+      name: 'Ibrahim Toure',
+      role: 'Operasyon Direktoru',
+      company: 'BuildAfrica',
+      content: 'Cevrimdisi mod sahalarimiz icin kritik. Otomatik esitleme buyuk rahatlik sagliyor.',
+      rating: 5,
+    },
+  ],
+  ar: [
+    {
+      name: 'Amina Diallo',
+      role: 'مديرة الموارد البشرية',
+      company: 'TechAfrika',
+      content: 'RMIH غير طريقة ادارتنا للموظفين، خاصة في الرواتب والحضور.',
+      rating: 5,
+    },
+    {
+      name: 'Mehdi Benali',
+      role: 'الرئيس التنفيذي',
+      company: 'Atlas Digital',
+      content: 'الواجهة واضحة جدا وفريق الدعم ممتاز، وتم اعتماد النظام بسرعة داخل الشركة.',
+      rating: 5,
+    },
+    {
+      name: 'Fatou Sow',
+      role: 'مسؤولة الموارد البشرية',
+      company: 'SenLogistics',
+      content: 'الحضور البيومتري ومتابعة الانحرافات اعطت المدراء رؤية ميدانية فورية.',
+      rating: 5,
+    },
+    {
+      name: 'Ibrahim Toure',
+      role: 'مدير العمليات',
+      company: 'BuildAfrica',
+      content: 'الوضع دون اتصال ضروري لمواقعنا، والمزامنة التلقائية خففت الضغط التشغيلي كثيرا.',
+      rating: 5,
+    },
+  ],
+}
+
+export function getTestimonials(locale: AppLocale): Testimonial[] {
+  return testimonialsByLocale[locale] ?? testimonialsByLocale.id
+}

@@ -1,0 +1,283 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\HR\Infrastructure\Services;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Auth\Domain\Models\User;
+use App\Core\Tenant\Domain\Models\SuperAdmin;
+use App\Core\Tenant\Infrastructure\Services\TenantCacheService;
+use App\Events\EmployeeArchived;
+use App\Events\EmployeeCreated;
+use App\Events\EmployeeRoleAssigned;
+use App\Modules\HR\Application\DTOs\CreateEmployeeDTO;
+use App\Modules\HR\Application\DTOs\UpdateEmployeeDTO;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class EmployeeService
+{
+    public function __construct(
+        private readonly UserInvitationService $userInvitationService,
+        private readonly TenantCacheService $tenantCache,
+    ) {}
+
+    public function create(CreateEmployeeDTO $dto, Employee|User|SuperAdmin|null $actor = null): Employee
+    {
+        /** @var array<string, mixed> $payload */
+        $payload = $dto->toArray();
+        $sendInvitation = (bool) Arr::pull($payload, 'send_invitation', false);
+        $providedPassword = Arr::pull($payload, 'password');
+        $providedPassword = is_string($providedPassword) && $providedPassword !== '' ? $providedPassword : null;
+
+        $companyId = $payload['company_id']
+            ?? ($actor instanceof Employee ? $actor->company_id : null)
+            ?? (app()->bound('current_company') ? currentCompany()->id : null);
+
+        $password = $providedPassword ?: Str::random(32);
+        $payload['password_hash'] = Hash::make($password);
+        $payload['contract_type'] = $payload['contract_type'] ?? 'CDI';
+        $payload['contract_start'] = $payload['contract_start'] ?? now()->toDateString();
+        $payload['hourly_rate'] = $payload['hourly_rate'] ?? 0.0;
+        $payload['company_id'] = $companyId;
+
+        if (empty($payload['role'])) {
+            $payload['role'] = 'employee';
+        }
+
+        $payload['status'] = $payload['status'] ?? 'active';
+        $payload['extra_data'] = $this->normalizeExtraData($this->arrayValue($payload, 'extra_data'));
+
+        if ($actor instanceof Employee && $actor->isManager() && empty($payload['manager_id'])) {
+            $payload['manager_id'] = $actor->id;
+        }
+
+        /** @var array<string, mixed> $payload */
+        $this->applyBiometricConsent($payload);
+
+        // Issue #4496 : password_hash n'est plus mass-assignable (retiré du
+        // $fillable). Issue #4307 : role/manager_role/status/company_id/salary_base
+        // non mass-assignables (durcissement #3677). Les passer dans create()
+        // les ferait silencieusement perdre (role null → TypeError
+        // EmployeeResource, company_id null → hors tenant, salary_base → 0).
+        // On pose explicitement après création (pattern #3677/#4151) : l'acteur
+        // est déjà autorisé (policy + FormRequest).
+        $rawPasswordHash = Arr::pull($payload, 'password_hash');
+        $passwordHash = is_string($rawPasswordHash) ? $rawPasswordHash : '';
+
+        // `password_hash` is NOT NULL in the tenant schema. A mass-assignment
+        // create() without it fails before the subsequent forceFill() can run
+        // (#4947). Build the trusted, already-authorized payload explicitly and
+        // persist it once; sensitive fields remain outside normal fill().
+        $employee = new Employee;
+        /** @var array<string, mixed> $trustedPayload */
+        $trustedPayload = array_merge(
+            Arr::except($payload, ['role', 'manager_role', 'status', 'company_id', 'salary_base']),
+            [
+                'password_hash' => $passwordHash,
+                'company_id' => $companyId,
+                'role' => $payload['role'],
+                'manager_role' => $payload['manager_role'] ?? null,
+                'status' => $payload['status'],
+                'salary_base' => $payload['salary_base'] ?? 0.0,
+            ],
+        );
+        $employee->forceFill($trustedPayload);
+        $employee->save();
+
+        if ($employee->company_id !== null) {
+            $this->tenantCache->invalidateEmployees($employee->company_id);
+        }
+
+        EmployeeCreated::dispatch($employee);
+
+        if ($sendInvitation || ! $providedPassword) {
+            $company = $employee->company;
+            if ($company && $actor) {
+                $this->userInvitationService->createAndSend(
+                    company: $company,
+                    employee: $employee,
+                    invitedByType: 'manager',
+                    invitedByEmail: $actor->email,
+                );
+            }
+        }
+
+        return $employee;
+    }
+
+    public function update(Employee $actor, Employee $employee, UpdateEmployeeDTO $dto): Employee
+    {
+        /** @var array<string, mixed> $payload */
+        $payload = $dto->toArray();
+        $isManager = $actor->isManager();
+        $isSelfUpdate = $actor->id === $employee->id;
+
+        if (! $isManager) {
+            /** @var array<string, mixed> $payload */
+            $payload = Arr::only($payload, [
+                'first_name',
+                'last_name',
+                'email',
+                'personal_email',
+                'recovery_email',
+                'personal_phone',
+                'password',
+            ]);
+        }
+
+        $password = $this->stringValue($payload, 'password');
+        if ($password !== null) {
+            $employee->password_hash = Hash::make($password);
+        }
+        unset($payload['password']);
+
+        if (! $isManager) {
+            unset($payload['role'], $payload['manager_role'], $payload['status'], $payload['matricule']);
+        }
+
+        if ($isSelfUpdate) {
+            unset($payload['role'], $payload['manager_role'], $payload['status'], $payload['manager_id']);
+        }
+
+        if (isset($payload['status']) && in_array($payload['status'], ['archived', 'departed'], true)) {
+            unset($payload['status']);
+        }
+
+        if (($payload['role'] ?? null) === 'employee') {
+            $payload['manager_role'] = null;
+        }
+
+        if (array_key_exists('extra_data', $payload)) {
+            $payload['extra_data'] = $this->normalizeExtraData($this->arrayValue($payload, 'extra_data'));
+        }
+
+        /** @var array<string, mixed> $payload */
+        $this->applyBiometricConsent($payload, $employee);
+
+        $previousManagerRole = $employee->manager_role;
+        $roleChangeRequested = array_key_exists('manager_role', $payload) || array_key_exists('role', $payload);
+
+        // Issue #4307 : role/manager_role/status/salary_base non
+        // mass-assignables (#3677) — fill() les écarterait silencieusement
+        // (revoke rh jamais persisté, PATCH salary_base mobile jamais appliqué).
+        $sensitiveKeys = ['role', 'manager_role', 'status', 'salary_base'];
+        $sensitive = Arr::only($payload, $sensitiveKeys);
+        /** @var array<string, mixed> $safePayload */
+        $safePayload = Arr::except($payload, $sensitiveKeys);
+        $employee->fill($safePayload);
+        foreach ($sensitive as $key => $value) {
+            $employee->{$key} = $value;
+        }
+        $employee->save();
+
+        if ($employee->company_id !== null) {
+            $this->tenantCache->invalidateEmployees($employee->company_id);
+        }
+
+        // PA2-MOB-007 — nominate/revoke RH permissions must leave an audit
+        // trail even when the change is made through the generic employee
+        // update endpoint (e.g. from the manager mobile app) rather than the
+        // dedicated RoleAssignmentController::assign endpoint.
+        if ($roleChangeRequested && $employee->manager_role !== $previousManagerRole) {
+            EmployeeRoleAssigned::dispatch($employee, $actor, $previousManagerRole, $employee->manager_role);
+        }
+
+        return $employee;
+    }
+
+    public function archive(Employee $employee): Employee
+    {
+        $employee->status = 'archived';
+        $employee->save();
+        $employee->tokens()->delete();
+
+        if ($employee->company_id !== null) {
+            $this->tenantCache->invalidateEmployees($employee->company_id);
+        }
+
+        EmployeeArchived::dispatch($employee);
+
+        return $employee;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function applyBiometricConsent(array &$payload, ?Employee $employee = null): void
+    {
+        $faceEnabled = array_key_exists('biometric_face_enabled', $payload)
+            ? (bool) $payload['biometric_face_enabled']
+            : (bool) $employee?->biometric_face_enabled;
+        $fingerprintEnabled = array_key_exists('biometric_fingerprint_enabled', $payload)
+            ? (bool) $payload['biometric_fingerprint_enabled']
+            : (bool) $employee?->biometric_fingerprint_enabled;
+        $hasReferences = ! empty($payload['biometric_face_reference_path'] ?? $employee?->biometric_face_reference_path)
+            || ! empty($payload['biometric_fingerprint_reference_path'] ?? $employee?->biometric_fingerprint_reference_path);
+
+        if ($faceEnabled || $fingerprintEnabled || $hasReferences) {
+            $existingConsentAt = $employee === null ? null : $employee->biometric_consent_at;
+            $payload['biometric_consent_at'] = $payload['biometric_consent_at'] ?? $existingConsentAt ?? now();
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $extraData
+     * @return array<string, mixed>
+     */
+    private function normalizeExtraData(array $extraData): array
+    {
+        $allowedKeys = [
+            'department',
+            'job_title',
+            'work_location',
+            'national_id',
+            'tax_identifier',
+            'blood_group',
+            'education_level',
+        ];
+
+        $normalized = [];
+
+        foreach (Arr::only($extraData, $allowedKeys) as $key => $value) {
+            if (is_string($key) && $value !== null && $value !== '') {
+                $normalized[$key] = $value;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function arrayValue(array $payload, string $key): array
+    {
+        $value = $payload[$key] ?? [];
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($value as $nestedKey => $nestedValue) {
+            if (is_string($nestedKey)) {
+                $normalized[$nestedKey] = $nestedValue;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<mixed>  $payload
+     */
+    private function stringValue(array $payload, string $key): ?string
+    {
+        $value = $payload[$key] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+}

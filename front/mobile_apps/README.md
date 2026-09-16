@@ -1,0 +1,127 @@
+# Leopardo Mobile Apps
+
+Ce dossier est la source canonique des applications mobiles de lancement.
+Le mobile historique (`front/mobile/`) a ete retire du depot ; ces apps sont
+desormais les seules applications mobiles actives.
+
+## Structure
+
+- `leopardo_core/` : package Flutter partage. Il contient uniquement les briques communes : API client, stockage, i18n, theme, couleurs, typographie, widgets de base, modeles et providers core.
+- `leopardo_employee/` : app mobile employe. Elle expose les parcours personnels : connexion, accueil employe, pointage, absences, avances, paie, notifications, documents et compte.
+- `leopardo_manager/` : app mobile manager/RH. Elle conserve le perimetre complet du mobile actuel et prepare les routes des futurs ecrans manager.
+- `leopardo_hr/` : app mobile RH dediee, issue d'un split de `leopardo_manager`. Integree a la matrice CI canonique `mobile-distribute.yml` pour le deploiement Firebase (voir `CHANGELOG.md`).
+- `leopardo_platform_admin/` : app mobile super-admin plateforme. Elle consomme uniquement les API `/platform/*` pour piloter les tenants, creer une entreprise cliente, traiter les demandes clients et suivre les metriques globales.
+- `leopardo_accounting/` : app mobile comptabilité (facturation, suivi des impayés). Intégrée à melos et à la CI (QA 2026-08-15, #2661) ; Android uniquement, son écran stats est encore un mock — chantier ouvert (périmètre documenté dans `leopardo_accounting/README.md`).
+- `leopardo_marketing/` : app mobile marketing/communication (vitrine). Intégrée à melos et à la CI (QA 2026-08-15, #2661) ; son écran stats est encore un mock — chantier ouvert.
+- `leopardo_travel_agent/` : app mobile agent/vendeur TravelAgency (TRAVEL-701 #6088 + TRAVEL-810 #6100) — vente guichet multi-passagers, encaissement cash, check-in QR, manifeste, caisse PDV. Basée sur `leopardo_core`, intégrée à melos et à la CI mobile.
+## Regles de contribution
+
+- Toute modification partagee va dans `leopardo_core`.
+- Toute modification d'ecran specifique va dans l'app concernee.
+- L'app employe ne doit pas contenir de gestion d'equipe, validations manager, organigramme, approvals ou dashboard manager.
+- L'app manager/RH conserve les ecrans complets et gere les differences internes via `employee.managerRole`.
+- L'app platform admin ne contient aucun workflow tenant employe/manager : pas de pointage, absences, avances, equipe ou approvals RH.
+- La differenciation par sous-role manager se fait dans les ecrans concernes, pas dans le router.
+- `front/mobile/` (mobile historique) a ete retire du depot ; toutes les evolutions employee, manager/RH, HR et platform admin vont dans `front/mobile_apps/*`.
+
+## CI et distribution
+
+- `Mobile Apps CI - Flutter` (`mobile-apps-ci.yml`) valide les 8 packages : `leopardo_core`, `leopardo_employee`, `leopardo_manager`, `leopardo_hr`, `leopardo_marketing`, `leopardo_accounting`, `leopardo_platform_admin` et `leopardo_travel_agent`.
+- `Mobile - Build and Firebase Distribution` (`mobile-distribute.yml`) compile et distribue les APK Android de lancement vers Firebase App Distribution.
+
+## Garde-fous Plan 26
+
+Le script canonique de validation de structure est :
+
+```bash
+pwsh ./dev-hub/tools/validate-mobile-apps-split.ps1
+```
+
+Sur Windows sans PowerShell 7 :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\dev-hub\tools\validate-mobile-apps-split.ps1
+powershell -ExecutionPolicy Bypass -File .\dev-hub\tools\validate-mobile-release-readiness.ps1
+```
+
+Il verifie notamment :
+
+- aucun dossier manager (`team`, `approvals`, `organigramme`, `modules`) dans `leopardo_employee` ;
+- aucun marqueur `isManager`, `canManageTeam`, `managerRole`, `isPrincipal` ou `isHr` dans l'app employe ;
+- aucun import `package:leopardo_rh` dans les nouvelles apps ;
+- aucun import `leopardo_employee` ou `leopardo_manager` depuis `leopardo_core` ;
+- dependance `leopardo_core` presente dans les apps concernees ;
+- routes manager preparees dans `leopardo_manager` ;
+- identites App Store / Play Store distinctes pour `leopardo_employee`, `leopardo_manager` et `leopardo_hr` ;
+- endpoints et routes critiques presents pour les workflows mobiles principaux ;
+- absence de handlers UI vides sur les apps mobiles.
+
+Si une evolution partagee est necessaire, la placer dans `leopardo_core`, puis consommer cette API depuis les apps concernees. Si une evolution ne concerne qu'un persona, la placer uniquement dans l'app correspondante (`leopardo_employee`, `leopardo_manager` ou `leopardo_hr`).
+
+> **Chantier documenté (QA 2026-08-15, #2661)** : 13 fichiers repositories sont
+> byte-identiques entre employee/manager/hr (ai_chat, ai_voice, cabinet,
+> contracts, evaluations, expenses, notifications, training,
+> vehicle_position, biometric_enrollment…). Ils devront migrer vers
+> `leopardo_core` pour éviter la dérive de copies (ex. mojibake corrigé
+> séparément dans chaque app).
+
+## Identites store
+
+| App | Android applicationId | iOS bundle id | Nom visible |
+|---|---|---|---|
+| `leopardo_employee` | `com.leopardo.employee` | `com.leopardo.employee` | Leopardo Employee |
+| `leopardo_manager` | `com.leopardo.manager` | `com.leopardo.manager` | Leopardo Manager |
+| `leopardo_hr` | `com.leopardo.rh` | `com.leopardo.rh` | Leopardo RH |
+| `leopardo_platform_admin` | `com.leopardo.platformadmin` | `com.leopardo.platformadmin` | Leopardo Platform Admin |
+
+## Branding natif
+
+Les assets canoniques du branding mobile sont generes directement dans chaque app :
+
+- Android launcher : `android/app/src/main/res/mipmap-*/ic_launcher.png`
+- Android adaptive icon : `android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`
+- Android splash : `android/app/src/main/res/mipmap-*/launch_image.png` et `drawable/launch_background.xml`
+- Android notification : `android/app/src/main/res/drawable/ic_notification.xml`
+- iOS App Store : `ios/Runner/Assets.xcassets/AppIcon.appiconset/`
+- iOS splash : `ios/Runner/Assets.xcassets/LaunchImage.imageset/`
+
+Ne pas remettre les icones Flutter par defaut. Pour changer l'identite visuelle, regenerer les familles d'assets employee, manager, HR et platform admin dans le meme lot afin de garder une coherence store.
+
+Avant un upload public, le mode strict doit passer apres configuration des signatures release :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\dev-hub\tools\validate-mobile-release-readiness.ps1 -StrictStores
+```
+
+## Validation attendue
+
+Depuis un SDK Flutter compatible Dart 3.8+ :
+
+```bash
+pwsh ./dev-hub/tools/validate-mobile-apps-split.ps1
+pwsh ./dev-hub/tools/validate-mobile-release-readiness.ps1
+
+cd front/mobile_apps/leopardo_core
+flutter pub get
+flutter analyze
+
+cd ../leopardo_employee
+flutter pub get
+flutter analyze
+flutter build apk --debug --dart-define=API_BASE_URL=https://gestionemployerbackend.onrender.com/api/v1
+
+cd ../leopardo_manager
+flutter pub get
+flutter analyze
+flutter build apk --debug --dart-define=API_BASE_URL=https://gestionemployerbackend.onrender.com/api/v1
+
+cd ../leopardo_hr
+flutter pub get
+flutter analyze
+flutter build apk --debug --dart-define=API_BASE_URL=https://gestionemployerbackend.onrender.com/api/v1
+
+cd ../leopardo_platform_admin
+flutter pub get
+flutter analyze
+flutter build apk --debug --dart-define=API_BASE_URL=https://gestionemployerbackend.onrender.com/api/v1
+```

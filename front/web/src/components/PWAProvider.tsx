@@ -1,0 +1,254 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { getPreferredLocale, type AppLocale } from '@/lib/i18n';
+
+const safeLog = (..._args: unknown[]) => {};
+
+const UPDATE_MESSAGES: Record<AppLocale, string> = {
+  fr: 'Une nouvelle version est disponible. Rechargez la page.',
+  en: 'A new version is available. Reload the page.',
+  tr: 'Yeni bir sürüm mevcut. Sayfayı yeniden yükleyin.',
+  ar: 'يتوفر إصدار جديد. أعد تحميل الصفحة.',
+};
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+type SyncCapableRegistration = ServiceWorkerRegistration & {
+  sync?: {
+    register: (tag: string) => Promise<void>;
+  };
+};
+
+/**
+ * PWAProvider Component
+ * Handles PWA installation, service worker registration, and offline support
+ */
+export function PWAProvider({ children }: { children: React.ReactNode }) {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  const [swRegistration, setSwRegistration] = useState<ServiceWorkerRegistration | null>(null);
+
+  // Notify user of update
+  const notifyUpdate = () => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('RMIH', {
+        body: UPDATE_MESSAGES[getPreferredLocale()],
+        icon: '/icon.svg',
+        badge: '/icon.svg',
+      });
+    }
+  };
+
+  // Register service worker
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) {
+      safeLog('[PWA] Service Workers not supported');
+      return;
+    }
+
+    // In local development, unregister any active service worker to avoid caching issues and offline traps
+    if (process.env.NODE_ENV === 'development') {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        for (const registration of registrations) {
+          registration.unregister();
+        }
+      });
+      return;
+    }
+
+    let updateInterval: ReturnType<typeof setInterval> | null = null;
+
+    const registerServiceWorker = async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js', {
+          scope: '/',
+        });
+
+        safeLog('[PWA] Service Worker registered:', registration);
+        setSwRegistration(registration);
+
+        // Issue #3729 : l'interval de vérification doit être nettoyé au
+        // démontage (polling 60 s qui tournait indéfiniment sinon).
+        updateInterval = setInterval(() => {
+          registration.update();
+        }, 60000); // Check every minute
+
+        // Listen for updates
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                // New service worker available
+                safeLog('[PWA] New service worker available');
+                notifyUpdate();
+              }
+            });
+          }
+        });
+      } catch (error) {
+        safeLog('[PWA] Service Worker registration failed:', error);
+      }
+    };
+
+    registerServiceWorker();
+
+    return () => {
+      if (updateInterval) {
+        clearInterval(updateInterval);
+      }
+    };
+  }, []);
+
+  // Handle beforeinstallprompt event
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      safeLog('[PWA] Install prompt available');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  // Handle app installed event
+  useEffect(() => {
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+      safeLog('[PWA] App installed');
+    };
+
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  // Sync pending data when back online
+  const syncPendingData = useCallback(async () => {
+    if (!swRegistration) return;
+
+    try {
+      // Issue #2983 : le service worker n'écoute QUE le tag 'leopardo-sync'
+      // (relecture de la file d'opérations hors-ligne). Les tags
+      // 'sync-forms'/'sync-analytics' enregistrés ici n'étaient écoutés par
+      // personne → le background sync ne se déclenchait jamais.
+      const syncRegistration = swRegistration as SyncCapableRegistration;
+      if (syncRegistration.sync) {
+        await syncRegistration.sync.register('leopardo-sync');
+        safeLog('[PWA] Sync registered (leopardo-sync)');
+      }
+    } catch (error) {
+      safeLog('[PWA] Sync registration failed:', error);
+    }
+  }, [swRegistration]);
+
+  // Handle online/offline events
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      safeLog('[PWA] Back online');
+      syncPendingData();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      safeLog('[PWA] Offline');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [syncPendingData]);
+
+  // Prompt for installation
+  const promptInstall = useCallback(async () => {
+    if (!deferredPrompt) {
+      safeLog('[PWA] Install prompt not available');
+      return;
+    }
+
+    try {
+      await deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      safeLog('[PWA] User response:', outcome);
+      setDeferredPrompt(null);
+    } catch (error) {
+      safeLog('[PWA] Installation prompt failed:', error);
+    }
+  }, [deferredPrompt]);
+
+  // Expose PWA functions to window
+  useEffect(() => {
+    (window as any).leopardoPWA = {
+      promptInstall,
+      isInstalled,
+      isOnline,
+      deferredPrompt: !!deferredPrompt,
+      swRegistration,
+    };
+  }, [deferredPrompt, isInstalled, isOnline, promptInstall, swRegistration]);
+
+  return <>{children}</>;
+}
+
+/**
+ * usePWA Hook
+ * Access PWA functionality from components
+ */
+export function usePWA() {
+  const [pwaState, setPwaState] = useState({
+    isInstalled: false,
+    isOnline: true,
+    canInstall: false,
+  });
+
+  useEffect(() => {
+    const updateState = () => {
+      setPwaState({
+        isInstalled: (window as any).leopardoPWA?.isInstalled || false,
+        isOnline: (window as any).leopardoPWA?.isOnline ?? true,
+        canInstall: (window as any).leopardoPWA?.deferredPrompt || false,
+      });
+    };
+
+    updateState();
+
+    window.addEventListener('online', updateState);
+    window.addEventListener('offline', updateState);
+
+    return () => {
+      window.removeEventListener('online', updateState);
+      window.removeEventListener('offline', updateState);
+    };
+  }, []);
+
+  const promptInstall = async () => {
+    if ((window as any).leopardoPWA?.promptInstall) {
+      await (window as any).leopardoPWA.promptInstall();
+    }
+  };
+
+  return {
+    ...pwaState,
+    promptInstall,
+
+  };
+}
+
+export default PWAProvider;

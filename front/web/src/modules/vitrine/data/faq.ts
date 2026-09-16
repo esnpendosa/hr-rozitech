@@ -1,0 +1,143 @@
+import type { AppLocale } from '@/lib/i18n'
+
+export type FaqItem = {
+  question: string
+  answer: string
+}
+
+const faqByLocale: Record<AppLocale, FaqItem[]> = {
+  id: [
+    {
+      question: 'Berapa lama waktu implementasi RMIH?',
+      answer: 'Proses setup standar memakan waktu kurang dari 24 jam. Tim Anda dapat langsung mulai mencatat absensi di hari pertama.',
+    },
+    {
+      question: 'Apakah RMIH tetap berfungsi saat tanpa koneksi internet?',
+      answer: 'Ya, aplikasi mobile memiliki mode offline penuh. Data absensi akan tersimpan aman dan tersinkronisasi otomatis saat internet kembali terhubung.',
+    },
+    {
+      question: 'Metode absensi apa saja yang didukung?',
+      answer: 'Kami mendukung biometrik wajah, sidik jari, NFC, QR Code, geolokasi GPS, dan mesin absensi ZKTeco.',
+    },
+    {
+      question: 'Apakah data karyawan dan perusahaan kami aman?',
+      answer: 'Sangat aman. Dilengkapi enkripsi AES-256 saat penyimpanan, TLS 1.3 saat transfer data, 2FA, dan log audit komprehensif.',
+    },
+    {
+      question: 'Dapatkah kami memindahkan data dari sistem lama atau Excel?',
+      answer: 'Bisa. Kami menyediakan format impor data agar transisi dari spreadsheet atau sistem lama berjalan lancar tanpa hambatan.',
+    },
+    {
+      question: 'Apakah ada kontrak minimal berlangganan?',
+      answer: 'Tidak ada komitmen kaku untuk paket standar. Anda dapat berlangganan secara bulanan atau tahunan sesuai kebutuhan.',
+    },
+  ],
+  fr: [
+    {
+      question: 'Combien de temps faut-il pour déployer RMIH ?',
+      answer: "Le déploiement standard prend moins de 24 heures. Votre équipe peut commencer à utiliser la plateforme des le premier jour avec notre onboarding guide.",
+    },
+    {
+      question: 'Est-ce que RMIH fonctionne hors ligne ?',
+      answer: "Oui, l'application mobile dispose d'un mode offline complet. Les pointages et demandes se synchronisent automatiquement des que la connexion revient.",
+    },
+    {
+      question: 'Quelles methodes de pointage sont supportees ?',
+      answer: 'Nous supportons la biometrie faciale, les empreintes, NFC, QR code, geolocalisation et les bornes ZKTeco.',
+    },
+    {
+      question: 'Mes données sont-elles sécurisées ?',
+      answer: 'Oui. Chiffrement AES-256 au repos, TLS 1.3 en transit, 2FA, audit trail complet et hébergement européen.',
+    },
+    {
+      question: 'Puis-je migrer depuis un autre outil RH ?',
+      answer: 'Oui, nous proposons un accompagnement de migration pour importer vos données sans interrompre vos operations.',
+    },
+    {
+      question: 'Y a-t-il un engagement minimum ?',
+      answer: 'Non, les plans restent flexibles. Un engagement annuel peut être proposé pour les contrats enterprise.',
+    },
+  ],
+  en: [
+    {
+      question: 'How long does RMIH take to deploy?',
+      answer: 'A standard rollout takes less than 24 hours. Most teams start operating on day one with guided onboarding.',
+    },
+    {
+      question: 'Does RMIH work offline?',
+      answer: 'Yes. Mobile attendance and requests keep working offline and synchronize automatically when connectivity returns.',
+    },
+    {
+      question: 'Which attendance methods are supported?',
+      answer: 'We support facial biometrics, fingerprint, NFC, QR code, geolocation, and ZKTeco devices.',
+    },
+    {
+      question: 'Is our data secure?',
+      answer: 'Yes. AES-256 at rest, TLS 1.3 in transit, 2FA, full audit trails, and hardened hosting are part of the baseline.',
+    },
+    {
+      question: 'Can we migrate from another HR tool?',
+      answer: 'Yes. Our onboarding team can help import existing employee, attendance, and payroll data safely.',
+    },
+    {
+      question: 'Is there a minimum commitment?',
+      answer: 'No mandatory lock-in for standard plans. Annual enterprise contracts remain available where needed.',
+    },
+  ],
+  tr: [
+    {
+      question: 'RMIH ne kadar hizli devreye alinir?',
+      answer: 'Standart kurulum 24 saatten kisa surer. Cogu ekip ilk gunden itibaren kullanima baslar.',
+    },
+    {
+      question: 'RMIH cevrimdisi calisir mi?',
+      answer: 'Evet. Mobil takip ve talepler cevrimdisi devam eder, baglanti gelince otomatik eslesir.',
+    },
+    {
+      question: 'Hangi devam takip yontemleri destekleniyor?',
+      answer: 'Yuz biyometrisi, parmak izi, NFC, QR kod, konum ve ZKTeco cihazlari desteklenir.',
+    },
+    {
+      question: 'Verilerimiz guvende mi?',
+      answer: 'Evet. AES-256 sifreleme, TLS 1.3, 2FA, denetim kayitlari ve guclu barindirma temel standarttir.',
+    },
+    {
+      question: 'Baska IK araclarindan gecis yapabilir miyiz?',
+      answer: 'Evet. Mevcut personel, devam ve bordro verilerini tasimak icin destek veriyoruz.',
+    },
+    {
+      question: 'Asgari taahhut var mi?',
+      answer: 'Standart planlarda zorunlu taahhut yoktur. Gerektiginde yillik enterprise sozlesmesi yapilabilir.',
+    },
+  ],
+  ar: [
+    {
+      question: 'كم يستغرق تشغيل RMIH؟',
+      answer: 'النشر القياسي يستغرق اقل من 24 ساعة، ويمكن للفريق البدء في الاستخدام من اليوم الاول.',
+    },
+    {
+      question: 'هل يعمل RMIH دون اتصال؟',
+      answer: 'نعم. الحضور والطلبات عبر الجوال تستمر دون اتصال ثم تتزامن تلقائيا عند عودة الشبكة.',
+    },
+    {
+      question: 'ما طرق الحضور المدعومة؟',
+      answer: 'ندعم القياسات الحيوية للوجه والبصمة و NFC و QR وتحديد الموقع واجهزة ZKTeco.',
+    },
+    {
+      question: 'هل بياناتنا آمنة؟',
+      answer: 'نعم. تشفير AES-256 و TLS 1.3 و 2FA وسجل تدقيق كامل واستضافة قوية.',
+    },
+    {
+      question: 'هل يمكننا الانتقال من نظام موارد بشرية اخر؟',
+      answer: 'نعم. فريقنا يساعد في ترحيل بيانات الموظفين والحضور والرواتب بشكل آمن.',
+    },
+    {
+      question: 'هل يوجد التزام ادنى؟',
+      answer: 'لا يوجد التزام اجباري في الخطط القياسية، مع امكانية العقود السنوية للحسابات المؤسسية.',
+    },
+  ],
+}
+
+export function getFaqItems(locale: AppLocale): FaqItem[] {
+  return faqByLocale[locale] ?? faqByLocale.id
+}

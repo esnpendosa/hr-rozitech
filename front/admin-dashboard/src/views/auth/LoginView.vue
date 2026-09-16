@@ -1,0 +1,448 @@
+<template>
+  <div class="min-h-screen flex items-center justify-center bg-slate-950 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden font-sans text-slate-200">
+        <!-- Language Switcher -->
+    <div class="absolute top-6 right-6 z-20">
+      <div class="inline-flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 px-3 py-1.5 backdrop-blur-xl shadow-sm">
+        <svg class="w-4 h-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="2" y1="12" x2="22" y2="12" />
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg>
+        <select
+          :value="localeStore.current"
+          @change="localeStore.setLocale($event.target.value)"
+          class="bg-transparent text-xs font-bold text-slate-200 outline-none cursor-pointer"
+        >
+          <option value="id" class="bg-slate-900 text-white">Bahasa Indonesia</option>
+          <option value="en" class="bg-slate-900 text-white">English</option>
+          <option value="fr" class="bg-slate-900 text-white">Français</option>
+          <option value="ar" class="bg-slate-900 text-white">العربية</option>
+          <option value="tr" class="bg-slate-900 text-white">Türkçe</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Skip to content (WCAG 2.4.1, issue #5622) -->
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:rounded-xl focus:bg-white focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-brand-600 focus:shadow-premium"
+    >{{ t('a11y.skip_to_content', 'Aller au contenu principal') }}</a>
+
+    <!-- Animated Background -->
+    <div class="absolute inset-0 z-0">
+      <div class="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-600/20 rounded-full blur-[120px]"></div>
+      <div class="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-blue-500/20 rounded-full blur-[120px]"></div>
+      <div class="absolute top-[20%] right-[10%] w-[30%] h-[30%] bg-indigo-500/10 rounded-full blur-[100px]"></div>
+    </div>
+
+    <!-- Grid Pattern overlay -->
+    <div class="absolute inset-0 z-0 opacity-20" style="background-image: radial-gradient(#3b82f6 0.5px, transparent 0.5px); background-size: 24px 24px;"></div>
+
+    <main id="main-content" class="max-w-md w-full space-y-10 relative z-10">
+      <div class="text-center">
+        <div class="mx-auto h-24 w-24 flex items-center justify-center rounded-3xl bg-white/5 dark:bg-slate-900/5 backdrop-blur-2xl border border-white/20 shadow-glass overflow-hidden group">
+          <div class="absolute inset-0 bg-gradient-to-br from-brand-500/20 to-indigo-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+          <img src="/brand/rmih-emblem.png" alt="RMIH" class="w-16 h-16 object-contain relative z-10" />
+        </div>
+        <h1 class="mt-8 text-center text-5xl font-black tracking-tight text-white uppercase italic">
+          RMIH <span class="text-brand-500 not-italic font-black">Admin</span>
+        </h1>
+        <p class="mt-4 text-center text-slate-400 font-bold tracking-[0.15em] uppercase text-xs">
+          Administrasi Platform • v{{ backendVersion || '4.24' }}
+        </p>
+        <p class="mt-2 text-center text-brand-400 font-black uppercase tracking-widest text-[10px]">
+          {{ t('auth.login_subtitle', 'Masuk ke ruang kerja Anda') }}
+        </p>
+      </div>
+
+      <div class="glass-card p-1 pb-1 overflow-hidden shadow-premium">
+        <div class="bg-slate-900/40 backdrop-blur-3xl p-8 rounded-[1.4rem]">
+          <form novalidate class="space-y-6" @submit.prevent="handleLogin">
+            <div class="space-y-5">
+              <FormField
+                id="email"
+                :label="t('auth.email_label', 'Alamat Email')"
+                required
+                :error="fieldErrors.email"
+                v-slot="{ ariaInvalid, describedBy }"
+              >
+                <div class="relative">
+                  <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <EnvelopeIcon class="h-5 w-5 text-slate-500" />
+                  </div>
+                  <input
+                    id="email"
+                    v-model="form.email"
+                    name="email"
+                    type="email"
+                    autocomplete="email"
+                    required
+                    autofocus
+                    :aria-invalid="ariaInvalid"
+                    :aria-describedby="describedBy"
+                    class="block w-full rounded-2xl border-0 bg-white/5 dark:bg-slate-900/5 backdrop-blur-xl py-4 pl-12 pr-4 text-white ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:ring-2 focus:ring-inset focus:ring-brand-500 text-sm font-bold transition-all duration-300 outline-none"
+                    :placeholder="t('auth.login_placeholder_email', 'admin@rmih.id')"
+                  />
+                </div>
+              </FormField>
+
+              <FormField
+                id="password"
+                :label="t('auth.access_key_label', 'Kata Sandi')"
+                required
+                :error="fieldErrors.password"
+                v-slot="{ ariaInvalid, describedBy }"
+              >
+                <div class="relative">
+                  <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <LockClosedIcon class="h-5 w-5 text-slate-500" />
+                  </div>
+                  <input
+                    id="password"
+                    v-model="form.password"
+                    name="password"
+                    :type="showPassword ? 'text' : 'password'"
+                    autocomplete="current-password"
+                    required
+                    :aria-invalid="ariaInvalid"
+                    :aria-describedby="describedBy"
+                    class="block w-full rounded-2xl border-0 bg-white/5 dark:bg-slate-900/5 backdrop-blur-xl py-4 pl-12 pr-12 text-white ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:ring-2 focus:ring-inset focus:ring-brand-500 text-sm font-bold transition-all duration-300 outline-none"
+                    placeholder="••••••••"
+                  />
+                  <button
+                    type="button"
+                    class="absolute inset-y-0 right-0 flex items-center px-4 text-slate-500 hover:text-white transition-colors"
+                    @click="showPassword = !showPassword"
+                    :aria-label="showPassword ? t('auth.hide_password', 'Sembunyikan kata sandi') : t('auth.show_password', 'Tampilkan kata sandi')"
+                  >
+                    <EyeSlashIcon v-if="showPassword" class="h-5 w-5" />
+                    <EyeIcon v-else class="h-5 w-5" />
+                  </button>
+                </div>
+              </FormField>
+
+              <FormField
+                v-if="requiresTwoFactor"
+                id="two-factor-code"
+                :label="t('auth.two_fa_label', 'Kode 2FA')"
+                required
+                :error="fieldErrors.twoFactorCode"
+                v-slot="{ ariaInvalid, describedBy }"
+              >
+                <input
+                  id="two-factor-code"
+                  v-model="form.twoFactorCode"
+                  name="two-factor-code"
+                  type="text"
+                  inputmode="numeric"
+                  required
+                  :aria-invalid="ariaInvalid"
+                  :aria-describedby="describedBy"
+                  class="block w-full rounded-2xl border-0 bg-white/5 dark:bg-slate-900/5 backdrop-blur-xl py-4 px-4 text-white ring-1 ring-inset ring-amber-500/30 focus:ring-2 focus:ring-inset focus:ring-brand-500 text-center text-2xl font-black tracking-[0.5em] transition-all duration-300 outline-none"
+                  placeholder="000000"
+                />
+              </FormField>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div class="flex items-center">
+                <input
+                  id="remember-me"
+                  v-model="form.remember"
+                  name="remember-me"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-white/10 bg-white/5 dark:bg-slate-900/5 backdrop-blur-xl text-brand-600 focus:ring-brand-500 transition-all duration-300"
+                />
+                <label for="remember-me" class="ml-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  {{ t('auth.remember_me', 'Ingat saya') }}
+                </label>
+              </div>
+
+              <div class="text-xs font-bold">
+                <span class="text-xs font-semibold text-slate-500">Dukungan teknis: support@rmih.id</span>
+              </div>
+            </div>
+
+            <div v-if="error" role="alert" class="rounded-2xl bg-red-500/10 border border-red-500/20 p-4">
+              <div class="flex items-center gap-3">
+                <ExclamationTriangleIcon class="h-5 w-5 text-red-400 shrink-0" />
+                <div class="space-y-1">
+                  <!-- Issue #6675 : le titre ne doit PAS présumer « Connection error »
+                       — le corps porte le vrai message (localized_message backend ou
+                       erreur réseau). Titre neutre pour éviter le doublon trompeur. -->
+                  <h3 class="text-xs font-black uppercase tracking-wider text-red-400">{{ t('auth.login_error_title', 'Gagal Masuk') }}</h3>
+                  <p class="text-[10px] font-bold text-red-300/80 leading-tight">{{ error }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-3 pt-2">
+              <button
+                type="submit"
+                :disabled="isLoading"
+                class="group relative flex w-full justify-center rounded-2xl bg-brand-600 py-4 px-4 text-sm font-black uppercase tracking-widest text-white shadow-lg hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:opacity-50 transition-all duration-300"
+              >
+                <span v-if="isLoading" class="mr-2">
+                  <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </span>
+                {{ isLoading ? t('auth.loading', 'Authentification…') : t('auth.login_submit', 'Se connecter') }}
+              </button>
+
+              <!-- Accès démo (dev/staging uniquement — masqué en production). -->
+              <div
+                v-if="hasDemoPersonas"
+                class="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 space-y-3"
+              >
+                <div class="flex items-center gap-2">
+                  <SparklesIcon class="h-4 w-4 shrink-0 text-amber-400" />
+                  <h2 class="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                    {{ t('auth.demo_panel_title', 'Accès démo — choisir un profil') }}
+                  </h2>
+                </div>
+                <p class="text-[10px] font-bold leading-tight text-amber-200/70">
+                  {{ t('auth.demo_panel_hint', 'Environnement de démonstration : sélectionnez un profil pour vous connecter immédiatement. Désactivé en production.') }}
+                </p>
+                <div class="grid gap-2">
+                  <button
+                    v-for="persona in demoPersonas"
+                    :key="persona.email"
+                    type="button"
+                    :disabled="isLoading"
+                    class="flex w-full items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 transition-all duration-300"
+                    @click="useDemoAccount(persona)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-xs font-bold text-slate-200">{{ persona.label }}</span>
+                      <span class="block truncate text-[10px] text-slate-500">{{ persona.email }}</span>
+                    </span>
+                    <span class="ml-2 shrink-0 rounded-full bg-brand-500/15 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-brand-300">
+                      {{ persona.badge }}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Démo indisponible : API injoignable (jamais en prod : 404 → silence). -->
+              <p
+                v-if="demoUnavailable"
+                role="status"
+                class="text-[10px] font-bold leading-tight text-amber-300/80"
+              >
+                {{ t('auth.demo.unavailable') }}
+              </p>
+
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Legal & Info Footer -->
+      <div class="flex items-center justify-between px-2 text-[10px] font-black uppercase tracking-widest text-slate-600">
+        <span>© 2026 RMIH Systems</span>
+        <div class="flex items-center gap-4">
+          <span class="hover:text-slate-400 transition-colors cursor-not-allowed">Keamanan</span>
+          <span class="hover:text-slate-400 transition-colors cursor-not-allowed">Bantuan</span>
+        </div>
+      </div>
+    </main>
+
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  LockClosedIcon,
+  EnvelopeIcon,
+  ExclamationTriangleIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  SparklesIcon,
+} from '@heroicons/vue/24/outline'
+import { useAuthStore } from '@/stores/auth'
+import { useLocaleStore } from '@/stores/locale'
+import { translate } from '@/i18n/index.js'
+import api from '@/services/api'
+import FormField from '@/components/common/FormField.vue'
+
+const router = useRouter()
+const authStore = useAuthStore()
+const localeStore = useLocaleStore()
+const t = (key, fallback = '') => translate(localeStore.current, key, fallback)
+
+// #4953 (audit 2026-08-17) : le label de version était codé en dur (v4.16).
+// Alimenté depuis GET /api/v1/health (champ `version`), fallback statique si
+// l'API est injoignable (login fonctionnel hors-ligne / API down).
+const backendVersion = ref('')
+
+api.get('/health')
+  .then((res) => {
+    const v = res?.data?.version ?? res?.version
+    if (typeof v === 'string' && v.trim() !== '') {
+      backendVersion.value = v.replace(/^v/i, '')
+    }
+  })
+  .catch(() => {
+    // fallback silencieux : le label statique s'affiche.
+  })
+
+const form = reactive({
+  email: '',
+  password: '',
+  twoFactorCode: '',
+  remember: false,
+})
+
+const isLoading = ref(false)
+const error = ref('')
+const requiresTwoFactor = ref(false)
+const showPassword = ref(false)
+const attempted = ref(false)
+
+// S-6 (#1666) : feedback inline par champ (aria-invalid + aria-describedby).
+const fieldErrors = computed(() => {
+  if (!attempted.value) return {}
+  const errors = {}
+  if (!form.email) {
+    errors.email = t('auth.email_required', "L'adresse email est requise.")
+  } else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email)) {
+    errors.email = t('auth.email_invalid', "Le format de l'adresse email est invalide.")
+  }
+  if (!form.password) {
+    errors.password = t('auth.access_key_required', 'Le mot de passe est requis.')
+  }
+  if (requiresTwoFactor.value && !form.twoFactorCode) {
+    errors.twoFactorCode = t('auth.two_factor_required', 'Le code 2FA est requis.')
+  }
+  return errors
+})
+
+/**
+ * Accès démo (issues #6922, #6524) — **DEV / STAGING UNIQUEMENT, par construction**.
+ *
+ * Le panneau n'apparaît que si le backend expose des personas via
+ * `GET /api/v1/demo-users` (mode démo activé côté serveur — `DEMO_MODE_ENABLED`).
+ * Hors mode démo — donc **toujours en production**, où l'endpoint répond 404 —
+ * la liste reste vide et rien n'est rendu : aucun identifiant n'est codé en dur
+ * dans l'UI (le bundle ne contient plus de credentials, cf. #4511 / #6922).
+ *
+ * L'utilisateur choisit un profil et se connecte en un clic. Le contrat de
+ * données est identique à celui du portail web
+ * (front/web/src/app/auth/login/page.tsx) : `{ super_admin, companies[].users[] }`.
+ */
+const demoPersonas = ref([])
+
+// `v-if` sur un booléen nommé : évite une expression inline dans le template
+// (garde i18n « no new hardcoded strings » — PA2-I18N-014).
+const hasDemoPersonas = computed(() => demoPersonas.value.length > 0)
+
+// Vrai seulement si l'API est injoignable (≠ 404, qui signifie « démo
+// désactivée » : c'est le cas en production → on reste silencieux).
+const demoUnavailable = ref(false)
+
+function buildDemoPersonas(responseBody) {
+  // axios: responseBody = corps JSON ; le endpoint renvoie { data: {...} } ou {...}.
+  const root = responseBody?.data ?? responseBody ?? {}
+  const personas = []
+
+  const superAdmin = root.super_admin
+  if (typeof superAdmin?.email === 'string' && typeof superAdmin?.password === 'string') {
+    personas.push({
+      label: superAdmin.label || t('auth.demo_super_admin_label'),
+      email: superAdmin.email,
+      password: superAdmin.password,
+      badge: t('auth.demo_badge_platform', 'Plateforme'),
+    })
+  }
+
+  const companies = Array.isArray(root.companies) ? root.companies : []
+  for (const company of companies) {
+    const users = Array.isArray(company?.users) ? company.users : []
+    for (const user of users) {
+      if (typeof user?.email !== 'string' || typeof user?.password !== 'string') continue
+      const companyName = company?.name || 'Tenant'
+      personas.push({
+        label: user.name || user.email,
+        email: user.email,
+        password: user.password,
+        badge: user.manager_role ? `${companyName} · ${user.manager_role}` : companyName,
+      })
+    }
+  }
+
+  return personas
+}
+
+onMounted(() => {
+  api
+    .get('/demo-users')
+    .then((res) => {
+      demoPersonas.value = buildDemoPersonas(res?.data)
+    })
+    .catch((err) => {
+      // 404 = mode démo volontairement désactivé (production) → silence.
+      // Toute autre erreur = API injoignable → on l'affiche (en dev, un
+      // panneau absent était indiscernable d'une panne d'API).
+      demoPersonas.value = []
+      if (err?.response?.status !== 404) {
+        demoUnavailable.value = true
+      }
+    })
+})
+
+function useDemoAccount(persona) {
+  form.email = persona.email
+  form.password = persona.password
+  form.twoFactorCode = ''
+  handleLogin()
+}
+
+async function handleLogin() {
+  if (isLoading.value) return
+
+  error.value = ''
+  attempted.value = true
+  if (Object.keys(fieldErrors.value).length > 0) {
+    isLoading.value = false
+    return
+  }
+  isLoading.value = true
+
+  try {
+    const result = await authStore.login({
+      email: form.email,
+      password: form.password,
+      remember: form.remember,
+      two_fa_code: form.twoFactorCode || undefined,
+    })
+
+    if (result.success) {
+      requiresTwoFactor.value = false
+      form.twoFactorCode = ''
+      router.push('/')
+    } else if (result.requiresTwoFactor) {
+      requiresTwoFactor.value = true
+      error.value = result.message || t('auth.two_fa_required_msg', 'Un code de vérification est requis.')
+    } else {
+      error.value = result.message || t('auth.connection_error', 'Erreur de connexion.')
+    }
+  } catch (err) {
+    error.value = t('auth.unexpected_error', 'Une erreur inattendue est survenue.')
+    console.error('Login error:', err)
+  } finally {
+    isLoading.value = false
+  }
+}
+</script>
+
+<style scoped>
+@reference '../../style.css';
+input:focus {
+  @apply ring-brand-500 border-brand-500 shadow-[0_0_15px_rgba(20,184,166,0.1)];
+}
+</style>
+

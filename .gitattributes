@@ -1,0 +1,55 @@
+# Git Attributes — Leopardo RH
+# Définit les stratégies de merge par type de fichier
+
+# CHANGELOG : stratégie union = accepte les deux ajouts sans conflit
+CHANGELOG.md merge=union
+# Fichiers texte : normalisation des fins de ligne
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.php   text eol=lf
+*.dart  text eol=lf
+*.sh    text eol=lf
+*.neon  text eol=lf
+# Fichiers binaires — trackés en Git LFS (issue #1727)
+# Les fichiers LFS sont stockés hors-git (GitHub LFS) ; le checkout CI doit
+# utiliser actions/checkout avec lfs: true (fait sur tous les workflows).
+*.png   filter=lfs diff=lfs merge=lfs -text
+# assets/branding : PNG commités en binaire (pas de pointers LFS) — même
+# exception que front/web/public/*.png (#5698, valide-and-sync git diff).
+assets/branding/*.png !filter !diff !merge -text
+*.jpg   filter=lfs diff=lfs merge=lfs -text
+*.jpeg  filter=lfs diff=lfs merge=lfs -text
+*.webp  filter=lfs diff=lfs merge=lfs -text
+*.webm  filter=lfs diff=lfs merge=lfs -text
+*.mp4   filter=lfs diff=lfs merge=lfs -text
+*.gif   filter=lfs diff=lfs merge=lfs -text
+*.apk   filter=lfs diff=lfs merge=lfs -text
+*.aab   filter=lfs diff=lfs merge=lfs -text
+# Autres binaires (hors LFS pour l'instant)
+*.ico   binary
+*.pdf   binary
+
+# QA #2829 + #4124 : médias vitrine commités en binaires réels (HORS Git LFS)
+# — le build Vercel ne résout pas LFS (pointeurs servis en prod → images/vidéo
+# cassées), et git-lfs ≥3.7 les réécrit au checkout CI (devraient être des
+# pointeurs) → la garde `validate-and-sync` (`git diff --exit-code`) rougissait
+# sur main et toutes les PRs. Exemptés du filtre LFS : binaires réels stables.
+front/web/public/*.png          !filter !diff !merge -text
+front/web/public/og/*.png       !filter !diff !merge -text
+front/web/public/screenshots/*.png !filter !diff !merge -text
+front/web/public/videos/*       !filter !diff !merge -text
+front/web-offline/public/*.png  !filter !diff !merge -text
+front/mobile_apps/**/*.png        !filter !diff !merge -text
+# site/gh-pages (Pages #6827) : images commitées en binaire — même exception
+# que assets/branding et front/web/public (#5698). Doit venir APRÈS les règles
+# globales *.png/*.jpg/*.webp filter=lfs : dans .gitattributes la dernière
+# règle gagnante prime (sans cela validate-and-sync reste rouge sur les jpg).
+site/gh-pages/assets/*.png !filter !diff !merge -text
+site/gh-pages/assets/*.jpg !filter !diff !merge -text
+site/gh-pages/assets/*.jpeg !filter !diff !merge -text
+site/gh-pages/assets/*.webp !filter !diff !merge -text
+site/gh-pages/assets/*.gif !filter !diff !merge -text
+
+# Assets design/screenshots (assets/) : restent en VRAI Git LFS (pointeurs).

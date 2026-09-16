@@ -1,0 +1,621 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Payroll\Infrastructure\Services\CountryRules;
+
+/**
+ * CEDEAO/UEMOA zone (Communaute Economique des Etats de l'Afrique de
+ * l'Ouest / Union Economique et Monetaire Ouest-Africaine): this class
+ * covers the UEMOA member states that already share the XOF currency —
+ * Cote d'Ivoire (CI), Mali (ML), Burkina Faso (BF), Benin (BJ), Togo (TG),
+ * Niger (NE). Senegal (SN) is also a UEMOA/XOF member but already has its
+ * own dedicated SenegalPayrollRules class delivered earlier, so it is
+ * intentionally excluded from MEMBER_COUNTRY_CODES here to avoid two
+ * competing rule sets for the same country code (PA2-COUNTRY-008).
+ *
+ * Per the scope doc (`05_SCOPE_PAYS_PAIE_POINTAGE.md`), CEDEAO support is
+ * delivered first for the XOF-denominated members above; the non-XOF
+ * ECOWAS members (Nigeria/NGN, Ghana/GHS, Cape Verde/CVE, Gambia/GMD,
+ * Guinea/GNF, Liberia/LRD, Sierra Leone/SLL) are an explicit future
+ * extension, not covered by this class.
+ *
+ * `country_code` columns (tax_slabs, social_contributions, payroll_runs...)
+ * are `varchar(2)`, so the zone-wide label "CEDEAO" is never persisted as a
+ * country code: every usable instance is scoped to one of
+ * MEMBER_COUNTRY_CODES via the constructor or forMemberCountry(), and
+ * countryCode() returns that ISO 3166-1 alpha-2 code. Cote d'Ivoire (CI) is
+ * the representative default when no member state is specified, matching
+ * the scope doc's "Africa/Abidjan" zone-wide default timezone.
+ */
+class CedeaoPayrollRules extends AbstractCountryRules
+{
+    /**
+     * ISO 3166-1 alpha-2 codes of the UEMOA/XOF CEDEAO member states this
+     * class supports via forMemberCountry()/the constructor. Senegal (SN)
+     * is deliberately excluded — see class docblock.
+     */
+    public const MEMBER_COUNTRY_CODES = ['CI', 'ML', 'BF', 'BJ', 'TG', 'NE'];
+
+    protected string $memberCountryCode;
+
+    public function __construct(string $memberCountryCode = 'CI')
+    {
+        $normalized = strtoupper(trim($memberCountryCode));
+        $this->memberCountryCode = in_array($normalized, self::MEMBER_COUNTRY_CODES, true) ? $normalized : 'CI';
+    }
+
+    /**
+     * Returns a clone scoped to a specific CEDEAO/UEMOA member state, so
+     * callers that know the precise country (e.g. company provisioning)
+     * get the member's minimum wage instead of the Cote d'Ivoire default.
+     */
+    public function forMemberCountry(string $memberCountryCode): static
+    {
+        $clone = clone $this;
+        $normalized = strtoupper(trim($memberCountryCode));
+        $clone->memberCountryCode = in_array($normalized, self::MEMBER_COUNTRY_CODES, true) ? $normalized : $clone->memberCountryCode;
+
+        return $clone;
+    }
+
+    public function countryCode(): string
+    {
+        return $this->memberCountryCode;
+    }
+
+    public function currency(): string
+    {
+        // All supported members share the CFA franc BCEAO (XOF). Non-XOF
+        // ECOWAS members are an explicit future extension (see docblock).
+        return 'XOF';
+    }
+
+    public function minimumWage(): float
+    {
+        // SMIG (Salaire Minimum Interprofessionnel Garanti) per member
+        // state, most recent published figures. Placeholder-grade: not
+        // locally legally validated, see confidenceLevel() below.
+        return match ($this->memberCountryCode) {
+            'ML' => 40000.0,
+            'BF' => 34664.0,
+            'BJ' => 52000.0,
+            'TG' => 52500.0, // SMIG 2023 (52 500 XOF/mois depuis le 01/01/2023)
+            'NE' => 30047.0,
+            default => 75000.0, // CI
+        };
+    }
+
+    public function socialContributions(): array
+    {
+        // CI (#1825) : taux CNSS légaux (CGI CI / Code de la sécurité
+        // sociale ivoirien) — retraite 3,2 % salarié + 4,5 % patronal,
+        // famille 5,75 % patronal (plafond 1 647 315 XOF/mois), AT 2,0 %
+        // patronal (non plafonné, taux pilote variable selon le risque).
+        if ($this->memberCountryCode === 'CI') {
+            return [
+                ['name' => 'CNSS Retraite Salariale (CI)', 'code' => 'CNSS_CI_RET_EMP', 'type' => 'employee', 'rate' => 3.2, 'cap' => 1647315.0],
+                ['name' => 'CNSS Retraite Patronale (CI)', 'code' => 'CNSS_CI_RET_PAT', 'type' => 'employer', 'rate' => 4.5, 'cap' => 1647315.0],
+                // #1913 : la CNPS distingue les plafonds par branche — retraite
+                // 1 647 315, prestations familiales et AT/MP 70 000 XOF/mois
+                // (aligné sur calculateSocialCharges, guide officiel CNPS).
+                ['name' => 'CNSS Famille Patronale (CI)', 'code' => 'CNSS_CI_FAM_PAT', 'type' => 'employer', 'rate' => 5.75, 'cap' => 70000.0],
+                ['name' => 'CNSS AT Patronale (CI)', 'code' => 'CNSS_CI_AT_PAT', 'type' => 'employer', 'rate' => 2.0, 'cap' => 70000.0],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'BF') {
+            // CNSS Burkina Faso (issue #1829) : retraite salarié 5,5 % +
+            // retraite patronal 6,5 % + famille patronal 7,0 % plafonnés à
+            // 900 000 XOF/mois, AT patronal 3,5 % non plafonné (taux pilote).
+            return [
+                ['name' => 'CNSS Retraite Salariale', 'code' => 'CNSS_BF_RET_EMP', 'type' => 'employee', 'rate' => 5.5, 'cap' => 900000.0],
+                ['name' => 'CNSS Retraite Patronale', 'code' => 'CNSS_BF_RET_PAT', 'type' => 'employer', 'rate' => 6.5, 'cap' => 900000.0],
+                ['name' => 'CNSS Prestations Familiales Patronale', 'code' => 'CNSS_BF_FAM_PAT', 'type' => 'employer', 'rate' => 7.0, 'cap' => 900000.0],
+                ['name' => 'CNSS Risques Professionnels Patronale', 'code' => 'CNSS_BF_AT_PAT', 'type' => 'employer', 'rate' => 3.5, 'cap' => null],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'ML') {
+            // INPS Mali (issue #1829) : retraite salarié 3,6 % + retraite
+            // patronal 7,4 % plafonnés à 3 000 000 XOF/mois, famille patronal
+            // 4,0 % et AT patronal 2,0 % non plafonnés (taux pilote).
+            return [
+                ['name' => 'INPS Retraite Salariale', 'code' => 'INPS_ML_RET_EMP', 'type' => 'employee', 'rate' => 3.6, 'cap' => 3000000.0],
+                ['name' => 'INPS Retraite Patronale', 'code' => 'INPS_ML_RET_PAT', 'type' => 'employer', 'rate' => 7.4, 'cap' => 3000000.0],
+                ['name' => 'INPS Prestations Familiales Patronale', 'code' => 'INPS_ML_FAM_PAT', 'type' => 'employer', 'rate' => 4.0, 'cap' => null],
+                ['name' => 'INPS Risques Professionnels Patronale', 'code' => 'INPS_ML_AT_PAT', 'type' => 'employer', 'rate' => 2.0, 'cap' => null],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'TG') {
+            // CNSS Togo (issue #2121, loi 67-12 / Code sécurité sociale
+            // 2011-006 — cleiss 2026) : pensions 12,5 % patronal + 4 %
+            // salarial, prestations familiales 3 % patronal, risques
+            // professionnels 2 % patronal — total patronal 17,5 %, assiette
+            // = totalité des revenus (aucun plafond, plancher SMIG).
+            // L'AMU (décret 2023-096/PR, 5 % + 5 %) n'est pas encore
+            // modélisée (suivi expert, TG_COMPLIANCE.md §3).
+            return [
+                ['name' => 'CNSS Pensions Salariale (TG)', 'code' => 'CNSS_TG_VIE_EMP', 'type' => 'employee', 'rate' => 4.0, 'cap' => null],
+                ['name' => 'CNSS Pensions Patronale (TG)', 'code' => 'CNSS_TG_VIE_PAT', 'type' => 'employer', 'rate' => 12.5, 'cap' => null],
+                ['name' => 'CNSS Prestations Familiales Patronale (TG)', 'code' => 'CNSS_TG_FAM_PAT', 'type' => 'employer', 'rate' => 3.0, 'cap' => null],
+                ['name' => 'CNSS Risques Professionnels Patronale (TG)', 'code' => 'CNSS_TG_AT_PAT', 'type' => 'employer', 'rate' => 2.0, 'cap' => null],
+            ];
+        }
+
+        // Placeholder générique pour les autres membres UEMOA (BJ, NE)
+        // tant que leurs issues pays n'ont pas livré de taux légaux validés.
+        return [
+            ['name' => 'CNPS/CNSS Salariale', 'code' => 'CNSS_CEDEAO_EMP', 'type' => 'employee', 'rate' => 3.6, 'cap' => null],
+            ['name' => 'CNPS/CNSS Patronale (retraite/famille/AT)', 'code' => 'CNSS_CEDEAO_PAT', 'type' => 'employer', 'rate' => 16.4, 'cap' => null],
+        ];
+    }
+
+    protected function defaultTaxSlabs(): array
+    {
+        // CI (#1918) : ITS unifié (réforme 2024 — ordonnance 2023-718/719,
+        // effet 01/01/2024, CGI art. 119 bis) — tranches MENSUELLES sur le
+        // BRUT : 0–75 000 XOF : 0 % · 75 001–240 000 : 16 % ·
+        // 240 001–800 000 : 21 % · 800 001–2 400 000 : 24 % ·
+        // 2 400 001–8 000 000 : 28 % · > 8 000 000 : 32 %. L'ancien ITSAS
+        // annuel (0/2/21/24,5/29 % — CGI art. 116-120 pré-réforme) et la
+        // Contribution Nationale (1,5 %) sont supprimés/fusionnés. La RICF
+        // (réduction pour charges de famille, art. 120) est appliquée APRÈS
+        // l'impôt brut (familyTaxReduction(), #2117) — défaut 1 part
+        // (célibataire sans enfant) → réduction nulle. À valider expert
+        // (#1904/#2124).
+        if ($this->memberCountryCode === 'CI') {
+            return [
+                ['min' => 0, 'max' => 75000, 'rate' => 0, 'fixed_deduction' => 0],
+                ['min' => 75001, 'max' => 240000, 'rate' => 16, 'fixed_deduction' => 0],
+                ['min' => 240001, 'max' => 800000, 'rate' => 21, 'fixed_deduction' => 0],
+                ['min' => 800001, 'max' => 2400000, 'rate' => 24, 'fixed_deduction' => 0],
+                ['min' => 2400001, 'max' => 8000000, 'rate' => 28, 'fixed_deduction' => 0],
+                ['min' => 8000001, 'max' => null, 'rate' => 32, 'fixed_deduction' => 0],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'BF') {
+            // IUTS Burkina Faso (CGI 2024) — tranches ANNUELLES, taux « tout
+            // compris » (contribution communale incluse) — issue #1829,
+            // docs/payroll/BF_COMPLIANCE.md §1. #1915 : la tranche
+            // > 6 000 000 @ 27,5 % (CGI BF) était fusionnée avec la 4e
+            // tranche (max null @ 23,6 %) → sous-imposition au-delà de
+            // ~500 000 FCFA/mois.
+            return [
+                ['min' => 0, 'max' => 600000, 'rate' => 0, 'fixed_deduction' => 0],
+                ['min' => 600001, 'max' => 1500000, 'rate' => 12.1, 'fixed_deduction' => 0],
+                ['min' => 1500001, 'max' => 3000000, 'rate' => 13.9, 'fixed_deduction' => 0],
+                ['min' => 3000001, 'max' => 4500000, 'rate' => 18.7, 'fixed_deduction' => 0],
+                ['min' => 4500001, 'max' => 6000000, 'rate' => 23.6, 'fixed_deduction' => 0],
+                ['min' => 6000001, 'max' => null, 'rate' => 27.5, 'fixed_deduction' => 0],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'ML') {
+            // ITS Mali (CGI 2024) — tranches ANNUELLES — issue #1829,
+            // docs/payroll/ML_COMPLIANCE.md §1.
+            return [
+                ['min' => 0, 'max' => 540000, 'rate' => 0, 'fixed_deduction' => 0],
+                ['min' => 540001, 'max' => 1320000, 'rate' => 5, 'fixed_deduction' => 0],
+                ['min' => 1320001, 'max' => 2040000, 'rate' => 10, 'fixed_deduction' => 0],
+                ['min' => 2040001, 'max' => 3480000, 'rate' => 15, 'fixed_deduction' => 0],
+                ['min' => 3480001, 'max' => 6360000, 'rate' => 20, 'fixed_deduction' => 0],
+                ['min' => 6360001, 'max' => null, 'rate' => 30, 'fixed_deduction' => 0],
+            ];
+        }
+
+        if ($this->memberCountryCode === 'TG') {
+            // IRPP Togo (issue #2121, CGI art. 74 — Loi n°2022-022 LF 2023,
+            // reconduit) : 8 tranches ANNUELLES progressives, 0 % → 35 %,
+            // assiette = brut − CNSS − abattement 28 % (TG_COMPLIANCE.md §1-§2).
+            return [
+                ['min' => 0, 'max' => 900000, 'rate' => 0, 'fixed_deduction' => 0],
+                ['min' => 900001, 'max' => 3000000, 'rate' => 3, 'fixed_deduction' => 0],
+                ['min' => 3000001, 'max' => 6000000, 'rate' => 10, 'fixed_deduction' => 0],
+                ['min' => 6000001, 'max' => 9000000, 'rate' => 15, 'fixed_deduction' => 0],
+                ['min' => 9000001, 'max' => 12000000, 'rate' => 20, 'fixed_deduction' => 0],
+                ['min' => 12000001, 'max' => 15000000, 'rate' => 25, 'fixed_deduction' => 0],
+                ['min' => 15000001, 'max' => 20000000, 'rate' => 30, 'fixed_deduction' => 0],
+                ['min' => 20000001, 'max' => null, 'rate' => 35, 'fixed_deduction' => 0],
+            ];
+        }
+
+        // Conservative placeholder progressive IGR-style schedule, common
+        // shape across UEMOA members. confidenceLevel() below explicitly
+        // marks this as 'placeholder', not a legally validated figure per
+        // member state.
+        return [
+            ['min' => 0, 'max' => 600000, 'rate' => 0, 'fixed_deduction' => 0],
+            ['min' => 600001, 'max' => 1200000, 'rate' => 12, 'fixed_deduction' => 0],
+            ['min' => 1200001, 'max' => 3000000, 'rate' => 22, 'fixed_deduction' => 0],
+            ['min' => 3000001, 'max' => 6000000, 'rate' => 32, 'fixed_deduction' => 0],
+            ['min' => 6000001, 'max' => null, 'rate' => 35, 'fixed_deduction' => 0],
+        ];
+    }
+
+    public function calculateIncomeTax(float $grossTaxable, float $annualBasis = 12, ?float $grossForAbatement = null): float
+    {
+        if ($this->memberCountryCode === 'TG') {
+            // TG (issue #2121, CGI art. 26 + 74) : assiette = brut − CNSS
+            // salariale − abattement frais pro 28 % (fraction du revenu
+            // ≤ 10 M FCFA/an → déduction mensuelle plafonnée à 233 333,33),
+            // puis barème ANNUEL progressif art. 74 divisé par 12. L'AMU
+            // (5 % salariale, décret 2023-096/PR) et les charges de famille
+            // (10 000/mois/personne, art. 72-73) ne sont pas modélisées
+            // (défaut célibataire 1 part) — TG_COMPLIANCE.md §2.
+            $abatement = $this->professionalExpensesDeduction();
+            $monthlyDeduction = min(
+                $grossTaxable * ($abatement['rate'] / 100),
+                $abatement['cap'] ?? PHP_FLOAT_MAX
+            );
+            $annualTaxable = max(0.0, $grossTaxable - $monthlyDeduction) * $annualBasis;
+            $tax = $this->calculateProgressiveTax($annualTaxable, $this->taxSlabs());
+
+            return round($tax / $annualBasis, 2);
+        }
+
+        if ($this->memberCountryCode !== 'CI') {
+            $annualTaxable = $grossTaxable * $annualBasis;
+            $tax = $this->calculateProgressiveTax($annualTaxable, $this->taxSlabs());
+
+            return round($tax / $annualBasis, 2);
+        }
+
+        // CI (#1918 — réforme 2024, ordonnance 2023-718/719, effet
+        // 01/01/2024) : ITS UNIQUE mensuel sur le BRUT (art. 119 bis) — plus
+        // d'abattement frais pro, plus d'annualisation, plus de CN séparée.
+        // Le moteur passe $grossForAbatement = brut réel (défaut :
+        // $grossTaxable) ; le barème mensuel s'applique tel quel.
+        $monthlyBase = max(0.0, $grossForAbatement ?? $grossTaxable);
+
+        return round($this->calculateProgressiveTax($monthlyBase, $this->taxSlabs()), 2);
+    }
+
+    /**
+     * CI (#1918) : la Contribution Nationale (1,5 %) est supprimée depuis la
+     * réforme 2024 (fusionnée dans l'ITS unique, ordonnance 2023-718/719) →
+     * aucune taxe forfaitaire CI (0). Les autres membres CEDEAO conservent
+     * leur comportement (TRIMF/placeholder).
+     */
+    public function calculateBracketTax(float $grossSalary): float
+    {
+        if ($this->memberCountryCode === 'CI') {
+            return 0.0;
+        }
+
+        return parent::calculateBracketTax($grossSalary);
+    }
+
+    /**
+     * CI (#2117) — RICF : réduction d'impôt pour charges de famille
+     * imputable sur l'ITS brut (CGI CI art. 120, réforme ord.
+     * 2023-718/719, effet 01/01/2024). Barème MENSUEL par parts :
+     *   1 part → 0 · 1,5 → 5 500 · 2 → 11 000 · 2,5 → 16 500 ·
+     *   3 → 22 000 · 3,5 → 27 500 · 4 → 33 000 · 4,5 → 38 500 ·
+     *   5 parts → 44 000 (plafond légal).
+     * Soit 11 000 XOF/mois par demi-part au-delà de 1 part, plafonné à
+     * 44 000. Parts : célibataire/divorcé/veuf sans enfant = 1 · marié
+     * sans enfant = 2 · +0,5 part par enfant à charge (majoration à
+     * +1 part pour enfant infirme) · plafond 5 parts (art. 120 al. 2).
+     * Situation de famille au 1er janvier de l'année d'acquisition du
+     * revenu (art. 120 al. 2). `family_parts` est porté par `employees`
+     * (défaut 1 part = réduction nulle → aucun changement de comportement
+     * pour les bulletins sans données familiales).
+     *
+     * Défaut CI (`family_parts` absent) : 1 part → 0,00 — les golden
+     * existants (ITS 2024 sans RICF) restent valides.
+     */
+    public function familyTaxReduction(float $familyParts = 1.0): float
+    {
+        if ($this->memberCountryCode !== 'CI') {
+            return 0.0;
+        }
+
+        $parts = max(1.0, (float) $familyParts);
+
+        return round(min(44000.0, 11000.0 * ($parts - 1.0)), 2);
+    }
+
+    /**
+     * CI (#1918) : la CN étant abolie (calculateBracketTax() → 0), la CI
+     * n'a plus de libellé de taxe forfaitaire dédié — libellé moteur par
+     * défaut (« Taxe de minimum fiscal », non affiché car montant nul).
+     */
+    public function flatPayrollTaxLabel(): string
+    {
+        return parent::flatPayrollTaxLabel();
+    }
+
+    /**
+     * CI (#1918) : l'abattement frais professionnels (20 %) appartenait à
+     * l'assiette ITSAS pré-réforme — l'ITS 2024 s'applique sur le BRUT sans
+     * abattement (art. 119 bis) → taux 0 %. Les autres membres CEDEAO n'en
+     * ont pas non plus (défaut 0 %).
+     *
+     * @return array{rate: float, cap: float|null}
+     */
+    public function professionalExpensesDeduction(): array
+    {
+        // TG (issue #2121) : abattement forfaitaire frais professionnels
+        // 28 % sur la fraction du revenu n'excédant pas 10 M FCFA/an
+        // (CGI art. 26) → déduction mensuelle plafonnée à 28 % ×
+        // 833 333,33 = 233 333,33 XOF (TG_COMPLIANCE.md §2).
+        if ($this->memberCountryCode === 'TG') {
+            return ['rate' => 28.0, 'cap' => 233333.33];
+        }
+
+        return parent::professionalExpensesDeduction();
+    }
+
+    /**
+     * Issue #6727 — miroir de calculateIncomeTax() : TG applique
+     * l'abattement frais pro 28 % (plafonné 233 333,33 XOF/mois) sur la
+     * base imposable AVANT le barème annuel (CGI TG art. 26/74).
+     */
+    public function effectiveAnnualTaxableBase(float $grossTaxable, float $annualBasis = 12, ?float $grossForAbatement = null): float
+    {
+        if ($this->memberCountryCode !== 'TG') {
+            return max(0.0, $grossTaxable) * $annualBasis;
+        }
+
+        $abatement = $this->professionalExpensesDeduction();
+        $monthlyDeduction = min($grossTaxable * ($abatement['rate'] / 100), (float) ($abatement['cap'] ?? PHP_FLOAT_MAX));
+
+        return max(0.0, $grossTaxable - $monthlyDeduction) * $annualBasis;
+    }
+
+    public function calculateSocialCharges(float $grossSalary): array
+    {
+        // CI (#1825/#1913) : la CNPS distingue les plafonds par branche.
+        // Retraite : 1 647 315 XOF/mois ; prestations familiales et AT/MP :
+        // 70 000 XOF/mois. Les trois assiettes ne doivent donc pas partager
+        // le plafond retraite. Source : guide officiel CNPS, page Employeur.
+        if ($this->memberCountryCode === 'CI') {
+            $retirementCap = 1647315.0;
+            $familyAndAtCap = 70000.0;
+
+            return [
+                'employee' => $this->computeContribution($grossSalary, 'CNSS_CI_RET_EMP', 3.2, $retirementCap),
+                // Chaque contribution est arrondie avant addition afin de
+                // conserver la stabilité des goldens et des exports CSV.
+                'employer' => round(
+                    $this->computeContribution($grossSalary, 'CNSS_CI_RET_PAT', 4.5, $retirementCap)
+                        + $this->computeContribution($grossSalary, 'CNSS_CI_FAM_PAT', 5.75, $familyAndAtCap)
+                        + $this->computeContribution($grossSalary, 'CNSS_CI_AT_PAT', 2.0, $familyAndAtCap),
+                    2
+                ),
+            ];
+        }
+
+        // ZONE-INFRA (#1820): les autres membres CEDEAO conservent leurs
+        // assiettes propres jusqu'à leur validation réglementaire dédiée.
+        if ($this->memberCountryCode === 'BF') {
+            // CNSS Burkina Faso (issue #1829) : retraite salariale 5,5 % +
+            // patronale 6,5 % + famille 7,0 % plafonnées à 900 000 XOF/mois,
+            // AT 3,5 % non plafonné (docs/payroll/BF_COMPLIANCE.md §3).
+            return [
+                'employee' => $this->computeContribution($grossSalary, 'CNSS_BF_RET_EMP', 5.5, 900000.0),
+                'employer' => round(
+                    $this->computeContribution($grossSalary, 'CNSS_BF_RET_PAT', 6.5, 900000.0)
+                    + $this->computeContribution($grossSalary, 'CNSS_BF_FAM_PAT', 7.0, 900000.0)
+                    + $this->computeContribution($grossSalary, 'CNSS_BF_AT_PAT', 3.5, null),
+                    2
+                ),
+            ];
+        }
+
+        if ($this->memberCountryCode === 'ML') {
+            // INPS Mali (issue #1829) : retraite salariale 3,6 % + patronale
+            // 7,4 % plafonnées à 3 000 000 XOF/mois, famille 4,0 % + AT 2,0 %
+            // non plafonnés (docs/payroll/ML_COMPLIANCE.md §3).
+            return [
+                'employee' => $this->computeContribution($grossSalary, 'INPS_ML_RET_EMP', 3.6, 3000000.0),
+                'employer' => round(
+                    $this->computeContribution($grossSalary, 'INPS_ML_RET_PAT', 7.4, 3000000.0)
+                    + $this->computeContribution($grossSalary, 'INPS_ML_FAM_PAT', 4.0, null)
+                    + $this->computeContribution($grossSalary, 'INPS_ML_AT_PAT', 2.0, null),
+                    2
+                ),
+            ];
+        }
+
+        if ($this->memberCountryCode === 'TG') {
+            // CNSS Togo (issue #2121) : pensions salariale 4 % + patronale
+            // 12,5 % + famille 3 % + AT 2 % — toutes NON plafonnées
+            // (assiette = totalité des revenus, cleiss 2026 ;
+            // TG_COMPLIANCE.md §3).
+            return [
+                'employee' => $this->computeContribution($grossSalary, 'CNSS_TG_VIE_EMP', 4.0, null),
+                'employer' => round(
+                    $this->computeContribution($grossSalary, 'CNSS_TG_VIE_PAT', 12.5, null)
+                    + $this->computeContribution($grossSalary, 'CNSS_TG_FAM_PAT', 3.0, null)
+                    + $this->computeContribution($grossSalary, 'CNSS_TG_AT_PAT', 2.0, null),
+                    2
+                ),
+            ];
+        }
+
+        $cap = $this->memberCountryCode === 'CI' ? 1647315.0 : null;
+
+        return [
+            'employee' => $this->computeContribution($grossSalary, 'CNSS_CEDEAO_EMP', 3.6, $cap),
+            'employer' => $this->computeContribution($grossSalary, 'CNSS_CEDEAO_PAT', 16.4, $cap),
+        ];
+    }
+
+    /**
+     * CI (#1825/#2264) : préavis légal (Code du travail CI art. 18) — matrice
+     * complète par catégorie professionnelle :
+     * - 'cadre' → 90 j (3 mois, quelle que soit l'ancienneté)
+     * - 'ouvrier'/'worker' → 8 j (< 5 ans) / 15 j (≥ 5 ans)
+     * - défaut (employés/techniciens, null) → 30 j (< 5 ans) / 60 j (≥ 5 ans)
+     * La catégorie est portée par `employees.ipres_category` et transmise par
+     * EndOfContractService::resolveNoticeDays() (SN #2123). Le palier 90 j
+     * sans catégorie (≥ 10 ans) a été retiré : il contredisait la ligne
+     * employé/technicien de CI_COMPLIANCE.md §8. Sources : CI_COMPLIANCE.md
+     * §8 (Code travail CI art. 18) — à valider par expert-comptable
+     * OHADA-CI (niveau pilot).
+     */
+    public function noticePeriodDays(float $yearsOfService, ?string $category = null): float
+    {
+        if (in_array($this->memberCountryCode, ['BF', 'ML'], true)) {
+            // BF/ML (issue #1829) : préavis légal 1 mois quel que soit le
+            // niveau d'ancienneté (docs BF_COMPLIANCE.md §7 / ML_COMPLIANCE.md
+            // §7) — à valider expert.
+            // Issue #2219 : JOURS OUVRÉS (1 mois = 22 j ouvrés) — le moteur
+            // divise par les jours ouvrés du mois (22) ; renvoyer 30
+            // (calendaires) surpaierait 30/22 = 1,36× (alignement DZ #1943).
+            return 22.0;
+        }
+
+        if ($this->memberCountryCode === 'TG') {
+            // TG (issue #2121, Code du travail art. 74) : ouvriers/employés
+            // 1 mois (30 j), agents de maîtrise/cadres 3 mois (90 j). Le
+            // moteur ne transmet pas toujours la catégorie : approximation
+            // pilote sur le niveau employé (30 j), matrice complète
+            // documentée TG_COMPLIANCE.md §6 — à valider expert.
+            return $category === 'cadre' || $category === 'agent_de_maitrise' ? 90.0 : 30.0;
+        }
+
+        if ($this->memberCountryCode !== 'CI') {
+            return parent::noticePeriodDays($yearsOfService);
+        }
+
+        // CI_COMPLIANCE.md §8 (Code du travail CI art. 18) : catégorie × ancienneté —
+        // ouvriers 8/15 j calendaires (= 6/11 j ouvrés), employés-techniciens 1/2 mois
+        // (= 22/44 j ouvrés), cadres 3 mois (= 66 j ouvrés). Issue #2219 : JOURS
+        // OUVRÉS — le moteur divise par les jours ouvrés du mois (22) ; renvoyer les
+        // jours calendaires surpaierait 30/22 = 1,36× (alignement DZ #1943).
+        return match (strtolower((string) $category)) {
+            'cadre' => 66.0,
+            'ouvrier', 'worker' => $yearsOfService < 5.0 ? 6.0 : 11.0,
+            default => $yearsOfService < 5.0 ? 22.0 : 44.0,
+        };
+    }
+
+    public function timezone(): string
+    {
+        // All UEMOA members observe UTC (GMT) year-round.
+        return match ($this->memberCountryCode) {
+            'ML' => 'Africa/Bamako',
+            'BF' => 'Africa/Ouagadougou',
+            'BJ' => 'Africa/Porto-Novo',
+            'TG' => 'Africa/Lome',
+            'NE' => 'Africa/Niamey',
+            default => 'Africa/Abidjan', // CI
+        };
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    public function weeklyRestDays(): array
+    {
+        // Sunday is the standard weekly rest day across all UEMOA members.
+        return [7];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function supportedPayCycles(): array
+    {
+        return ['monthly'];
+    }
+
+    public function publicHolidaysSource(): string
+    {
+        if ($this->memberCountryCode === 'CI') {
+            return 'CI fixed public holidays: 1er jan, lundi de Pâques, 1er mai, Ascension, lundi de Pentecôte, 7 août, 15 août, 1er nov, 15 nov, 25 déc (CI_COMPLIANCE.md §7) + mobile Islamic holidays (Aïd el-Fitr, Aïd el-Adha, Maouloud) — Islamic calendar wiring pending.';
+        }
+
+        if ($this->memberCountryCode === 'SN') {
+            return 'SN fixed public holidays (seed PublicHolidaySeeder, issue #2255): 1er jan, 4 avr, 1er mai, 15 août, 1er nov, 25 déc + mobiles islamiques (Aïd el-Fitr, Aïd el-Adha, Maouloud) — PA2-COUNTRY-012.';
+        }
+
+        if ($this->memberCountryCode === 'ML') {
+            return 'ML fixed public holidays (seed PublicHolidaySeeder, issue #2255): 1er jan, 20 jan, 1er mars, 26 mars, 1er mai, 25 mai, 22 sept, 25 déc + mobiles (Pâques, Aïds) — PA2-COUNTRY-012.';
+        }
+
+        // BF : réforme légale 2026 (loi portant fêtes légales, 15 → 11 jours)
+        // — placeholder maintenu jusqu'au texte officiel complet (issue #2255).
+        return 'placeholder: no official CEDEAO/UEMOA member-state public-holiday calendar wired in yet; '.
+            'national/religious holidays must be entered manually per company '.
+            'until PA2-COUNTRY-012 delivers a real source.';
+    }
+
+    public function confidenceLevel(): string
+    {
+        // CI (#1918) : barème ITS 2024 (ord. 2023-718/719) + CNSS + préavis
+        // implémentés, à valider expert-comptable avant 'production'.
+        // BF/ML (#1829) : IUTS/ITS + CNSS/INPS depuis sources légales
+        // publiques (CGI 2024) — niveau 'pilot' tant qu'un expert local
+        // n'a pas validé les chiffres (issue #1904).
+        // TG (#2121) : IRPP art. 74 + CNSS depuis sources publiques
+        // (CGI, cleiss/CNSS) — 'pilot' en attente de validation experte.
+        return in_array($this->memberCountryCode, ['CI', 'BF', 'ML', 'TG'], true) ? 'pilot' : 'placeholder';
+    }
+
+    /**
+     * CI (#1825) : le 13ème mois est une pratique généralisée via les
+     * conventions de branche (obligatoire dans la plupart des branches,
+     * convention OHADA-CI) — versé en décembre, entièrement imposable.
+     */
+    public function thirteenthMonthMandatory(): bool
+    {
+        return $this->memberCountryCode === 'CI';
+    }
+
+    /**
+     * PA2-COUNTRY-006 follow-up: matches App\Support\CountryDefaults for
+     * all six CEDEAO/UEMOA member codes (CI/ML/BF/BJ/TG/NE), all
+     * French-speaking.
+     */
+    public function language(): string
+    {
+        return 'fr';
+    }
+
+    /**
+     * PA2-COUNTRY-008 baseline: UEMOA labor codes generally set the legal
+     * weekly working-hours threshold at 40 hours/week for non-agricultural
+     * sectors, consistent across the supported member states. Placeholder-
+     * grade, see confidenceLevel().
+     */
+    public function overtimeThresholdWeeklyHours(): float
+    {
+        return 40.0;
+    }
+
+    /**
+     * PA2-COUNTRY-008 baseline: UEMOA labor codes commonly majorent les
+     * heures supplementaires par paliers (+15% pour les 8 premieres heures
+     * hebdomadaires, +35% au-dela), modelise ici comme un palier a 2
+     * niveaux commun a tous les membres supportes, a titre placeholder
+     * (confidenceLevel() = 'placeholder').
+     *
+     * CI (#1825) : Code du travail CI art. 21 — paliers légaux
+     *   40–48 h/sem : +15 % (8 premières heures HS)
+     *   48–54 h/sem : +35 % (heures HS 9 à 14)
+     *   > 54 h/sem ou nuit/dimanche : +50 % (au-delà de 14 h HS).
+     *
+     * @return array<int, array{up_to_hours: float|null, multiplier: float}>
+     */
+    public function overtimeRateTiers(): array
+    {
+        if ($this->memberCountryCode === 'CI') {
+            return [
+                ['up_to_hours' => 8.0, 'multiplier' => 1.15],
+                ['up_to_hours' => 14.0, 'multiplier' => 1.35],
+                ['up_to_hours' => null, 'multiplier' => 1.50],
+            ];
+        }
+
+        return [
+            ['up_to_hours' => 8.0, 'multiplier' => 1.15],
+            ['up_to_hours' => null, 'multiplier' => 1.35],
+        ];
+    }
+}

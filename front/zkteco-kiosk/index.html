@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="fr" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="page.title">Leopardo RH - Kiosk biometrie</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1326;
+      --surface: rgba(17, 31, 51, 0.45);
+      --surface-strong: rgba(23, 43, 68, 0.65);
+      --line: rgba(134, 148, 138, 0.15);
+      --accent: #10b981;
+      --accent-dark: #047857;
+      --text: #dae2fd;
+      --soft: #bbcabf;
+      --muted: #86948a;
+      --danger: #ffb4ab;
+      --info: #38bdf8;
+      --warn: #f59e0b;
+      --radius: 24px;
+      --accent-glow: rgba(16, 185, 129, 0.35);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% 20%, rgba(16, 185, 129, 0.08), transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(56, 189, 248, 0.06), transparent 40%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    button, input, select {
+      font: inherit;
+    }
+
+    button {
+      min-height: 52px;
+      border: 0;
+      cursor: pointer;
+      transition: transform .18s ease, opacity .18s ease, background .18s ease;
+    }
+
+    button:active { transform: scale(.985); }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+
+    input, select {
+      width: 100%;
+      min-height: 54px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #091425;
+      color: var(--text);
+      padding: 0 15px;
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(16, 185, 129, .13);
+    }
+
+    label {
+      display: block;
+      margin: 0 0 8px;
+      color: var(--soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    p { color: var(--soft); line-height: 1.55; }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 18px;
+      padding: clamp(14px, 2vw, 28px);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 24px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(11, 19, 38, 0.65);
+      backdrop-filter: blur(24px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, var(--accent), #38bdf8);
+      color: #031016;
+      font-size: 24px;
+      font-weight: 900;
+      letter-spacing: -.04em;
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .eyebrow {
+      color: #7dd3fc;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    #companyName {
+      margin: 2px 0 0;
+      font-size: clamp(20px, 2.5vw, 30px);
+      line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #locationLabel {
+      margin: 3px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 13px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #071221;
+      color: var(--soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--warn);
+      box-shadow: 0 0 18px rgba(245, 158, 11, .45);
+    }
+
+    .dot.ok {
+      background: var(--accent);
+      box-shadow: 0 0 18px rgba(16, 185, 129, .45);
+    }
+
+    .dot.bad {
+      background: var(--danger);
+      box-shadow: 0 0 18px rgba(239, 68, 68, .45);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .tabs {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(11, 19, 38, 0.65);
+      backdrop-filter: blur(24px);
+    }
+
+    .tab {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 16px;
+      border-radius: 16px;
+      background: transparent;
+      color: var(--soft);
+      text-align: left;
+      font-weight: 800;
+    }
+
+    .tab span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .tab:hover {
+      background: rgba(255, 255, 255, .045);
+    }
+
+    .tab.active {
+      background: rgba(16, 185, 129, 0.15);
+      color: #d1fae5;
+      outline: 1px solid rgba(16, 185, 129, .4);
+      box-shadow: inset 0 0 20px rgba(16,185,129,0.1);
+    }
+
+    .content {
+      min-height: 620px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: rgba(11, 19, 38, 0.45);
+      backdrop-filter: blur(30px);
+      padding: clamp(18px, 2.4vw, 30px);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .4);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .punch-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.25fr) minmax(260px, .75fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .biometric-stage {
+      display: grid;
+      place-items: center;
+      gap: 14px;
+      min-height: 320px;
+      border-radius: 26px;
+      border: 1px solid var(--line);
+      background:
+        radial-gradient(circle at center, rgba(16, 185, 129, .15), transparent 60%),
+        var(--surface);
+      backdrop-filter: blur(24px);
+      text-align: center;
+      padding: 24px;
+      box-shadow: inset 0 0 40px rgba(16,185,129,0.05), 0 16px 40px rgba(0,0,0,0.3);
+    }
+
+    .fingerprint {
+      width: min(240px, 50vw);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      border: 2px solid rgba(16, 185, 129, .4);
+      box-shadow: 0 0 0 20px rgba(16, 185, 129, .08), inset 0 0 40px rgba(16, 185, 129, .15);
+      animation: pulseGlow 3s infinite ease-in-out;
+    }
+
+    @keyframes pulseGlow {
+      0% { box-shadow: 0 0 0 20px rgba(16, 185, 129, .08), inset 0 0 40px rgba(16, 185, 129, .15); }
+      50% { box-shadow: 0 0 0 30px rgba(16, 185, 129, .04), inset 0 0 60px rgba(16, 185, 129, .25); }
+      100% { box-shadow: 0 0 0 20px rgba(16, 185, 129, .08), inset 0 0 40px rgba(16, 185, 129, .15); }
+    }
+
+    .fingerprint svg {
+      width: 44%;
+      color: var(--accent);
+      filter: drop-shadow(0 0 18px rgba(16, 185, 129, .35));
+    }
+
+    .stage-title {
+      margin: 0;
+      font-size: clamp(25px, 4vw, 42px);
+      font-weight: 900;
+      letter-spacing: -.04em;
+    }
+
+    .stage-copy {
+      max-width: 540px;
+      margin: 0 auto;
+      color: var(--soft);
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--surface);
+      backdrop-filter: blur(20px);
+      padding: 24px;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.3);
+    }
+
+    .field-stack { display: grid; gap: 13px; }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .primary {
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(16,185,129,1), rgba(4,120,87,1));
+      color: #002113;
+      font-weight: 900;
+      border: 1px solid rgba(255,255,255,0.2);
+      box-shadow: 0 8px 32px var(--accent-glow), inset 0 2px 4px rgba(255,255,255,0.3);
+      font-size: 1.1rem;
+    }
+
+    .secondary {
+      border-radius: 20px;
+      background: rgba(23, 43, 68, 0.6);
+      backdrop-filter: blur(20px);
+      color: var(--text);
+      font-weight: 800;
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      font-size: 1.1rem;
+    }
+
+    .info {
+      border-radius: 16px;
+      background: #0ea5e9;
+      color: #02131f;
+      font-weight: 900;
+    }
+
+    .status {
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: rgba(9, 20, 37, .7);
+    padding: 14px 18px;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    text-align: center;
+    transition: border-color .3s ease, box-shadow .3s ease, transform .3s ease;
+}
+
+.status-pulse-ok {
+    animation: statusPulseOk .9s ease;
+}
+
+.status-pulse-error {
+    animation: statusPulseError .9s ease;
+}
+
+@keyframes statusPulseOk {
+    0% { border-color: var(--accent); box-shadow: 0 0 0 0 rgba(16, 185, 129, .45); transform: scale(1); }
+    60% { border-color: var(--accent); box-shadow: 0 0 0 14px rgba(16, 185, 129, 0); transform: scale(1.015); }
+    100% { border-color: var(--line); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); transform: scale(1); }
+}
+
+@keyframes statusPulseError {
+    0% { border-color: #ef4444; box-shadow: 0 0 0 0 rgba(239, 68, 68, .45); }
+    60% { border-color: #ef4444; box-shadow: 0 0 0 14px rgba(239, 68, 68, 0); }
+    100% { border-color: var(--line); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+    /* Issue #2757 — le sélecteur .status.success avait été perdu : les
+       déclarations flottaient sans sélecteur (CSS invalide). */
+    .status.success {
+      margin-top: 14px;
+      min-height: 54px;
+      border-radius: 16px;
+      padding: 13px 15px;
+      border: 1px solid rgba(16, 185, 129, .34);
+      background: rgba(16, 185, 129, .10);
+      color: #b7f7d9;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .status.error {
+      border-color: rgba(239, 68, 68, .38);
+      background: rgba(239, 68, 68, .12);
+      color: #fecaca;
+    }
+
+    .meta {
+      display: grid;
+      gap: 12px;
+    }
+
+    .meta dt {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .meta dd {
+      margin: 3px 0 0;
+      color: var(--text);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .employee-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .avatar {
+      width: 68px;
+      height: 68px;
+      border-radius: 22px;
+      display: grid;
+      place-items: center;
+      background: #102e2b;
+      color: #7ee7c3;
+      font-size: 24px;
+      font-weight: 900;
+    }
+
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+    }
+
+    .emp-name {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: -.02em;
+    }
+
+    .emp-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .balance-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .balance-item {
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #091425;
+      text-align: center;
+    }
+
+    .balance-type {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .balance-value {
+      margin: 7px 0 2px;
+      color: var(--accent);
+      font-size: 28px;
+      font-weight: 900;
+    }
+
+    .balance-total {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .announcement {
+      margin-bottom: 10px;
+      padding: 15px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #091425;
+    }
+
+    .announcement.urgent { border-color: rgba(239, 68, 68, .55); }
+    .announcement.high { border-color: rgba(245, 158, 11, .55); }
+
+    .ann-priority {
+      display: inline-flex;
+      margin-bottom: 7px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      background: rgba(56, 189, 248, .13);
+      color: #7dd3fc;
+    }
+
+    .ann-priority.urgent { background: rgba(239, 68, 68, .16); color: #fecaca; }
+    .ann-priority.high { background: rgba(245, 158, 11, .16); color: #fde68a; }
+    .ann-priority.low { background: rgba(148, 163, 184, .12); color: var(--soft); }
+
+    .ann-title {
+      margin-bottom: 5px;
+      color: var(--text);
+      font-weight: 900;
+    }
+
+    .ann-body {
+      color: var(--soft);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .qr-area {
+      min-height: 230px;
+      border: 2px dashed var(--line);
+      border-radius: 22px;
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      padding: 24px;
+      text-align: center;
+      background: #091425;
+    }
+
+    .qr-icon {
+      font-size: 52px;
+      color: var(--soft);
+    }
+
+    .att-badge {
+      display: inline-flex;
+      margin: 4px 8px 4px 0;
+      padding: 9px 13px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .att-in {
+      background: rgba(16, 185, 129, .15);
+      color: #b7f7d9;
+    }
+
+    .att-out {
+      background: rgba(56, 189, 248, .15);
+      color: #bae6fd;
+    }
+
+    .att-pending {
+      background: rgba(245, 158, 11, .15);
+      color: #fde68a;
+    }
+
+    .demo-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(2, 6, 23, .74);
+    }
+
+    .demo-modal {
+      width: min(560px, 100%);
+      max-height: 84vh;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--surface);
+      padding: 22px;
+    }
+
+    .demo-company-title {
+      margin: 16px 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .demo-user-btn {
+      width: 100%;
+      min-height: auto;
+      margin-bottom: 8px;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #091425;
+      color: var(--text);
+      text-align: left;
+    }
+
+    .demo-user-btn:hover { border-color: var(--accent); }
+    .demo-user-name { font-weight: 900; }
+    .demo-user-email { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .demo-user-role { float: right; color: #7ee7c3; font-size: 11px; font-weight: 900; }
+
+    .hidden { display: none !important; }
+
+    .lang-select {
+      min-height: auto;
+      width: auto;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #071221;
+      color: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+    }
+
+    [dir="rtl"] .topbar { flex-direction: row-reverse; }
+    [dir="rtl"] .brand { flex-direction: row-reverse; }
+    [dir="rtl"] .tab { text-align: right; }
+    [dir="rtl"] .emp-meta,
+    [dir="rtl"] .demo-user-role { float: left; }
+
+    /* ── BIO-009 #6774 — interface kiosque de pointage multi-methodes ── */
+    .punch-flow { display: grid; gap: 16px; }
+
+    .punch-stage { min-height: 420px; }
+
+    .flow-screen { animation: flowIn .22s ease; }
+    @keyframes flowIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .flow-nav { display: flex; gap: 10px; margin-bottom: 16px; }
+
+    .nav-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 999px;
+      background: rgba(23, 43, 68, .6);
+      border: 1px solid rgba(255, 255, 255, .1);
+      color: var(--text);
+      font-weight: 800;
+      font-size: .95rem;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .2);
+    }
+    .nav-chip:hover { border-color: rgba(16, 185, 129, .55); }
+
+    .method-grid, .punch-method-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+      margin: 18px 0 4px;
+    }
+
+    .method-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      min-height: 158px;
+      padding: 20px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: linear-gradient(160deg, rgba(23, 43, 68, .55), rgba(9, 20, 37, .65));
+      color: var(--text);
+      text-align: left;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, .25);
+    }
+    .method-btn:hover { border-color: rgba(16, 185, 129, .55); transform: translateY(-2px); }
+    .method-btn:active { transform: scale(.985); }
+
+    .m-icon { font-size: 36px; line-height: 1; color: var(--accent); filter: drop-shadow(0 0 14px rgba(16, 185, 129, .25)); }
+    .method-btn[data-method="face"] .m-icon { color: #38bdf8; filter: drop-shadow(0 0 14px rgba(56, 189, 248, .3)); }
+    .method-btn[data-method="badge"] .m-icon { color: #f59e0b; filter: drop-shadow(0 0 14px rgba(245, 158, 11, .3)); }
+    .method-btn[data-method="pin"] .m-icon { color: #a78bfa; filter: drop-shadow(0 0 14px rgba(167, 139, 250, .3)); }
+    .method-btn[data-method="manager"] .m-icon { color: #f472b6; filter: drop-shadow(0 0 14px rgba(244, 114, 182, .3)); }
+
+    .m-name { font-size: 1.28rem; font-weight: 900; letter-spacing: -.01em; margin-top: 4px; }
+    .m-tag { color: var(--muted); font-size: .86rem; font-weight: 700; line-height: 1.45; }
+
+    .punch-split {
+      display: grid;
+      grid-template-columns: minmax(260px, .9fr) minmax(280px, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+    @media (max-width: 980px) { .punch-split { grid-template-columns: 1fr; } }
+
+    .h-screen { margin: 2px 0 6px; font-size: clamp(22px, 3vw, 32px); font-weight: 900; letter-spacing: -.03em; }
+    .screen-copy { margin: 0 0 18px; max-width: 620px; }
+
+    .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .action-row .btn-action { min-height: 62px; font-size: 1.15rem; border-radius: 20px; }
+
+    .roster-panel { margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 14px; }
+    .roster-list { display: grid; gap: 8px; max-height: 240px; overflow: auto; padding: 2px; }
+    .roster-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-height: 54px;
+      padding: 10px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #091425;
+      color: var(--text);
+      text-align: left;
+      font-weight: 800;
+    }
+    .roster-item small { color: var(--muted); font-weight: 700; }
+    .roster-item:hover { border-color: rgba(16, 185, 129, .6); }
+
+    .face-cam {
+      position: relative;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 2px solid rgba(16, 185, 129, .35);
+      background: #04101f;
+      box-shadow: inset 0 0 60px rgba(0, 0, 0, .5);
+    }
+    .face-cam video { display: block; width: 100%; max-height: 340px; min-height: 250px; object-fit: cover; background: #04101f; }
+    .face-frame {
+      position: absolute;
+      inset: 12% 20%;
+      border: 2px dashed rgba(125, 211, 252, .55);
+      border-radius: 44% 44% 48% 48% / 40% 40% 58% 58%;
+      pointer-events: none;
+    }
+    .face-cam-busy .face-cam video { filter: brightness(.55) blur(1px); }
+    .face-cam-busy-tip {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      z-index: 2;
+      color: #e0f2fe;
+      font-weight: 900;
+      font-size: 1.15rem;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, .8);
+      pointer-events: none;
+    }
+    .face-cam-error {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      text-align: center;
+      color: #fecaca;
+      font-weight: 800;
+      background: rgba(2, 6, 23, .85);
+      z-index: 3;
+    }
+    .face-emp-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      padding: 12px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(56, 189, 248, .3);
+      background: rgba(56, 189, 248, .08);
+      color: #e0f2fe;
+      font-weight: 800;
+    }
+    .face-emp-banner .dot-id { color: #7dd3fc; }
+
+    .fallback-methods { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 4px; }
+    .fallback-method {
+      min-height: 48px;
+      padding: 0 18px;
+      border-radius: 999px;
+      background: rgba(23, 43, 68, .65);
+      border: 1px solid rgba(255, 255, 255, .12);
+      color: var(--text);
+      font-weight: 800;
+    }
+    .fallback-method:hover { border-color: rgba(16, 185, 129, .6); }
+
+    .big-icon { width: 88px; height: 88px; border-radius: 50%; display: grid; place-items: center; margin: 4px auto 14px; font-size: 44px; }
+    .big-icon.ok { background: rgba(16, 185, 129, .15); color: #6ee7b7; box-shadow: 0 0 0 18px rgba(16, 185, 129, .06); }
+    .big-icon.ko { background: rgba(239, 68, 68, .15); color: #fca5a5; box-shadow: 0 0 0 18px rgba(239, 68, 68, .05); }
+
+    .center-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 20px; }
+
+    #demoAccessWrap { margin-top: 16px; }
+    #demoAccessWrap .info { min-height: 48px; border-radius: 999px; padding: 0 20px; font-size: .95rem; }
+
+    .kbd-hint { color: var(--muted); font-size: 12px; font-weight: 700; margin-top: 10px; text-align: center; }
+
+    @media (max-width: 980px) {
+      .layout, .punch-grid { grid-template-columns: 1fr; }
+      .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .topbar { align-items: flex-start; flex-direction: column; }
+    }
+
+    @media (max-width: 640px) {
+      .tabs, .actions { grid-template-columns: 1fr; }
+      #companyName { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <a href="#punchStage" class="sr-only" data-i18n="skip.punch">Aller au formulaire de pointage</a>
+  <div class="shell" role="main" data-i18n-aria-label="app.landmark" aria-label="Borne de pointage Leopardo RH">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">L</div>
+        <div>
+          <div class="eyebrow" data-i18n="eyebrow">Kiosk biometrie terrain</div>
+          <h1 id="companyName" data-i18n="company.loading">Chargement...</h1>
+          <p id="locationLabel" data-i18n="location.loading">Initialisation de la borne d'entree...</p>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="pill" role="status" aria-live="polite">
+          <span id="syncDot" class="dot" aria-hidden="true"></span>
+          <span id="syncLabel" data-i18n="sync.checking">Verification reseau...</span>
+        </div>
+        <button id="syncRetryBtn" class="info hidden" style="min-height:44px; padding:0 16px; border-radius:999px;" data-i18n-aria-label="sync.retry.aria" aria-label="Relancer la synchronisation"><span data-i18n="sync.retry.label">Reessayer</span></button>
+        <label for="langSelect" class="sr-only" data-i18n="lang.label">Langue</label>
+        <select id="langSelect" class="lang-select" data-i18n-aria-label="lang.aria" aria-label="Langue / Language"></select>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="tabs" role="tablist" data-i18n-aria-label="nav.sections" aria-label="Sections du kiosk">
+        <button class="tab active" role="tab" aria-selected="true" data-tab="punch" aria-controls="panel-punch"><span data-i18n="tab.punch">Pointage</span> <span data-i18n="tab.punch.sub">multi-methodes</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="info" aria-controls="panel-info"><span data-i18n="tab.info">Employe</span> <span data-i18n="tab.info.sub">infos jour</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="announcements" aria-controls="panel-announcements"><span data-i18n="tab.announcements">Annonces</span> <span data-i18n="tab.announcements.sub">entreprise</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="leave" aria-controls="panel-leave"><span data-i18n="tab.leave">Conges</span> <span data-i18n="tab.leave.sub">soldes</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="qr" aria-controls="panel-qr"><span data-i18n="tab.qr">QR Code</span> <span data-i18n="tab.qr.sub">fallback</span></button>
+      </nav>
+
+      <main class="content">
+        <section id="panel-punch" class="tab-panel active" role="tabpanel">
+          <!-- BIO-009 #6774 : flux de pointage multi-methodes pilote par la
+               config serveur (GET /kiosks/{deviceCode}/config → punch_methods).
+               Les ecrans autres que l'accueil sont generes par app.js. -->
+          <div class="punch-flow">
+            <div id="punchStage" class="punch-stage">
+              <div id="punchScreenHome" class="flow-screen" data-screen="home">
+                <h2 class="h-screen" data-i18n="bio.methods.title">Choisissez votre mode de pointage</h2>
+                <p class="stage-copy" data-i18n="bio.methods.copy">Appuyez sur une methode, puis choisissez Arrivee ou Depart.</p>
+                <div id="methodGrid" class="punch-method-grid" data-i18n-aria-label="bio.methods.title" aria-label="Methodes de pointage"></div>
+                <div id="noMethodWarning" class="status error hidden" role="alert" data-i18n="error.noMethodAvailable">Aucune methode de pointage disponible sur ce kiosque.</div>
+                <div id="demoAccessWrap">
+                  <button class="info" id="demoAccessBtn" data-i18n-aria-label="demoAccess.aria" aria-label="Acces demo"><span data-i18n="demoAccess.label">Choisir un employe demo</span></button>
+                </div>
+              </div>
+            </div>
+            <div id="statusBox" class="status" role="alert" aria-live="polite" data-i18n="statusBox.ready">Pret a recevoir un pointage.</div>
+          </div>
+
+          <aside class="card" style="margin-top:18px;">
+            <dl class="meta">
+              <div><dt data-i18n="meta.deviceCode">Code appareil</dt><dd id="deviceCode">-</dd></div>
+              <div><dt data-i18n="meta.mode">Mode</dt><dd data-i18n="meta.mode.value">ZKTeco / HID / bridge local offline-first</dd></div>
+              <div><dt data-i18n="meta.queue">File locale</dt><dd id="queueCount" data-i18n="meta.queue.empty">0 evenement en attente</dd></div>
+              <div><dt data-i18n="meta.lastSync">Derniere synchronisation</dt><dd id="lastSyncAt" data-i18n="meta.lastSync.checking">Verification en cours</dd></div>
+            </dl>
+          </aside>
+        </section>
+
+        <section id="panel-info" class="tab-panel" role="tabpanel">
+          <div class="card">
+            <h2 data-i18n="info.title">Information employe</h2>
+            <p data-i18n="info.copy">Saisissez un identifiant pour afficher les informations utiles au pointage du jour.</p>
+            <div class="actions">
+              <input id="infoIdentifier" data-i18n-placeholder="info.identifier.placeholder" placeholder="Matricule, email ou zkteco_id" data-i18n-aria-label="info.identifier.aria" aria-label="Identifiant pour recherche employe">
+              <button class="info" id="infoSearchBtn" data-i18n-aria-label="info.search.aria" aria-label="Rechercher employe"><span data-i18n="info.search.label">Rechercher</span></button>
+            </div>
+            <div id="employeeInfoResult" class="hidden">
+              <div class="employee-card">
+                <div class="avatar" id="empAvatar">?</div>
+                <div>
+                  <div class="emp-name" id="empName">-</div>
+                  <div class="emp-meta"><span id="empMatricule">-</span> - <span id="empDepartment">-</span> - <span id="empPosition">-</span></div>
+                </div>
+              </div>
+              <h3 style="margin-top:22px;" data-i18n="info.todayAttendance">Pointage du jour</h3>
+              <div class="attendance-row" id="empAttendance">
+                <span class="att-badge att-pending" data-i18n="info.attendance.pending">Aucun pointage aujourd'hui</span>
+              </div>
+              <h3 style="margin-top:22px;" data-i18n="info.biometric.title">Statut biometrie</h3>
+              <div class="attendance-row" id="empBiometric">
+                <span class="att-badge att-pending" data-i18n="info.biometric.unavailable">Statut biometrie indisponible</span>
+              </div>
+              <h3 style="margin-top:22px;" data-i18n="info.leaveBalances">Soldes conges</h3>
+              <div class="balance-grid" id="empBalances"></div>
+            </div>
+            <div id="infoStatus" class="status hidden" role="alert" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section id="panel-announcements" class="tab-panel" role="tabpanel">
+          <div class="card">
+            <h2 data-i18n="announcements.title">Annonces</h2>
+            <p data-i18n="announcements.copy">Annonces actives de votre entreprise.</p>
+            <div id="announcementsList">
+              <p style="text-align:center;padding:40px 0;color:var(--muted);" data-i18n="announcements.loading">Chargement des annonces...</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-leave" class="tab-panel" role="tabpanel">
+          <div class="card">
+            <h2 data-i18n="leave.title">Solde de conges</h2>
+            <p data-i18n="leave.copy">Consultez votre solde de conges en saisissant votre identifiant.</p>
+            <div class="actions">
+              <input id="leaveIdentifier" data-i18n-placeholder="leave.identifier.placeholder" placeholder="Matricule, email ou zkteco_id" data-i18n-aria-label="leave.identifier.aria" aria-label="Identifiant pour solde conges">
+              <button class="info" id="leaveSearchBtn" data-i18n-aria-label="leave.search.aria" aria-label="Consulter solde"><span data-i18n="leave.search.label">Consulter</span></button>
+            </div>
+            <div id="leaveResult" class="hidden" style="margin-top:20px;">
+              <h3><span id="leaveEmpName">-</span> - <span id="leaveYear">2026</span></h3>
+              <div class="balance-grid" id="leaveBalances"></div>
+            </div>
+            <div id="leaveStatus" class="status hidden" role="alert" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section id="panel-qr" class="tab-panel" role="tabpanel">
+          <div class="card">
+            <h2 data-i18n="qr.title">Pointage par QR Code</h2>
+            <p data-i18n="qr.copy">Scannez votre QR code personnel ou collez les donnees du QR.</p>
+            <div class="qr-area" id="qrScanArea">
+              <div>
+                <div class="qr-icon" aria-hidden="true">&#9634;</div>
+                <p data-i18n="qr.scanArea.copy">Presentez votre QR code devant la camera ou collez les donnees ci-dessous.</p>
+              </div>
+            </div>
+            <label for="qrDataInput" style="margin-top:14px;" data-i18n="qr.data.label">Donnees QR</label>
+            <input id="qrDataInput" data-i18n-placeholder="qr.data.placeholder" placeholder="Collez les donnees du QR code ici" data-i18n-aria-label="qr.data.aria" aria-label="Donnees QR code">
+            <div class="actions">
+              <button class="primary" id="qrCheckInBtn" data-i18n-aria-label="qr.checkIn.aria" aria-label="Pointer entree via QR"><span data-i18n="qr.checkIn.label">Arrivee QR</span></button>
+              <button class="secondary" id="qrCheckOutBtn" data-i18n-aria-label="qr.checkOut.aria" aria-label="Pointer sortie via QR"><span data-i18n="qr.checkOut.label">Depart QR</span></button>
+            </div>
+            <div id="qrStatus" class="status hidden" role="alert" aria-live="polite"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="demoOverlay" class="demo-overlay hidden" aria-modal="true" role="dialog" data-i18n-aria-label="demoAccess.label" aria-label="Choisir un employe demo">
+    <div class="demo-modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;">
+        <h2 style="margin:0;" data-i18n="demo.title">Choisir un employe demo</h2>
+        <button class="secondary" style="width:auto;padding:8px 14px;font-size:13px;" id="demoCloseBtn" data-i18n="demo.close">Fermer</button>
+      </div>
+      <div id="demoUsersList"></div>
+    </div>
+  </div>
+
+  <script src="./i18n.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
+

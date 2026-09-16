@@ -1,0 +1,617 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\AlgeriaPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\CanadaPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\CedeaoPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\CemacPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\FrancePayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\MoroccoPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\SenegalPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\TunisiaPayrollRules;
+use App\Modules\Payroll\Infrastructure\Services\CountryRules\TurkeyPayrollRules;
+use PHPUnit\Framework\TestCase;
+
+class PayrollCountryRulesTest extends TestCase
+{
+    public function test_country_rules_expose_expected_social_contributions(): void
+    {
+        $rules = [
+            'DZ' => [new AlgeriaPayrollRules, 90.0, 260.0],
+            // MA 2026 (#5248) : salarié 6,93 ‰ (CNSS 4,48 + AMO 2,26 + IPE 0,19)
+            // · employeur 21,47 ‰ (CNSS 8,98 + AMO 4,11 + IPE 0,38 + AF 6,40 + TFP 1,60).
+            'MA' => [new MoroccoPayrollRules, 69.3, 214.7],
+            // TN 2026 (#5249) : salarié 9,68 ‰ (CNSS 9,18 + perte d'emploi 0,50)
+            // · employeur 18,07 ‰ (CNSS 16,57 + PLE 0,50 + ASSP 1,00).
+            'TN' => [new TunisiaPayrollRules, 96.8, 180.7],
+            // FR 2026 (#5438) : URSSAF détaillée — salarié 21,48 % (vieillesse
+            // plaf. 6,9 + déplaf. 0,4 + retraite T1 3,15 + prévoyance 1,5 +
+            // CSG/CRDS 9,53 sur 98,25 %) / employeur 34,22 % (maladie 13 +
+            // vieillesse plaf. 8,55 + déplaf. 1,9 + retraite T1 4,72 +
+            // prévoyance 1,5 + chômage 4,05 + FNGS 0,5).
+            'FR' => [new FrancePayrollRules, 214.8, 342.2],
+            // TR 2026 (#5253) : salarié 15 % (SGK 14 + chômage 1), employeur
+            // 23,75 % (SGK 21,75 + chômage 2) — sans teşvik. Sur 1 000 TRY :
+            // 150,00 / 237,50.
+            'TR' => [new TurkeyPayrollRules, 150.0, 237.5],
+            'SN' => [new SenegalPayrollRules, 56.0, 194.0],
+        ];
+
+        foreach ($rules as $countryCode => [$countryRules, $expectedEmployeeCharge, $expectedEmployerCharge]) {
+            self::assertSame($countryCode, $countryRules->countryCode());
+
+            $charges = $countryRules->calculateSocialCharges(1000);
+
+            self::assertEqualsWithDelta($expectedEmployeeCharge, $charges['employee'], 0.01);
+            self::assertEqualsWithDelta($expectedEmployerCharge, $charges['employer'], 0.01);
+            self::assertNotEmpty($countryRules->socialContributions());
+        }
+    }
+
+    public function test_progressive_income_tax_rules_are_applied_at_slab_edges(): void
+    {
+        // TN (#2261) : abattement IRPP 10 % du revenu annuel (plancher 1 000
+        // TND) appliqué avant le barème → 5 000 et 6 000 TND/an tombent tous
+        // deux sous la tranche 0 % après abattement (6 000 − 1 000 = 5 000).
+        self::assertSame(0.0, (new TunisiaPayrollRules)->calculateIncomeTax(5000 / 12));
+        self::assertSame(0.0, (new TunisiaPayrollRules)->calculateIncomeTax(6000 / 12));
+        // TR 2026 (#5253) : l'asgari ücret istisnası (exonération SMIC, loi
+        // 7346) annule l'IR sous le SMIC net annuel (336 906 TRY) → un
+        // revenu imposable de 110 000 TRY/an paie 0,00 ; au-dessus de la
+        // borne (400 000 TRY/an), le barème 2026 s'applique après istisna.
+        self::assertSame(0.0, (new TurkeyPayrollRules)->calculateIncomeTax(110000 / 12));
+        self::assertSame(1051.57, (new TurkeyPayrollRules)->calculateIncomeTax(400000 / 12));
+        // FR (#5254) : barème 2026 (LF 2026) — bornes 11 600/29 579/84 577/181 917.
+        self::assertSame(0.0, (new FrancePayrollRules)->calculateIncomeTax(11600 / 12));
+        self::assertSame(0.01, (new FrancePayrollRules)->calculateIncomeTax(11601 / 12));
+        self::assertSame(0.0, (new SenegalPayrollRules)->calculateIncomeTax(630000 / 12));
+    }
+
+    public function test_algeria_irg_applies_monthly_progressive_tax_then_abatement(): void
+    {
+        $rules = new AlgeriaPayrollRules;
+
+        self::assertSame(0.0, $rules->calculateIncomeTax(20000));
+        self::assertSame(5800.0, $rules->calculateIncomeTax(50000));
+    }
+
+    public function test_morocco_uses_annual_ir_with_fixed_deduction(): void
+    {
+        // CGI MA art. 59-I (#5248, LF 2023) : abattement frais professionnels
+        // 35 % du brut ANNUEL si < 78 000 (25 % au-delà), plancher 2 500 /
+        // plafond 35 000 MAD — appliqué AVANT le barème IR (art. 73-I, LF 2025).
+        $rules = new MoroccoPayrollRules;
+
+        // 2 500 × 12 = 30 000 ; abattement 35 % = 10 500 → assiette 19 500 → 0 %
+        self::assertSame(0.0, $rules->calculateIncomeTax(2500));
+        // 5 000 × 12 = 60 000 ; abattement 35 % = 21 000 → assiette 39 000
+        // → tranche 0 % (seuil relevé à 40 000 par la LF 2025) → IR nul
+        self::assertSame(0.0, $rules->calculateIncomeTax(5000));
+        // 5 500 × 12 = 66 000 ; abattement 35 % = 23 100 → assiette 42 900
+        // → tranche 10 % (fixe 4 000) : 42 900 × 10 % − 4 000 = 290/an → 24,17/mois
+        self::assertSame(24.17, $rules->calculateIncomeTax(5500));
+        // 6 500 × 12 = 78 000 (seuil exact) ; abattement 25 % = 19 500
+        // → assiette 58 500 → tranche 10 % : 58 500 × 10 % − 4 000 = 1 850/an
+        // → 154,17/mois
+        self::assertSame(154.17, $rules->calculateIncomeTax(6500));
+    }
+
+    /**
+     * Regression test for the TaxSlab/PayrollCalculator disconnect (PA2-ARCH-001):
+     * outside a booted Laravel app (no facade root, no DB — same environment as
+     * every other test in this pure PHPUnit\Framework\TestCase file),
+     * taxSlabs()/calculateIncomeTax() must keep falling back to the hardcoded
+     * defaultTaxSlabs() instead of fataling, so results stay identical to
+     * before the DB-backed lookup was introduced.
+     */
+    public function test_tax_slabs_fall_back_to_hardcoded_defaults_without_a_booted_app(): void
+    {
+        $rules = new AlgeriaPayrollRules;
+
+        self::assertSame(6, count($rules->taxSlabs()));
+        self::assertSame(0.0, $rules->calculateIncomeTax(20000));
+        self::assertSame(5800.0, $rules->calculateIncomeTax(50000));
+    }
+
+    /**
+     * forCompany() must return a new scoped instance without mutating the
+     * original rules object (PayrollCalculator relies on this to scope
+     * company-specific TaxSlab overrides per payroll run without leaking
+     * state across companies/requests).
+     */
+    /**
+     * PA2-COUNTRY-005: Morocco and Tunisia must expose the same country
+     * metadata contract (timezone, weekly rest days, supported pay cycles,
+     * public-holiday source disclosure, confidence level) that the other
+     * CountryRulesInterface implementations already provide, so platform
+     * admin/company provisioning can rely on it without special-casing MA/TN.
+     */
+    public function test_morocco_and_tunisia_expose_country_metadata_for_provisioning(): void
+    {
+        $morocco = new MoroccoPayrollRules;
+
+        self::assertSame('Africa/Casablanca', $morocco->timezone());
+        self::assertSame([7], $morocco->weeklyRestDays());
+        self::assertSame(['daily', 'weekly', 'monthly'], $morocco->supportedPayCycles());
+        self::assertStringContainsString('MA fixed public holidays', $morocco->publicHolidaysSource());
+        self::assertSame('pilot', $morocco->confidenceLevel());
+
+        $tunisia = new TunisiaPayrollRules;
+
+        self::assertSame('Africa/Tunis', $tunisia->timezone());
+        self::assertSame([7], $tunisia->weeklyRestDays());
+        self::assertSame(['daily', 'weekly', 'monthly'], $tunisia->supportedPayCycles());
+        self::assertStringContainsString('TN fixed public holidays', $tunisia->publicHolidaysSource());
+        self::assertSame('pilot', $tunisia->confidenceLevel());
+    }
+
+    /**
+     * Every CountryRulesInterface implementation must expose the country
+     * metadata contract, not just Morocco/Tunisia — regression guard so a
+     * future country addition can't skip it silently.
+     */
+    public function test_every_country_rules_implementation_exposes_country_metadata(): void
+    {
+        $allRules = [
+            new AlgeriaPayrollRules,
+            new MoroccoPayrollRules,
+            new TunisiaPayrollRules,
+            new FrancePayrollRules,
+            new TurkeyPayrollRules,
+            new SenegalPayrollRules,
+            new CemacPayrollRules,
+        ];
+
+        foreach ($allRules as $rules) {
+            self::assertNotSame('', $rules->timezone(), $rules->countryCode().': timezone must not be empty');
+            self::assertNotEmpty($rules->weeklyRestDays(), $rules->countryCode().': weeklyRestDays must not be empty');
+            self::assertNotEmpty($rules->supportedPayCycles(), $rules->countryCode().': supportedPayCycles must not be empty');
+            self::assertNotSame('', $rules->publicHolidaysSource(), $rules->countryCode().': publicHolidaysSource must not be empty');
+            self::assertContains(
+                $rules->confidenceLevel(),
+                ['production', 'pilot', 'placeholder'],
+                $rules->countryCode().': confidenceLevel must be one of the documented values'
+            );
+        }
+    }
+
+    /**
+     * PA2-COUNTRY-006: France and Turkiye (and, by the shared
+     * AbstractCountryRules contract, every other country) must expose a
+     * default language() and a non-empty complianceWarning() so platform
+     * admin/company provisioning can pick a sensible default locale and
+     * surface an explicit "do not treat this as legally validated" notice
+     * (acceptance criteria: "langue, seuils prudents et avertissement
+     * conformite").
+     */
+    public function test_every_country_rules_implementation_exposes_language_and_compliance_warning(): void
+    {
+        $expectedLanguages = [
+            'DZ' => 'fr',
+            'MA' => 'fr',
+            'TN' => 'fr',
+            'FR' => 'fr',
+            'TR' => 'tr',
+            'SN' => 'fr',
+            'CM' => 'fr',
+        ];
+
+        $allRules = [
+            new AlgeriaPayrollRules,
+            new MoroccoPayrollRules,
+            new TunisiaPayrollRules,
+            new FrancePayrollRules,
+            new TurkeyPayrollRules,
+            new SenegalPayrollRules,
+            new CemacPayrollRules,
+        ];
+
+        foreach ($allRules as $rules) {
+            self::assertSame(
+                $expectedLanguages[$rules->countryCode()],
+                $rules->language(),
+                $rules->countryCode().': language() must match App\Support\CountryDefaults'
+            );
+            self::assertNotSame('', $rules->complianceWarning(), $rules->countryCode().': complianceWarning must not be empty');
+            // Le warning dérivé du niveau de confiance (AbstractCountryRules) :
+            // placeholder → 'placeholder', pilot → 'pilot', production →
+            // 'legally validated' (Sénégal promu en production, merge #5096).
+            $warningNeedle = match ($rules->confidenceLevel()) {
+                'placeholder' => 'placeholder',
+                'production' => 'legally validated',
+                default => 'pilot',
+            };
+            self::assertStringContainsString(
+                $warningNeedle,
+                strtolower($rules->complianceWarning()),
+                $rules->countryCode().': complianceWarning should be explicit about its confidenceLevel'
+            );
+        }
+    }
+
+    /**
+     * France and Turkiye override complianceWarning() with wording specific
+     * to their payroll law (not just the shared generic default), per the
+     * PA2-COUNTRY-006 ticket scope.
+     */
+    public function test_france_and_turkey_expose_country_specific_compliance_warnings(): void
+    {
+        $france = (new FrancePayrollRules)->complianceWarning();
+        self::assertStringContainsString('France', $france);
+        self::assertStringContainsString('DSN', $france);
+
+        $turkey = (new TurkeyPayrollRules)->complianceWarning();
+        self::assertStringContainsString('SGK', $turkey);
+    }
+
+    public function test_for_company_returns_a_scoped_clone_without_mutating_the_original(): void
+    {
+        $rules = new TunisiaPayrollRules;
+
+        $scoped = $rules->forCompany('11111111-1111-1111-1111-111111111111');
+
+        self::assertNotSame($rules, $scoped);
+        self::assertInstanceOf(TunisiaPayrollRules::class, $scoped);
+        self::assertSame('TN', $scoped->countryCode());
+        // No DB/tax_slabs table available in this pure unit-test environment,
+        // so both the original and the scoped clone fall back to the same
+        // hardcoded defaults — confirms forCompany() doesn't break the
+        // no-DB fallback path.
+        self::assertSame($rules->taxSlabs(), $scoped->taxSlabs());
+    }
+
+    /**
+     * PA2-COUNTRY-007: CEMAC zone (CM, CF, TD, CG, GA, GQ) must be covered by
+     * a single CemacPayrollRules class, scoped per member state via
+     * forMemberCountry(), so payroll can be run for any of the six members
+     * with the correct ISO country code, timezone and minimum wage.
+     */
+    public function test_cemac_defaults_to_cameroon_and_exposes_member_country_codes(): void
+    {
+        $default = new CemacPayrollRules;
+
+        self::assertSame('CM', $default->countryCode());
+        self::assertSame('XAF', $default->currency());
+        self::assertSame('Africa/Douala', $default->timezone());
+        self::assertSame(['CM', 'CF', 'TD', 'CG', 'GA', 'GQ'], CemacPayrollRules::MEMBER_COUNTRY_CODES);
+    }
+
+    public function test_cemac_for_member_country_scopes_currency_timezone_and_minimum_wage_per_member(): void
+    {
+        $expected = [
+            'CM' => ['Africa/Douala', 41875.0],
+            'CF' => ['Africa/Bangui', 35000.0],
+            'TD' => ['Africa/Ndjamena', 60000.0],
+            'CG' => ['Africa/Brazzaville', 90000.0],
+            'GA' => ['Africa/Libreville', 150000.0],
+            'GQ' => ['Africa/Malabo', 128000.0],
+        ];
+
+        foreach ($expected as $memberCode => [$timezone, $minimumWage]) {
+            $rules = (new CemacPayrollRules)->forMemberCountry($memberCode);
+
+            self::assertSame($memberCode, $rules->countryCode());
+            self::assertSame('XAF', $rules->currency());
+            self::assertSame($timezone, $rules->timezone());
+            self::assertSame($minimumWage, $rules->minimumWage());
+            self::assertSame([7], $rules->weeklyRestDays());
+            self::assertSame(['monthly'], $rules->supportedPayCycles());
+            // #1821 : CM passe en 'pilot' (barèmes légaux implémentés) ;
+            // #1824 : GA et CG aussi (IRPP/CNSS spécifiques). Les autres
+            // membres restent 'placeholder' jusqu'à leurs issues.
+            $expectedConfidence = in_array($memberCode, ['CM', 'GA', 'CG'], true) ? 'pilot' : 'placeholder';
+            self::assertSame($expectedConfidence, $rules->confidenceLevel(), "{$memberCode} confidenceLevel");
+            if ($memberCode === 'GA') {
+                self::assertCount(8, $rules->taxSlabs()); // IRPP GA 8 tranches
+                self::assertStringContainsString('GA fixed public holidays', $rules->publicHolidaysSource());
+            } elseif ($memberCode === 'CG') {
+                self::assertCount(6, $rules->taxSlabs()); // IRPP CG 6 tranches
+                self::assertStringContainsString('CG fixed public holidays', $rules->publicHolidaysSource());
+            } elseif ($memberCode === 'CM') {
+                self::assertStringContainsString('CM fixed public holidays', $rules->publicHolidaysSource());
+            } else {
+                self::assertStringContainsString('placeholder', $rules->publicHolidaysSource());
+            }
+            self::assertNotEmpty($rules->socialContributions());
+        }
+    }
+
+    public function test_cemac_for_member_country_ignores_unknown_codes(): void
+    {
+        $rules = (new CemacPayrollRules)->forMemberCountry('XX');
+
+        self::assertSame('CM', $rules->countryCode());
+    }
+
+    public function test_cemac_calculates_social_charges_and_progressive_income_tax(): void
+    {
+        // #1824 : GA passé au niveau pilot — CNSS Gabon (retraite salarié
+        // 2,5 % / patronale 5,0 % + famille 8,0 % plafonnés 3 000 000 XAF,
+        // AT 3,0 % non plafonné) et IRPP 8 tranches annuelles (0 % sous
+        // 1,5 M XAF) — les valeurs placeholder (4,2 %/16,2 %) sont obsolètes.
+        $rules = (new CemacPayrollRules)->forMemberCountry('GA');
+
+        $charges = $rules->calculateSocialCharges(1000);
+        self::assertEqualsWithDelta(25.0, $charges['employee'], 0.01);
+        self::assertEqualsWithDelta(160.0, $charges['employer'], 0.01);
+
+        self::assertSame(0.0, $rules->calculateIncomeTax(500000 / 12));
+        self::assertSame(0.0, $rules->calculateIncomeTax(1000000 / 12));
+    }
+
+    /**
+     * PA2-COUNTRY-008: CEDEAO/UEMOA zone (CI, ML, BF, BJ, TG, NE) must be
+     * covered by a single CedeaoPayrollRules class, scoped per member
+     * state via forMemberCountry(), so payroll can be run for any of the
+     * six supported members with the correct ISO country code, timezone
+     * and minimum wage. Senegal (SN) already has its own dedicated class
+     * and is intentionally not part of this zone's member list.
+     */
+    public function test_cedeao_defaults_to_cote_divoire_and_exposes_member_country_codes(): void
+    {
+        $default = new CedeaoPayrollRules;
+
+        self::assertSame('CI', $default->countryCode());
+        self::assertSame('XOF', $default->currency());
+        self::assertSame('Africa/Abidjan', $default->timezone());
+        self::assertSame(['CI', 'ML', 'BF', 'BJ', 'TG', 'NE'], CedeaoPayrollRules::MEMBER_COUNTRY_CODES);
+        self::assertNotContains('SN', CedeaoPayrollRules::MEMBER_COUNTRY_CODES);
+    }
+
+    public function test_cedeao_for_member_country_scopes_currency_timezone_and_minimum_wage_per_member(): void
+    {
+        $expected = [
+            'CI' => ['Africa/Abidjan', 75000.0],
+            'ML' => ['Africa/Bamako', 40000.0],
+            'BF' => ['Africa/Ouagadougou', 34664.0],
+            'BJ' => ['Africa/Porto-Novo', 52000.0],
+            'TG' => ['Africa/Lome', 52500.0],
+            'NE' => ['Africa/Niamey', 30047.0],
+        ];
+
+        foreach ($expected as $memberCode => [$timezone, $minimumWage]) {
+            $rules = (new CedeaoPayrollRules)->forMemberCountry($memberCode);
+
+            self::assertSame($memberCode, $rules->countryCode());
+            self::assertSame('XOF', $rules->currency());
+            self::assertSame($timezone, $rules->timezone());
+            self::assertSame($minimumWage, $rules->minimumWage());
+            self::assertSame([7], $rules->weeklyRestDays());
+            self::assertSame(['monthly'], $rules->supportedPayCycles());
+            // #1825 + #1829 + #2121 : CI, BF, ML et TG sont passés au niveau
+            // 'pilot' (barèmes légaux implémentés) — les autres membres
+            // UEMOA restent 'placeholder' jusqu'à leurs issues.
+            $expectedConfidence = in_array($memberCode, ['CI', 'BF', 'ML', 'TG'], true) ? 'pilot' : 'placeholder';
+            self::assertSame($expectedConfidence, $rules->confidenceLevel(), "{$memberCode} confidenceLevel");
+            if ($memberCode === 'CI') {
+                self::assertStringContainsString('CI fixed public holidays', $rules->publicHolidaysSource());
+            } elseif ($memberCode === 'ML') {
+                self::assertCount(6, $rules->taxSlabs()); // ITS 6 tranches
+                self::assertStringContainsString('ML fixed public holidays', $rules->publicHolidaysSource());
+            } elseif ($memberCode === 'BF') {
+                self::assertCount(6, $rules->taxSlabs()); // IUTS 6 tranches (#1915 : +27,5 % > 6 M)
+                self::assertSame(12.1, $rules->taxSlabs()[1]['rate']); // ≠ placeholder 12.0
+                // #2255 : BF conserve le placeholder fériés (réforme légale 2026)
+                self::assertStringContainsString('placeholder', $rules->publicHolidaysSource());
+            } else {
+                self::assertStringContainsString('placeholder', $rules->publicHolidaysSource());
+            }
+            self::assertNotEmpty($rules->socialContributions());
+        }
+    }
+
+    public function test_cedeao_for_member_country_ignores_unknown_codes(): void
+    {
+        $rules = (new CedeaoPayrollRules)->forMemberCountry('XX');
+
+        self::assertSame('CI', $rules->countryCode());
+
+        // Senegal is not part of this zone's member codes even though it
+        // shares the XOF currency: it already has its own dedicated class.
+        $senegalAttempt = (new CedeaoPayrollRules)->forMemberCountry('SN');
+        self::assertSame('CI', $senegalAttempt->countryCode());
+    }
+
+    public function test_cedeao_calculates_social_charges_and_progressive_income_tax(): void
+    {
+        $rules = (new CedeaoPayrollRules)->forMemberCountry('BJ');
+
+        $charges = $rules->calculateSocialCharges(1000);
+        self::assertEqualsWithDelta(36.0, $charges['employee'], 0.01);
+        self::assertEqualsWithDelta(164.0, $charges['employer'], 0.01);
+
+        self::assertSame(0.0, $rules->calculateIncomeTax(600000 / 12));
+        self::assertSame(6000.0, $rules->calculateIncomeTax(1200000 / 12));
+    }
+
+    public function test_cedeao_exposes_overtime_rules(): void
+    {
+        $rules = new CedeaoPayrollRules;
+
+        self::assertSame(40.0, $rules->overtimeThresholdWeeklyHours());
+
+        $tiers = $rules->overtimeRateTiers();
+        self::assertNotEmpty($tiers);
+        self::assertNull($tiers[array_key_last($tiers)]['up_to_hours']);
+        self::assertSame(1.15, $tiers[0]['multiplier']);
+    }
+
+    /**
+     * Regression test for BUGFIX-CEMAC-001: CemacPayrollRules never
+     * implemented overtimeThresholdWeeklyHours()/overtimeRateTiers(), added
+     * to CountryRulesInterface by PA2-COUNTRY-004, which caused a PHP fatal
+     * error (unimplemented abstract methods) on any code path loading this
+     * class. Guards that the class stays instantiable and exposes the
+     * documented placeholder overtime contract.
+     */
+    public function test_cemac_exposes_overtime_rules(): void
+    {
+        $rules = new CemacPayrollRules;
+
+        self::assertSame(40.0, $rules->overtimeThresholdWeeklyHours());
+
+        $tiers = $rules->overtimeRateTiers();
+        self::assertNotEmpty($tiers);
+        self::assertSame(8.0, $tiers[0]['up_to_hours']);
+        self::assertSame(1.20, $tiers[0]['multiplier']);
+        self::assertNull($tiers[array_key_last($tiers)]['up_to_hours']);
+        self::assertSame(1.30, $tiers[array_key_last($tiers)]['multiplier']);
+    }
+
+    /**
+     * PA2-COUNTRY-009: Canada is a single ISO country code (CA); province
+     * is an optional refinement, not a separate country code. With no
+     * province set, CanadaPayrollRules must fall back to the federal
+     * Canada Labour Code defaults (America/Toronto timezone, 44h/week
+     * overtime threshold).
+     */
+    public function test_canada_defaults_to_federal_rules_without_a_province(): void
+    {
+        $rules = new CanadaPayrollRules;
+
+        self::assertSame('CA', $rules->countryCode());
+        self::assertSame('CAD', $rules->currency());
+        self::assertSame('America/Toronto', $rules->timezone());
+        self::assertSame(44.0, $rules->overtimeThresholdWeeklyHours());
+        // Audit légal 2026 (pack EN #5255) : CA passe de « placeholder » à
+        // « pilot » (taux fédéraux 2026 sourcés CRA/Canada.ca, voir
+        // CanadaPayrollRules + CA_COMPLIANCE.md).
+        self::assertSame('pilot', $rules->confidenceLevel());
+    }
+
+    /**
+     * PA2-COUNTRY-009 acceptance criteria: "CAD province optionnelle
+     * timezone placeholders overtime provinciaux" — forProvince() must
+     * scope the timezone and statutory overtime threshold per province,
+     * while countryCode()/currency() stay CA/CAD regardless of province.
+     */
+    public function test_canada_for_province_scopes_timezone_and_overtime_threshold(): void
+    {
+        $expected = [
+            'BC' => ['America/Vancouver', 40.0],
+            'AB' => ['America/Edmonton', 44.0],
+            'SK' => ['America/Regina', 40.0],
+            'MB' => ['America/Winnipeg', 40.0],
+            'ON' => ['America/Toronto', 44.0],
+            'QC' => ['America/Toronto', 40.0],
+            'NB' => ['America/Moncton', 44.0],
+            'NS' => ['America/Halifax', 48.0],
+            'PE' => ['America/Halifax', 48.0],
+            'NL' => ['America/St_Johns', 40.0],
+            'YT' => ['America/Whitehorse', 40.0],
+            'NT' => ['America/Yellowknife', 40.0],
+            'NU' => ['America/Iqaluit', 40.0],
+        ];
+
+        foreach ($expected as $province => [$timezone, $overtimeThreshold]) {
+            $rules = (new CanadaPayrollRules)->forProvince($province);
+
+            self::assertSame('CA', $rules->countryCode());
+            self::assertSame('CAD', $rules->currency());
+            self::assertSame($timezone, $rules->timezone(), "{$province}: unexpected timezone");
+            self::assertSame($overtimeThreshold, $rules->overtimeThresholdWeeklyHours(), "{$province}: unexpected overtime threshold");
+
+            $tiers = $rules->overtimeRateTiers();
+            self::assertNotEmpty($tiers);
+            self::assertNull($tiers[array_key_last($tiers)]['up_to_hours']);
+            self::assertSame(1.5, $tiers[0]['multiplier']);
+        }
+    }
+
+    public function test_canada_for_province_ignores_unknown_codes_and_resets_with_null(): void
+    {
+        $rules = (new CanadaPayrollRules)->forProvince('XX');
+        self::assertSame('America/Toronto', $rules->timezone());
+        self::assertSame(44.0, $rules->overtimeThresholdWeeklyHours());
+
+        $scoped = (new CanadaPayrollRules)->forProvince('BC');
+        self::assertSame('America/Vancouver', $scoped->timezone());
+
+        $reset = $scoped->forProvince(null);
+        self::assertSame('America/Toronto', $reset->timezone());
+        self::assertSame(44.0, $reset->overtimeThresholdWeeklyHours());
+    }
+
+    public function test_canada_calculates_social_charges_and_progressive_income_tax(): void
+    {
+        $rules = new CanadaPayrollRules;
+
+        // Audit 2026 (CRA/Canada.ca) : CPP 5,95 % sur (brut − $291,67/mois)
+        // + EI 1,63 % salarial / 2,282 % patronal. Brut $1 000 →
+        // salarié 42,15 + 16,30 = 58,45 · patron 42,15 + 22,82 = 64,97.
+        $charges = $rules->calculateSocialCharges(1000);
+        self::assertEqualsWithDelta(58.45, $charges['employee'], 0.01);
+        self::assertEqualsWithDelta(64.97, $charges['employer'], 0.01);
+
+        self::assertSame(0.0, $rules->calculateIncomeTax(0));
+        // Revenu annuel $55 867 : 14 % = $7 821,38 − crédit BPA $16 452 ×
+        // 14 % = $2 303,28 → $5 518,10/an = $459,84/mois.
+        self::assertEqualsWithDelta(459.84, $rules->calculateIncomeTax(55867 / 12), 0.5);
+    }
+
+    /**
+     * PA2-COUNTRY-004: Algeria's rules must expose the standard weekend
+     * (Friday+Saturday, not the generic Sunday-only default other countries
+     * use) plus the statutory 40h/week overtime threshold and its premium
+     * tier, so payroll/attendance can compute overtime pay without
+     * hardcoding Algeria-specific values elsewhere.
+     */
+    public function test_algeria_exposes_weekend_and_overtime_rules(): void
+    {
+        $rules = new AlgeriaPayrollRules;
+
+        self::assertSame([5, 6], $rules->weeklyRestDays());
+        self::assertSame(['daily', 'weekly', 'monthly'], $rules->supportedPayCycles());
+        self::assertSame('Africa/Algiers', $rules->timezone());
+        self::assertSame(40.0, $rules->overtimeThresholdWeeklyHours());
+
+        $tiers = $rules->overtimeRateTiers();
+        self::assertNotEmpty($tiers);
+        self::assertNull($tiers[array_key_last($tiers)]['up_to_hours']);
+        self::assertSame(1.5, $tiers[0]['multiplier']);
+    }
+
+    /**
+     * Every CountryRulesInterface implementation must expose the full
+     * country-metadata + overtime contract, not just Algeria — regression
+     * guard so a future country addition can't skip it silently.
+     */
+    public function test_every_country_rules_implementation_exposes_the_full_contract(): void
+    {
+        $allRules = [
+            new AlgeriaPayrollRules,
+            new MoroccoPayrollRules,
+            new TunisiaPayrollRules,
+            new FrancePayrollRules,
+            new TurkeyPayrollRules,
+            new SenegalPayrollRules,
+            new CemacPayrollRules,
+        ];
+
+        foreach ($allRules as $rules) {
+            $label = $rules->countryCode();
+
+            self::assertNotSame('', $rules->timezone(), $label.': timezone must not be empty');
+            self::assertNotEmpty($rules->weeklyRestDays(), $label.': weeklyRestDays must not be empty');
+            self::assertNotEmpty($rules->supportedPayCycles(), $label.': supportedPayCycles must not be empty');
+            self::assertNotSame('', $rules->publicHolidaysSource(), $label.': publicHolidaysSource must not be empty');
+            self::assertContains(
+                $rules->confidenceLevel(),
+                ['production', 'pilot', 'placeholder'],
+                $label.': confidenceLevel must be one of the documented values'
+            );
+            self::assertGreaterThan(0.0, $rules->overtimeThresholdWeeklyHours(), $label.': overtimeThresholdWeeklyHours must be positive');
+
+            $tiers = $rules->overtimeRateTiers();
+            self::assertNotEmpty($tiers, $label.': overtimeRateTiers must not be empty');
+            self::assertNull(
+                $tiers[array_key_last($tiers)]['up_to_hours'],
+                $label.': the last overtime tier must be unbounded (up_to_hours = null)'
+            );
+            foreach ($tiers as $tier) {
+                self::assertGreaterThan(1.0, $tier['multiplier'], $label.': overtime multiplier must be > 1.0 (a real premium)');
+            }
+        }
+    }
+}

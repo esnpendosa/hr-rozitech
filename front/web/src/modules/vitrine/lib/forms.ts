@@ -1,0 +1,519 @@
+import {
+  SignupFormData,
+  DemoFormData,
+  ContactFormData,
+  NewsletterFormData,
+  sanitizeInput,
+  sanitizeEmail,
+} from "./validation";
+
+const safeLog = (..._args: unknown[]) => {};
+
+function getBrowserLocale(): string {
+  if (typeof document === "undefined") {
+    return "fr";
+  }
+
+  return document.documentElement.lang || "fr";
+}
+
+function getSearchMetadata(): Record<string, string> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const metadata: Record<string, string> = {};
+
+  ["plan", "module", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"].forEach((key) => {
+    const value = params.get(key);
+
+    if (value) {
+      metadata[key] = value;
+    }
+  });
+
+  return metadata;
+}
+
+/**
+ * #2823 — la source d'acquisition de l'URL (ex. `source=download_employee_android`
+ * posée par /download et les guides) doit être propagée au lead, pas écrasée par
+ * un défaut codé en dur.
+ */
+export function getLeadSource(): string {
+  if (typeof window === "undefined") {
+    return "signup_form";
+  }
+
+  const source = new URLSearchParams(window.location.search).get("source");
+
+  return source && source.trim().length > 0 ? source.trim() : "signup_form";
+}
+
+/**
+ * Form submission handlers
+ */
+
+export interface FormSubmissionResponse {
+  success: boolean;
+  message: string;
+  data?: any;
+  error?: string;
+  /**
+   * Present when the backend accepted the request but could not reach the
+   * OTP/trial provisioning API (e.g. cold-start timeout). `false` means the
+   * lead was captured and the team will follow up manually; the caller must
+   * NOT treat this the same as a normal OTP-sent success.
+   */
+  provisioned?: boolean;
+}
+
+/**
+ * Submit signup form
+ */
+export async function submitSignupForm(
+  data: SignupFormData,
+  page: string
+): Promise<FormSubmissionResponse> {
+  try {
+    const sanitizedData = {
+      email: sanitizeEmail(data.email),
+      company: sanitizeInput(data.company),
+      role: data.role,
+      employees: data.employees,
+      phone: data.phone ? sanitizeInput(data.phone) : undefined,
+      // #4476 : le pays est requis par l'API trial/signup (MULTI-PAYS #1867) —
+      // sans lui le tunnel se dégradait en lead capture pour 100 % des demandes.
+      country: data.country ? data.country.toUpperCase() : undefined,
+      // #7235 — profil d'activité, outils horizontaux choisis et métier
+      // vertical : sans cette remontée, l'API provisionnerait un tenant
+      // standard et le choix de l'utilisateur serait purement cosmétique.
+      company_type: data.company_type,
+      modules: data.modules,
+      solutions: data.solutions,
+    };
+
+    // #7238 — offre choisie dans le tunnel (prime sur `?plan=` de l'URL).
+    // Audit onboarding 2026-09-14 : `plan: data.plan` était posé incondition-
+    // nellement à `undefined` (le formulaire minimal ne remplit pas ce champ).
+    // Étant répandu APRÈS `getSearchMetadata()`, il écrasait le `?plan=` de
+    // l'URL puis disparaissait au `JSON.stringify` : l'offre choisie sur
+    // /pricing n'atteignait JAMAIS l'API (tout le monde partait sur l'offre
+    // par défaut). On ne pose la clé que lorsqu'elle existe réellement.
+    if (data.plan) {
+      (sanitizedData as Record<string, unknown>).plan = data.plan;
+    }
+
+    const response = await fetch("/api/forms/signup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        // #7238 — le choix explicite de l'utilisateur prime sur les paramètres
+        // d'URL (`?plan=free` ne doit pas écraser une offre choisie ensuite).
+        ...getSearchMetadata(),
+        ...sanitizedData,
+        locale: getBrowserLocale(),
+        source: getLeadSource(),
+        page,
+        timestamp: new Date().toISOString(),
+        requestedWorkflow: "self_service",
+        nextStep: "verify_email"
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        message: error.message || "Erreur lors de la demande d'essai",
+        error: error.error || error.message,
+        data: error.data,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      message: result.message || "Code de verification envoye.",
+      data: result.data,
+      provisioned: result.provisioned !== false,
+    };
+  } catch (error) {
+    safeLog("Signup form error:", error);
+    return {
+      success: false,
+      message:
+        error instanceof Error && error.name === 'AbortError'
+          ? 'Le serveur met du temps à répondre. Veuillez réessayer dans quelques instants.'
+          : "Erreur lors de la demande d'essai",
+      error: error instanceof Error ? error.message : "Erreur inconnue",
+    };
+  }
+}
+
+/**
+ * Fetch trial provisioning status via the same-origin proxy
+ * (GET /api/forms/trial-status?token=…). #2469
+ */
+export async function fetchTrialStatus(token: string): Promise<FormSubmissionResponse> {
+  try {
+    const response = await fetch(`/api/forms/trial-status?token=${encodeURIComponent(token)}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload === null || payload.success === false) {
+      return {
+        success: false,
+        message: payload?.message || "Suivi temporairement indisponible.",
+        error: payload?.error || "TRIAL_STATUS_UNAVAILABLE",
+        data: payload?.data,
+      };
+    }
+
+    return {
+      success: true,
+      message: payload.message || "",
+      data: payload.data,
+    };
+  } catch (error) {
+    safeLog("Trial status error:", error);
+    return {
+      success: false,
+      message: "Suivi temporairement indisponible.",
+      error: error instanceof Error ? error.message : "NETWORK_ERROR",
+    };
+  }
+}
+
+/**
+ * Définit le mot de passe du manager d'un essai guidé, à partir du
+ * `provisioning_token` déjà détenu par le navigateur.
+ *
+ * Onboarding sans dépendance au mailer : sans email d'accès (mailer non
+ * configuré), c'est le seul moyen pour le prospect d'entrer dans son espace.
+ * Les erreurs remontent sous forme de **codes** — la mise en mots est faite
+ * côté composant via le catalogue i18n.
+ */
+export async function submitTrialPassword(
+  token: string,
+  password: string
+): Promise<FormSubmissionResponse> {
+  try {
+    const response = await fetch("/api/forms/trial-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ token, password, password_confirmation: password }),
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload === null || payload.success === false) {
+      return {
+        success: false,
+        message: "",
+        error: payload?.error || "TRIAL_PASSWORD_UNAVAILABLE",
+        data: payload?.data,
+      };
+    }
+
+    return {
+      success: true,
+      message: "",
+      data: payload.data,
+    };
+  } catch (error) {
+    // Pas de message littéral ici : la garde `check-i18n-diff.js` traite toute
+    // nouvelle chaîne visible comme non traduite. L'erreur remonte en code, le
+    // composant la met en mots via le catalogue.
+    return {
+      success: false,
+      message: "",
+      error: error instanceof Error ? error.name : "NETWORK_ERROR",
+    };
+  }
+}
+
+/**
+ * Submit OTP verification to complete trial provisioning
+ */
+export async function submitVerifyForm(
+  email: string,
+  code: string
+): Promise<FormSubmissionResponse> {
+  try {
+    const response = await fetch("/api/forms/verify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email, code }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        message: error.message || "Code invalide ou expire.",
+        error: error.error || "VERIFICATION_FAILED",
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      message: result.message || "Votre espace Leopardo est pret !",
+      data: result.data,
+    };
+  } catch (error) {
+    safeLog("Verify form error:", error);
+    return {
+      success: false,
+      message: "Erreur lors de la vérification",
+      error: error instanceof Error ? error.message : "Erreur inconnue",
+    };
+  }
+}
+/**
+ * Submit demo request form
+ */
+export async function submitDemoForm(
+  data: DemoFormData,
+  page: string
+): Promise<FormSubmissionResponse> {
+  try {
+    // Sanitize inputs
+    const sanitizedData = {
+      name: sanitizeInput(data.name),
+      email: sanitizeEmail(data.email),
+      company: sanitizeInput(data.company),
+      phone: data.phone ? sanitizeInput(data.phone) : undefined,
+      employees: data.employees,
+      preferredDate: data.preferredDate,
+    };
+
+    // Send to API
+    const response = await fetch("/api/forms/demo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...sanitizedData,
+        ...getSearchMetadata(),
+        locale: getBrowserLocale(),
+        source: "demo_form",
+        page,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        message: "Erreur lors de la demande de démo",
+        error: error.message,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      message: "Demande de démo envoyée! Nous vous contacterons bientôt.",
+      data: result,
+    };
+  } catch (error) {
+    safeLog("Demo form error:", error);
+    return {
+      success: false,
+      message: "Erreur lors de la demande de démo",
+      error: error instanceof Error ? error.message : "Erreur inconnue",
+    };
+  }
+}
+
+/**
+ * Submit contact form
+ */
+export async function submitContactForm(
+  data: ContactFormData,
+  page: string
+): Promise<FormSubmissionResponse> {
+  try {
+    // Sanitize inputs
+    const sanitizedData = {
+      name: sanitizeInput(data.name),
+      email: sanitizeEmail(data.email),
+      subject: sanitizeInput(data.subject),
+      message: sanitizeInput(data.message),
+      phone: data.phone ? sanitizeInput(data.phone) : undefined,
+    };
+
+    // Send to API
+    const response = await fetch("/api/forms/contact", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...sanitizedData,
+        ...getSearchMetadata(),
+        locale: getBrowserLocale(),
+        source: "contact_form",
+        page,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        message: "Erreur lors de l'envoi du message",
+        error: error.message,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      message: "Message envoyé! Nous vous répondrons bientôt.",
+      data: result,
+    };
+  } catch (error) {
+    safeLog("Contact form error:", error);
+    return {
+      success: false,
+      message: "Erreur lors de l'envoi du message",
+      error: error instanceof Error ? error.message : "Erreur inconnue",
+    };
+  }
+}
+
+/**
+ * Submit newsletter form
+ */
+export async function submitNewsletterForm(
+  data: NewsletterFormData,
+  page: string
+): Promise<FormSubmissionResponse> {
+  try {
+    // Sanitize inputs
+    const sanitizedData = {
+      email: sanitizeEmail(data.email),
+    };
+
+    // Send to API
+    const response = await fetch("/api/forms/newsletter", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...sanitizedData,
+        ...getSearchMetadata(),
+        locale: getBrowserLocale(),
+        source: "newsletter_form",
+        page,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        message: "Erreur lors de l'inscription à la newsletter",
+        error: error.message,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      message: "Inscription à la newsletter réussie!",
+      data: result,
+    };
+  } catch (error) {
+    safeLog("Newsletter form error:", error);
+    return {
+      success: false,
+      message: "Erreur lors de l'inscription à la newsletter",
+      error: error instanceof Error ? error.message : "Erreur inconnue",
+    };
+  }
+}
+
+/**
+ * Form state management helper
+ */
+export interface FormState {
+  isSubmitting: boolean;
+  isSuccess: boolean;
+  isError: boolean;
+  message: string;
+  errors: Record<string, string>;
+}
+
+export const initialFormState: FormState = {
+  isSubmitting: false,
+  isSuccess: false,
+  isError: false,
+  message: "",
+  errors: {},
+};
+
+export function createFormReducer() {
+  return (state: FormState, action: any): FormState => {
+    switch (action.type) {
+      case "SUBMIT_START":
+        return {
+          ...state,
+          isSubmitting: true,
+          isSuccess: false,
+          isError: false,
+          message: "",
+          errors: {},
+        };
+      case "SUBMIT_SUCCESS":
+        return {
+          ...state,
+          isSubmitting: false,
+          isSuccess: true,
+          isError: false,
+          message: action.payload.message,
+          errors: {},
+        };
+      case "SUBMIT_ERROR":
+        return {
+          ...state,
+          isSubmitting: false,
+          isSuccess: false,
+          isError: true,
+          message: action.payload.message,
+          errors: action.payload.errors || {},
+
+        };
+      case "RESET":
+        return initialFormState;
+      default:
+        return state;
+    }
+  };
+}

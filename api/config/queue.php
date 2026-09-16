@@ -1,0 +1,171 @@
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Queue Connection Name
+    |--------------------------------------------------------------------------
+    |
+    | Laravel's queue supports a variety of backends via a single, unified
+    | API, giving you convenient access to each backend using identical
+    | syntax for each. The default queue connection is defined below.
+    |
+    */
+
+    // Issue #5578 (réf. #4340/#4349) : la stratégie queue est UNIQUE et
+    // alignée partout — `database` en production (probe infra, render.yaml,
+    // worker dédié, drain GH Actions #5204/#5205). Un QUEUE_CONNECTION absent
+    // ne doit JAMAIS retomber sur 'sync' (jobs lourds exécutés dans la
+    // requête web) ni sur 'redis' (quota Upstash brûlé par le polling,
+    // incident 2026-08-19, worker inactif si rien ne dispatche). En
+    // dev/test, le défaut reste 'sync' pour la simplicité locale.
+    'default' => env('QUEUE_CONNECTION', env('APP_ENV', 'production') === 'production' ? 'database' : 'sync'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue Connections
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure the connection options for every queue backend
+    | used by your application. An example configuration is provided for
+    | each backend supported by Laravel. You're also free to add more.
+    |
+    | Drivers: "sync", "database", "beanstalkd", "sqs", "redis", "null"
+    |
+    */
+
+    'connections' => [
+
+        'sync' => [
+            'driver' => 'sync',
+        ],
+
+        // #6535 : retry_after >= timeout max des jobs (ProcessPayrollBatchJob 600s,
+        // GeneratePaySlipPdfJob/GenerateBankExportJob 120s, ArchivePaySlipsToCabinetJob
+        // 300s). Le timeout du job prime sur --timeout du worker ; avec un retry_after
+        // plus court, le driver re-délivre le job avant la fin → double exécution
+        // (PDF re-générés, re-notifications, course sur statuts).
+        'database' => [
+            'driver' => 'database',
+            'connection' => env('DB_QUEUE_CONNECTION'),
+            'table' => env('DB_QUEUE_TABLE', 'jobs'),
+            'queue' => env('DB_QUEUE', 'default'),
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 900),
+            'after_commit' => false,
+        ],
+
+        'beanstalkd' => [
+            'driver' => 'beanstalkd',
+            'host' => env('BEANSTALKD_QUEUE_HOST', 'localhost'),
+            'queue' => env('BEANSTALKD_QUEUE', 'default'),
+            'retry_after' => (int) env('BEANSTALKD_QUEUE_RETRY_AFTER', 90),
+            'block_for' => 0,
+            'after_commit' => false,
+        ],
+
+        'sqs' => [
+            'driver' => 'sqs',
+            'key' => env('AWS_ACCESS_KEY_ID'),
+            'secret' => env('AWS_SECRET_ACCESS_KEY'),
+            'prefix' => env('SQS_PREFIX', 'https://sqs.us-east-1.amazonaws.com/your-account-id'),
+            'queue' => env('SQS_QUEUE', 'default'),
+            'suffix' => env('SQS_SUFFIX'),
+            'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+            'after_commit' => false,
+        ],
+
+        // Plan 63 — Redis queues (Upstash TLS)
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => env('REDIS_QUEUE', 'default'),
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 900),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        // Named queues for targeted dispatching
+        'redis-pdf' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'pdf',
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 900),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        'redis-notifications' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'notifications',
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        'redis-payroll' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'payroll',
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 900),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        'redis-documents' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'documents',
+            'retry_after' => (int) env('REDIS_QUEUE_DOCUMENTS_RETRY_AFTER', 600),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        'redis-webhooks' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'webhooks',
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 900),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Job Batching
+    |--------------------------------------------------------------------------
+    |
+    | The following options configure the database and table that store job
+    | batching information. These options can be updated to any database
+    | connection and table which has been defined by your application.
+    |
+    */
+
+    'batching' => [
+        'database' => env('DB_CONNECTION', 'sqlite'),
+        'table' => 'job_batches',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failed Queue Jobs
+    |--------------------------------------------------------------------------
+    |
+    | These options configure the behavior of failed queue job logging so you
+    | can control how and where failed jobs are stored. Laravel ships with
+    | support for storing failed jobs in a simple file or in a database.
+    |
+    | Supported drivers: "database-uuids", "dynamodb", "file", "null"
+    |
+    */
+
+    'failed' => [
+        'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
+        'database' => env('DB_CONNECTION', 'sqlite'),
+        'table' => 'failed_jobs',
+    ],
+
+];

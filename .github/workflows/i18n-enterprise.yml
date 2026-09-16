@@ -1,0 +1,116 @@
+name: I18N Enterprise
+
+on:
+  pull_request:
+    paths:
+      - 'shared/i18n/**'
+      - 'front/mobile_apps/leopardo_core/lib/l10n/**'
+      - 'front/mobile_apps/leopardo_employee/lib/**'
+      - 'front/mobile_apps/leopardo_manager/lib/**'
+      - 'front/mobile_apps/leopardo_platform_admin/lib/**'
+      - 'front/mobile_apps/leopardo_hr/lib/**'
+      - 'front/admin-dashboard/src/**'
+      - 'front/web/src/lib/i18n/**'             # client Next.js
+      - 'front/web/src/app/**'
+      - 'front/web/src/modules/**'
+      - 'front/zkteco-kiosk/**'
+      - 'api/lang/**'
+      - 'api/resources/views/pdf/**'
+      - 'api/resources/views/emails/**'
+      - '.github/workflows/i18n-enterprise.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'shared/i18n/**'
+      - 'front/mobile_apps/leopardo_core/lib/l10n/**'
+      - 'front/mobile_apps/leopardo_employee/lib/**'
+      - 'front/mobile_apps/leopardo_manager/lib/**'
+      - 'front/mobile_apps/leopardo_platform_admin/lib/**'
+      - 'front/mobile_apps/leopardo_hr/lib/**'
+      - 'front/admin-dashboard/src/**'
+      - 'front/web/src/lib/i18n/**'
+      - 'front/web/src/app/**'
+      - 'front/web/src/modules/**'
+      - 'front/zkteco-kiosk/**'
+      - 'api/lang/**'
+      - 'api/resources/views/pdf/**'
+      - 'api/resources/views/emails/**'
+      - '.github/workflows/i18n-enterprise.yml'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: i18n-enterprise-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-and-sync:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20'
+
+      - name: Check i18n catalog parity (backend/web/mobile ×4 langues)
+        # Garde consolidée #7089 (RETEX L-10) : une clé ajoutée dans une seule
+        # langue casse les 3 autres publics — parité fr/en/ar/tr sur api/lang,
+        # shared/i18n/locales et les ARB de leopardo_core. Bloquant sur toute
+        # PR touchant les catalogues (déclencheurs paths ci-dessus).
+        run: bash dev-hub/tools/check-i18n-catalog-parity.sh
+
+      - name: Validate shared catalogs
+        run: node shared/i18n/validators/validate.js
+
+      - name: Sync mobile catalogs
+        run: node shared/i18n/sync/sync-mobile.js
+
+      - name: Sync web catalogs
+        run: node shared/i18n/sync/sync-web.js
+
+      - name: Sync backend catalogs
+        run: node shared/i18n/sync/sync-backend.js
+
+      - name: Check generated files are committed
+        run: git diff --exit-code
+
+  # PA2-I18N-014 (second half of the DoD, paired with PA2-I18N-015): a
+  # blocking check that fails a PR diff introducing a NEW hardcoded
+  # user-visible string on the risk surfaces this workflow now triggers on
+  # (mobile employee/manager/platform_admin, kiosk, admin-dashboard, web
+  # app/modules, API PDF/email views). Only ADDED lines are inspected, so
+  # pre-existing debt (tracked separately by dev-hub/tools/i18n-debt.js,
+  # PA2-I18N-015) never blocks unrelated PRs — this only prevents the debt
+  # from growing.
+  check-new-hardcoded-strings:
+    timeout-minutes: 15
+    name: I18N — No new hardcoded strings (diff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20'
+
+      - name: Check diff for new hardcoded user-visible strings
+        run: node dev-hub/tools/check-i18n-diff.js "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"

@@ -1,0 +1,177 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Planning\Interfaces\Api\V1\Controllers;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Infrastructure\Services\TenantCacheService;
+use App\Http\Controllers\Controller;
+use App\Http\Resources\Api\V1\ScheduleResource;
+use App\Modules\Planning\Application\Actions\CreateSchedule;
+use App\Modules\Planning\Application\Actions\DeleteSchedule;
+use App\Modules\Planning\Application\Actions\UpdateSchedule;
+use App\Modules\Planning\Domain\Models\Schedule;
+use App\Modules\Planning\Interfaces\Api\V1\Requests\AssignScheduleEmployeesRequest;
+use App\Modules\Planning\Interfaces\Api\V1\Requests\StoreScheduleRequest;
+use App\Modules\Planning\Interfaces\Api\V1\Requests\UpdateScheduleRequest;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+
+class ScheduleController extends Controller
+{
+    public function __construct(
+        private readonly TenantCacheService $tenantCache,
+        private readonly CreateSchedule $createSchedule,
+        private readonly UpdateSchedule $updateSchedule,
+        private readonly DeleteSchedule $deleteSchedule,
+    ) {}
+
+    public function index(Request $request): AnonymousResourceCollection
+    {
+        /** @var Employee $user */
+        $user = $request->user();
+        if (! $user->isManager()) {
+            abort(403);
+        }
+
+        $schedules = $this->tenantCache->rememberSchedules(
+            (string) $user->company_id,
+            fn () => Schedule::query()
+                ->select([
+                    'id',
+                    'company_id',
+                    'name',
+                    'start_time',
+                    'end_time',
+                    'break_minutes',
+                    'break_rules',
+                    'work_days',
+                    'rest_days',
+                    'leave_rules',
+                    'assignment_notes',
+                    'late_tolerance_minutes',
+                    'overtime_threshold_daily',
+                    'overtime_threshold_weekly',
+                    'is_default',
+                    'created_at',
+                    'updated_at',
+                ])
+                ->orderBy('name')
+                ->get()
+        );
+
+        return ScheduleResource::collection($schedules);
+    }
+
+    public function store(StoreScheduleRequest $request): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        // Sécurité #2217 : alignement sur index/show/destroy — l'écriture des
+        // plannings est réservée aux managers.
+        abort_unless($actor->isManager(), 403);
+
+        $schedule = $this->createSchedule->execute($actor, $request->validated());
+
+        return (new ScheduleResource($schedule))
+            ->response()
+            ->setStatusCode(201);
+    }
+
+    public function show(Request $request, Schedule $schedule): ScheduleResource
+    {
+        /** @var Employee $user */
+        $user = $request->user();
+        if (! $user->isManager()) {
+            abort(403);
+        }
+
+        return new ScheduleResource($schedule);
+    }
+
+    public function update(UpdateScheduleRequest $request, Schedule $schedule): ScheduleResource
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        // Sécurité #2217 : alignement sur index/show/destroy — l'écriture des
+        // plannings est réservée aux managers.
+        abort_unless($actor->isManager(), 403);
+
+        $schedule = $this->updateSchedule->execute($actor, $schedule, $request->validated());
+
+        return new ScheduleResource($schedule);
+    }
+
+    public function assignEmployees(AssignScheduleEmployeesRequest $request, Schedule $schedule): JsonResponse
+    {
+        /** @var Employee $actor */
+        $actor = $request->user();
+        // Sécurité #2217 : l'affectation d'employés à un planning est une
+        // écriture réservée aux managers.
+        abort_unless($actor->isManager(), 403);
+
+        if ((string) $schedule->company_id !== (string) $actor->company_id) {
+            abort(404);
+        }
+
+        /** @var array<int, int> $employeeIds */
+        $employeeIds = array_values(
+            array_unique(array_map('intval', $request->validated('employee_ids')))
+        );
+        $employees = Employee::query()
+            ->where('company_id', $actor->company_id)
+            ->when(
+                $actor->isTeamScoped(),
+                // manager_role=dept can only assign schedules to employees in their own
+                // department (PA2-SEC-002); manager_role=superviseur only to their own
+                // directly assigned team (PA2-SEC-003). Fail closed when the actor has
+                // no assigned scope.
+                fn ($query) => $query->visibleToManager($actor)
+            )
+            ->whereIn('id', $employeeIds)
+            ->get(['id']);
+
+        if ($employees->count() !== count($employeeIds)) {
+            return response()->json([
+                'message' => 'Some employees cannot receive this schedule.',
+                'errors' => [
+                    'employee_ids' => ['Only employees from the current company can be assigned.'],
+                ],
+            ], 422);
+        }
+
+        Employee::query()
+            ->where('company_id', $actor->company_id)
+            ->whereIn('id', $employeeIds)
+            ->update(['schedule_id' => $schedule->id]);
+
+        $this->tenantCache->invalidateEmployees((string) $actor->company_id);
+
+        return response()->json([
+            'data' => [
+                'schedule' => new ScheduleResource($schedule->fresh()),
+                'assigned_count' => count($employeeIds),
+                'employee_ids' => $employeeIds,
+            ],
+        ]);
+    }
+
+    public function destroy(Request $request, Schedule $schedule): JsonResponse
+    {
+        /** @var Employee $user */
+        $user = $request->user();
+        if (! $user->isManager()) {
+            abort(403);
+        }
+        if ($schedule->is_default) {
+            abort(422, 'SCHEDULE_DEFAULT_DELETE_FORBIDDEN');
+        }
+
+        $this->deleteSchedule->execute($user, $schedule);
+
+        // #4812 : littéral EN déplacé au catalogue errors.*
+        return response()->json(['message' => __('errors.SCHEDULE_DELETED')]);
+    }
+}

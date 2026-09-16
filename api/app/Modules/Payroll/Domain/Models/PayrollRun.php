@@ -1,0 +1,153 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Payroll\Domain\Models;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Shared\Traits\BelongsToCompany;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
+
+/**
+ * @property int $id
+ * @property string|null $company_id
+ * @property Carbon $period_start
+ * @property Carbon $period_end
+ * @property string $country_code
+ * @property string|null $correlation_id
+ * @property string|null $rules_version
+ * @property Carbon|null $rules_period
+ * @property string|null $rules_identifier
+ * @property string $status
+ * @property float $total_gross
+ * @property float $total_deductions
+ * @property float $total_net
+ * @property float $total_employer_cost
+ * @property int $employee_count
+ * @property Carbon|null $calculated_at
+ * @property string|null $validated_by
+ * @property Carbon|null $validated_at
+ * @property Carbon|null $paid_at
+ * @property string|null $locked_by
+ * @property Carbon|null $locked_at
+ * @property string|null $notes
+ * @property string $type
+ * @property int|null $original_run_id
+ * @property string|null $reason
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ *
+ * @mixin Builder<static>
+ */
+class PayrollRun extends Model
+{
+    public const STATUS_DRAFT = 'draft';
+
+    public const STATUS_CALCULATING = 'calculating';
+
+    public const STATUS_PROCESSING = 'processing'; // async batch job in progress
+
+    public const STATUS_CALCULATED = 'calculated';
+
+    public const STATUS_VALIDATED = 'validated';
+
+    public const STATUS_PAID = 'paid';
+
+    public const STATUS_LOCKED = 'locked';
+
+    public const STATUS_CANCELLED = 'cancelled';
+
+    public const STATUS_ERROR = 'error'; // async batch job failed
+
+    public const TYPE_STANDARD = 'standard';
+
+    public const TYPE_REGULARIZATION = 'regularization';
+
+    use BelongsToCompany;
+
+    protected $fillable = [
+        'company_id', 'period_start', 'period_end', 'country_code',
+        'correlation_id',
+        'rules_version', 'rules_period', 'rules_identifier', 'status',
+        'total_gross', 'total_deductions', 'total_net', 'total_employer_cost',
+        'employee_count', 'calculated_at', 'validated_by', 'validated_at',
+        'paid_at', 'locked_by', 'locked_at', 'notes',
+        'type', 'original_run_id', 'reason',
+    ];
+
+    protected $casts = [
+        'period_start' => 'date',
+        'period_end' => 'date',
+        'rules_period' => 'date',
+        'total_gross' => 'float',
+        'total_deductions' => 'float',
+        'total_net' => 'float',
+        'total_employer_cost' => 'float',
+        'employee_count' => 'integer',
+        'calculated_at' => 'datetime',
+        'validated_at' => 'datetime',
+        'paid_at' => 'datetime',
+        'locked_at' => 'datetime',
+    ];
+
+    /** @return HasMany<PaySlip, $this> */
+    public function paySlips(): HasMany
+    {
+        return $this->hasMany(PaySlip::class, 'payroll_run_id');
+    }
+
+    /** @return BelongsTo<Employee, $this> */
+    public function validatedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'validated_by');
+    }
+
+    /** @return HasMany<BankExport, $this> */
+    public function bankExports(): HasMany
+    {
+        return $this->hasMany(BankExport::class, 'payroll_run_id');
+    }
+
+    /** @return HasMany<PayrollRun, $this> */
+    public function regularizations(): HasMany
+    {
+        return $this->hasMany(PayrollRun::class, 'original_run_id');
+    }
+
+    /** @return BelongsTo<PayrollRun, $this> */
+    public function originalRun(): BelongsTo
+    {
+        return $this->belongsTo(PayrollRun::class, 'original_run_id');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeDraft(Builder $query): Builder
+    {
+        return $query->where('status', 'draft');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeCalculated(Builder $query): Builder
+    {
+        return $query->where('status', 'calculated');
+    }
+
+    /**
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeValidated(Builder $query): Builder
+    {
+        return $query->where('status', 'validated');
+    }
+}

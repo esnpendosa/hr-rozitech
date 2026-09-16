@@ -1,0 +1,106 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Core\Auth\Domain\Models;
+
+use App\Core\Tenant\Domain\Models\CompanyRequest;
+use App\Modules\HR\Domain\Models\UserEmployeeLink;
+use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Carbon;
+use Laravel\Sanctum\HasApiTokens;
+
+/**
+ * @property int $id
+ * @property string $first_name
+ * @property string $last_name
+ * @property string $email
+ * @property string|null $phone
+ * @property string|null $password_hash
+ * @property string|null $google_id
+ * @property string|null $avatar_url
+ * @property string $provider
+ * @property string $preferred_language
+ * @property string $status
+ * @property list<string> $personal_statuses Statuts cumulables : student, employee, entrepreneur, seeking_employment
+ * @property Carbon|null $email_verified_at
+ * @property Carbon|null $last_login_at
+ * @property int $failed_login_attempts
+ * @property Carbon|null $locked_until
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @mixin \Illuminate\Database\Eloquent\Builder
+ * @method static \Illuminate\Database\Eloquent\Builder<static> query()
+ * @method static static create(array<string, mixed> $attributes = [])
+ * @method static static|null find(mixed $id, array<int, string> $columns = ['*'])
+ * @method static static findOrFail(mixed $id, array<int, string> $columns = ['*'])
+ * @method static static|null first()
+ * @method static static firstOrCreate(array<string, mixed> $attributes, array<string, mixed> $values = [])
+ * @method static \Illuminate\Database\Eloquent\Builder<static> where(string|\Closure|array<mixed> $column, mixed $operator = null, mixed $value = null, string $boolean = 'and')
+ */
+class User extends Authenticatable
+{
+    use \Illuminate\Database\Eloquent\Factories\HasFactory;
+    use HasApiTokens;
+
+    protected $table = 'users';
+
+    /**
+     * Resolve the factory for this model explicitly since it lives
+     * outside the default App\Models namespace.
+     */
+    protected static function newFactory(): UserFactory
+    {
+        return UserFactory::new();
+    }
+
+    protected $fillable = [
+        'first_name',
+        'last_name',
+        'email',
+        'phone',
+        'google_id',
+        'avatar_url',
+        'provider',
+        'preferred_language',
+        'last_login_at',
+        'personal_statuses', // #5540 — statuts multi-rôles
+    ];
+
+    protected $hidden = [
+        'password_hash',
+    ];
+
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'last_login_at' => 'datetime',
+        'locked_until' => 'datetime',
+        'failed_login_attempts' => 'integer',
+        'personal_statuses' => 'array', // #5540 — tableau JSON
+    ];
+
+    public function getAuthPassword(): string
+    {
+        return $this->password_hash ?? '';
+    }
+
+    public function fullName(): string
+    {
+        return trim("{$this->first_name} {$this->last_name}");
+    }
+
+    /** @return HasMany<CompanyRequest, $this> */
+    public function companyRequests(): HasMany
+    {
+        return $this->hasMany(CompanyRequest::class, 'user_id');
+    }
+
+    /** @return HasMany<UserEmployeeLink, $this> */
+    public function employeeLinks(): HasMany
+    {
+        return $this->hasMany(UserEmployeeLink::class, 'user_id');
+    }
+}
+

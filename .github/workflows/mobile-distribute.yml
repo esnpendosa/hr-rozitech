@@ -1,0 +1,349 @@
+name: Mobile - Build and Firebase Distribution
+
+on:
+  # Main pushes are handled exclusively by mobile-distribute-main.yml.
+  # Keep tag releases here so staging/prod tag distribution remains available.
+  push:
+    # #4724 (audit 360°) : release.yml ne crée que des tags vX.Y.Z (semver,
+    # sans suffixe) — le pattern v*-prod ne matchait jamais → chemin prod mort.
+    # v* couvre désormais vX.Y.Z (release → prod), vX.Y.Z-staging et vX.Y.Z-prod.
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Cible de deploiement"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - prod
+      release_notes:
+        description: "Notes de version (optionnel)"
+        required: false
+        type: string
+        default: "Build manuel Leopardo RH"
+      app:
+        description: "Application mobile a distribuer"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - employee
+          - manager
+          - platform_admin
+          - hr
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: mobile-distribute-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-distribute:
+    timeout-minutes: 120
+    name: Mobile Android Build + Distribution (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: employee
+            project_path: front/mobile_apps/leopardo_employee
+            artifact_name: leopardo-employee
+            version_prefix: employee
+            firebase_secret: FIREBASE_EMPLOYEE_ANDROID_APP_ID
+            android_package: com.leopardo.employee
+          - name: manager
+            project_path: front/mobile_apps/leopardo_manager
+            artifact_name: leopardo-manager
+            version_prefix: manager
+            firebase_secret: FIREBASE_MANAGER_ANDROID_APP_ID
+            android_package: com.leopardo.manager
+          - name: platform_admin
+            project_path: front/mobile_apps/leopardo_platform_admin
+            artifact_name: leopardo-platform-admin
+            version_prefix: platform-admin
+            firebase_secret: FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID
+            android_package: com.leopardo.platformadmin
+          - name: hr
+            project_path: front/mobile_apps/leopardo_hr
+            artifact_name: leopardo-hr
+            version_prefix: hr
+            # #4343 : secret dédié documenté (docs/CI_CD_SECRETS.md) ; fallback
+            # générique conservé tant que FIREBASE_APP_ID_HR n'existe pas.
+            firebase_secret: FIREBASE_APP_ID_HR
+            android_package: com.leopardo.rh
+
+    steps:
+      - name: Guard DEV_API_BASE_URL (#4524)
+        shell: bash
+        run: |
+          if [[ -z "${{ vars.DEV_API_BASE_URL }}" ]]; then
+            echo "::error::DEV_API_BASE_URL must be set (fail-open fallback removed, issue #4524)."
+            exit 1
+          fi
+          echo "DEV_API_BASE_URL=${{ vars.DEV_API_BASE_URL }}"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Resolve selected app
+        shell: bash
+        run: |
+          set -euo pipefail
+          SELECTED="${{ github.event.inputs.app || 'both' }}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${SELECTED}" != "both" && "${SELECTED}" != "${{ matrix.app.name }}" ]]; then
+            echo "SHOULD_BUILD=false" >> "$GITHUB_ENV"
+            echo "Skipping ${{ matrix.app.name }} because input app=${SELECTED}"
+          else
+            echo "SHOULD_BUILD=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup Flutter + Java
+        if: env.SHOULD_BUILD == 'true'
+        uses: ./.github/actions/setup-flutter-android
+
+      - name: Resolve target environment
+        if: env.SHOULD_BUILD == 'true'
+        id: env_detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-}"
+          INPUT_ENV="${{ github.event.inputs.environment }}"
+          APP_VERSION_PREFIX="${{ matrix.app.version_prefix }}"
+
+          if [[ "$TAG" == *"-prod" ]]; then
+            TARGET="prod"
+            BUILD_NAME="${APP_VERSION_PREFIX}-${TAG%-prod}"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # #4724 : tag de release semver nu (créé par release.yml) → prod.
+            TARGET="prod"
+            BUILD_NAME="${APP_VERSION_PREFIX}-${TAG}"
+          elif [[ "$TAG" == *"-staging" ]]; then
+            TARGET="staging"
+            BUILD_NAME="${APP_VERSION_PREFIX}-${TAG%-staging}"
+          elif [[ "$INPUT_ENV" == "prod" ]]; then
+            TARGET="prod"
+            BUILD_NAME="${APP_VERSION_PREFIX}-manual-$(date +%Y%m%d)"
+          # #4526 : la branche push→main était morte (on: ne déclenche que des
+          # tags v* + workflow_dispatch depuis la scission vers
+          # mobile-distribute-main.yml) — le fallback else couvre déjà ce cas.
+          else
+            TARGET="staging"
+            BUILD_NAME="${APP_VERSION_PREFIX}-manual-$(date +%Y%m%d)"
+          fi
+
+          {
+            echo "TARGET=$TARGET"
+            echo "BUILD_NAME=$BUILD_NAME"
+            echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}"
+          } >> "$GITHUB_ENV"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+      - name: Validate required secrets for staging distribution
+        if: env.SHOULD_BUILD == 'true' && env.TARGET == 'staging'
+        shell: bash
+        # actions/excessive-secrets-exposure: dynamic secrets[matrix.app.firebase_secret]
+        # lookups make the runner receive every org/repo secret because GitHub
+        # cannot statically tell which one will be read. The static ternary below
+        # only ever resolves to one literal `secrets.NAME` reference per matrix
+        # value, so only the 4 Firebase app-id secrets (plus FIREBASE_TOKEN) are
+        # exposed to this job, matching the CodeQL rule's own "Correct Usage"
+        # example (per-branch literal secret access instead of dynamic indexing).
+        env:
+          FIREBASE_APP_ID: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_APP_ID_SECRET_NAME: ${{ matrix.app.firebase_secret }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FIREBASE_APP_ID}" ]]; then
+            echo "Missing GitHub secret: ${FIREBASE_APP_ID_SECRET_NAME}"
+            exit 1
+          fi
+          if [[ -z "${FIREBASE_TOKEN}" ]]; then
+            echo "Missing GitHub secret: FIREBASE_TOKEN"
+            exit 1
+          fi
+
+      - name: Validate app Firebase config presence
+        if: env.SHOULD_BUILD == 'true'
+        shell: bash
+        # actions/excessive-secrets-exposure: see rationale on the
+        # "Validate required secrets for staging distribution" step above.
+        env:
+          PROJECT_PATH: ${{ matrix.app.project_path }}
+          APP_NAME: ${{ matrix.app.name }}
+          ANDROID_PACKAGE: ${{ matrix.app.android_package }}
+          FIREBASE_APP_ID: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          FIREBASE_APP_ID_SECRET_NAME: ${{ matrix.app.firebase_secret }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          CONFIG_FILE="${PROJECT_PATH}/android/app/google-services.json"
+          if [[ -n "${GOOGLE_SERVICES_JSON}" ]]; then
+            mkdir -p "$(dirname "${CONFIG_FILE}")"
+            printf '%s' "${GOOGLE_SERVICES_JSON}" > "${CONFIG_FILE}"
+            echo "Firebase config restaurée depuis le secret (issue #1467)."
+          fi
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "Missing Firebase config: ${CONFIG_FILE}"
+            echo "Run dev-hub/tools/install-mobile-firebase-configs.ps1 with matching Firebase app IDs."
+            exit 1
+          fi
+          node <<'NODE'
+          const fs = require('fs');
+          const configFile = `${process.env.PROJECT_PATH}/android/app/google-services.json`;
+          const expectedPackage = process.env.ANDROID_PACKAGE;
+          const expectedAppId = process.env.FIREBASE_APP_ID;
+          const secretName = process.env.FIREBASE_APP_ID_SECRET_NAME;
+          const payload = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+          const clients = Array.isArray(payload.client) ? payload.client : [];
+          const match = clients.find((client) => client?.client_info?.android_client_info?.package_name === expectedPackage);
+          if (!match) {
+            console.error(`No Firebase Android client found for ${expectedPackage} in ${configFile}.`);
+            process.exit(1);
+          }
+          const nativeAppId = match?.client_info?.mobilesdk_app_id;
+          if (!nativeAppId) {
+            console.error(`Firebase Android client for ${expectedPackage} does not expose mobilesdk_app_id.`);
+            process.exit(1);
+          }
+          if (nativeAppId !== expectedAppId) {
+            console.error(`${secretName} does not match ${configFile} for ${expectedPackage}.`);
+            console.error(`Expected the secret to equal the google-services.json mobilesdk_app_id for this app.`);
+            process.exit(1);
+          }
+          console.log(`Firebase target verified for ${process.env.APP_NAME}: ${expectedPackage}.`);
+          NODE
+          {
+            echo "### Firebase target - ${APP_NAME}"
+            echo "- Android package: \`${ANDROID_PACKAGE}\`"
+            echo "- Native config: \`${CONFIG_FILE}\`"
+            echo "- Console: https://console.firebase.google.com/project/leopardo-rh/appdistribution/app/android:${ANDROID_PACKAGE}/releases"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Flutter pub get
+        if: env.SHOULD_BUILD == 'true'
+        working-directory: ${{ matrix.app.project_path }}
+        run: flutter pub get
+
+      - name: Regenerate core generated files (l10n + codegen)
+        # #6590 : fichiers générés non commités — régénérés avant analyze et
+        # build release (le package core est compilé par chaque app).
+        if: env.SHOULD_BUILD == 'true'
+        working-directory: front/mobile_apps/leopardo_core
+        run: |
+          flutter pub get
+          flutter gen-l10n
+          dart run build_runner build
+
+      - name: Flutter analyze
+        if: env.SHOULD_BUILD == 'true'
+        working-directory: ${{ matrix.app.project_path }}
+        # #4724 (audit 360°) : gate aligné sur mobile-apps-ci (strict —
+        # les infos bloquantes en CI étaient acceptées dans la distribution).
+        run: flutter analyze
+
+      - name: Build release binary
+        if: env.SHOULD_BUILD == 'true'
+        working-directory: ${{ matrix.app.project_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${TARGET}" == "prod" ]]; then
+            # #3905 : api.leopardo-rh.com ne résout pas (NXDOMAIN, cf. #3452) —
+            # les builds prod pointaient vers un backend mort. URL canonique
+            # partagée (api_client.dart, deploy-main.yml, docs/DEMO_ACCOUNTS.md).
+            # À basculer vers le domaine acheté une fois résolu (épic #3766).
+            echo "API_BASE_URL=${{ vars.DEV_API_BASE_URL }}" > .env.build
+            flutter build appbundle --release \
+              --dart-define-from-file=.env.build \
+              --build-name="${BUILD_NAME}" \
+              --build-number="${BUILD_NUMBER}"
+            echo "BUILD_FILE=${{ matrix.app.project_path }}/build/app/outputs/bundle/release/app-release.aab" >> "$GITHUB_ENV"
+          else
+            echo "API_BASE_URL=${{ vars.DEV_API_BASE_URL }}" > .env.build
+            flutter build apk --release \
+              --dart-define-from-file=.env.build \
+              --build-name="${BUILD_NAME}" \
+              --build-number="${BUILD_NUMBER}"
+            echo "BUILD_FILE=${{ matrix.app.project_path }}/build/app/outputs/flutter-apk/app-release.apk" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify build output exists
+        if: env.SHOULD_BUILD == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${BUILD_FILE}"
+
+      - name: Rename build output with a per-app identifiable filename
+        # PA2-MOB-001: Flutter always names the raw build output
+        # "app-release.apk"/"app-release.aab" regardless of which of the 4
+        # mobile apps produced it, so a build downloaded from this workflow's
+        # artifact list or from Firebase App Distribution was previously
+        # indistinguishable from any other app's build once renamed by hand.
+        # Renaming (not copying) the file in place, then repointing
+        # BUILD_FILE at the new path, keeps every downstream step (Firebase
+        # distribution upload, artifact upload) working unchanged while
+        # giving the artifact a name like
+        # "leopardo-employee-employee-main-42.apk".
+        if: env.SHOULD_BUILD == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTENSION="${BUILD_FILE##*.}"
+          RENAMED_FILE="$(dirname "${BUILD_FILE}")/${{ matrix.app.artifact_name }}-${BUILD_NAME}.${EXTENSION}"
+          mv "${BUILD_FILE}" "${RENAMED_FILE}"
+          echo "BUILD_FILE=${RENAMED_FILE}" >> "$GITHUB_ENV"
+          echo "Renamed build output to $(basename "${RENAMED_FILE}")"
+
+      - name: Upload mobile artifact
+        if: env.SHOULD_BUILD == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.app.artifact_name }}-${{ env.TARGET }}-${{ env.BUILD_NAME }}
+          path: ${{ env.BUILD_FILE }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Firebase App Distribution (staging)
+        if: env.SHOULD_BUILD == 'true' && env.TARGET == 'staging'
+        uses: wzieba/Firebase-Distribution-Github-Action@bd494989dd4bec0343f78adee87fe66e48279ad6 # v1.7.1
+        # actions/excessive-secrets-exposure: see rationale on the
+        # "Validate required secrets for staging distribution" step above.
+        with:
+          appId: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          token: ${{ secrets.FIREBASE_TOKEN }}
+          groups: testeurs-internes
+          file: ${{ env.BUILD_FILE }}
+          releaseNotes: |
+            Leopardo ${{ matrix.app.name }} ${{ env.BUILD_NAME }}
+            Ref: ${{ github.ref_name }}
+            Notes: ${{ github.event.inputs.release_notes || 'Tag build' }}
+            Backend: ${{ vars.DEV_API_BASE_URL }}
+
+      - name: Verify Firebase App Distribution release is visible
+        if: env.SHOULD_BUILD == 'true' && env.TARGET == 'staging'
+        shell: bash
+        # actions/excessive-secrets-exposure: see rationale on the
+        # "Validate required secrets for staging distribution" step above.
+        env:
+          FIREBASE_APP_ID: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_READBACK_REQUIRED: ${{ secrets.FIREBASE_READBACK_REQUIRED }}
+          APP_NAME: ${{ matrix.app.name }}
+          BUILD_NUMBER: ${{ env.BUILD_NUMBER }}
+        run: bash dev-hub/tools/verify-firebase-readback.sh

@@ -1,0 +1,222 @@
+name: Mobile Distribute - Main
+
+# Security fix (CodeQL actions/untrusted-checkout/critical - Issue #1396, Alert #29):
+# The previous `distribute-mobile` job inside deploy-main.yml was triggered via
+# `workflow_run` (a privileged context that receives org/repo secrets) and then
+# checked out `needs.prepare.outputs.sha` — a SHA derived from an external
+# workflow_run event. CodeQL's static dataflow analysis correctly flagged this as
+# an untrusted checkout in a secrets-bearing context, because it could not
+# statically verify the cross-job `prepare` validation.
+#
+# Fix (Option A from Issue #1396): moved mobile distribution into this dedicated
+# workflow triggered by `push: [main]` scoped to mobile paths. There is no
+# external SHA to validate: `github.sha` is always the verified push commit
+# on the protected `main` branch — the exact guarantee that CodeQL requires.
+# The `workflow_run` dependency is replaced by a `workflow_call` from
+# `mobile-distribute.yml` (manual) or this direct push trigger.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'front/mobile_apps/**'
+      - '.github/workflows/mobile-distribute-main.yml'
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'App to distribute (employee|manager|platform_admin|hr|all)'
+        required: false
+        default: 'all'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mobile-distribute-main-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEFAULT_API_BASE_URL: ${{ vars.DEV_API_BASE_URL }}
+
+jobs:
+  distribute-mobile:
+    timeout-minutes: 120
+    name: Distribute ${{ matrix.app.name }} to Firebase
+    runs-on: ubuntu-latest
+    # #4622 : filtre workflow_dispatch réellement bloquant (l'ancien step
+    # « exit 0 » ne sautait rien : les 4 apps étaient buildées ET distribuées
+    # Firebase même avec app=employee).
+    env:
+      SHOULD_BUILD: ${{ github.event_name != 'workflow_dispatch' || inputs.app == 'all' || inputs.app == matrix.app.name }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: employee
+            project_path: front/mobile_apps/leopardo_employee
+            artifact_name: leopardo-employee-staging
+            version_prefix: employee
+            firebase_secret: FIREBASE_EMPLOYEE_ANDROID_APP_ID
+            android_package: com.leopardo.employee
+          - name: manager
+            project_path: front/mobile_apps/leopardo_manager
+            artifact_name: leopardo-manager-staging
+            version_prefix: manager
+            firebase_secret: FIREBASE_MANAGER_ANDROID_APP_ID
+            android_package: com.leopardo.manager
+          - name: platform_admin
+            project_path: front/mobile_apps/leopardo_platform_admin
+            artifact_name: leopardo-platform-admin-staging
+            version_prefix: platform-admin
+            firebase_secret: FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID
+            android_package: com.leopardo.platformadmin
+          # QA 2026-08-15 (#2661) : leopardo_hr manquait dans la matrice de
+          # distribution staging (parité avec mobile-distribute.yml).
+          - name: hr
+            project_path: front/mobile_apps/leopardo_hr
+            artifact_name: leopardo-hr-staging
+            version_prefix: hr
+            # #4343 : secret dédié documenté (docs/CI_CD_SECRETS.md) ; le
+            # fallback générique reste actif tant que FIREBASE_APP_ID_HR n'est
+            # pas créé dans les secrets du repo.
+            firebase_secret: FIREBASE_APP_ID_HR
+            android_package: com.leopardo.rh
+
+    steps:
+      - name: Guard DEV_API_BASE_URL (#4524)
+        shell: bash
+        run: |
+          if [[ -z "${{ vars.DEV_API_BASE_URL }}" ]]; then
+            echo "::error::DEV_API_BASE_URL must be set (fail-open fallback removed, issue #4524)."
+            exit 1
+          fi
+          echo "DEV_API_BASE_URL=${{ vars.DEV_API_BASE_URL }}"
+
+      # Security note (CodeQL actions/untrusted-checkout fix):
+      # `github.sha` here is always the verified commit on the protected `main` branch —
+      # no cross-job SHA propagation from a `workflow_run` event. This eliminates the
+      # untrusted-checkout class entirely (no external SHA to validate).
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Resolve Firebase distribution readiness
+        id: firebase_ready
+        shell: bash
+        # actions/excessive-secrets-exposure: static ternary — only one literal
+        # `secrets.NAME` reference is evaluated per matrix entry. No dynamic indexing.
+        env:
+          FIREBASE_APP_ID: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_APP_ID_SECRET_NAME: ${{ matrix.app.firebase_secret }}
+          PROJECT_PATH: ${{ matrix.app.project_path }}
+          APP_NAME: ${{ matrix.app.name }}
+          ANDROID_PACKAGE: ${{ matrix.app.android_package }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          READY=true
+          if [[ -z "${FIREBASE_APP_ID}" ]]; then
+            echo "Missing GitHub secret: ${FIREBASE_APP_ID_SECRET_NAME}. Skipping ${{ matrix.app.name }} Firebase distribution."
+            READY=false
+          fi
+          if [[ -z "${FIREBASE_TOKEN}" ]]; then
+            echo "Missing GitHub secret: FIREBASE_TOKEN. Skipping ${{ matrix.app.name }} Firebase distribution."
+            READY=false
+          fi
+          CONFIG_FILE="${PROJECT_PATH}/android/app/google-services.json"
+          if [[ -n "${GOOGLE_SERVICES_JSON}" ]]; then
+            mkdir -p "$(dirname "${CONFIG_FILE}")"
+            printf '%s' "${GOOGLE_SERVICES_JSON}" > "${CONFIG_FILE}"
+            echo "Firebase config restaurée depuis le secret (issue #1467)."
+          fi
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "Missing Firebase config: ${CONFIG_FILE}. Skipping ${{ matrix.app.name }} Firebase distribution."
+            READY=false
+          fi
+          if [[ "${READY}" == "true" ]]; then
+            # shellcheck disable=SC2016
+            node -e 'const fs=require("fs");const configFile=`${process.env.PROJECT_PATH}/android/app/google-services.json`;const expectedPackage=process.env.ANDROID_PACKAGE;const expectedAppId=process.env.FIREBASE_APP_ID;const secretName=process.env.FIREBASE_APP_ID_SECRET_NAME;const payload=JSON.parse(fs.readFileSync(configFile,"utf8"));const clients=Array.isArray(payload.client)?payload.client:[];const match=clients.find((c)=>c?.client_info?.android_client_info?.package_name===expectedPackage);if(!match){console.error(`No Firebase Android client found for ${expectedPackage} in ${configFile}.`);process.exit(1);}const nativeAppId=match?.client_info?.mobilesdk_app_id;if(!nativeAppId){console.error(`Firebase Android client for ${expectedPackage} does not expose mobilesdk_app_id.`);process.exit(1);}if(nativeAppId!==expectedAppId){console.error(`${secretName} does not match ${configFile} for ${expectedPackage}.`);console.error("Expected the secret to equal the google-services.json mobilesdk_app_id for this app.");process.exit(1);}console.log(`Firebase target verified for ${process.env.APP_NAME}: ${expectedPackage}.`);'
+            {
+              echo "### Firebase target - ${APP_NAME}"
+              echo "- Android package: \`${ANDROID_PACKAGE}\`"
+              echo "- Native config: \`${CONFIG_FILE}\`"
+              echo "- Console: https://console.firebase.google.com/project/leopardo-rh/appdistribution/app/android:${ANDROID_PACKAGE}/releases"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "MOBILE_DISTRIBUTE_READY=${READY}" >> "$GITHUB_ENV"
+
+      - name: Setup Flutter + Java
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        uses: ./.github/actions/setup-flutter-android
+
+      - name: Flutter pub get
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        working-directory: ${{ matrix.app.project_path }}
+        run: flutter pub get
+
+      - name: Regenerate core generated files (l10n + codegen)
+        # #6590 : fichiers générés non commités — régénérés avant le build
+        # release (le package core est compilé par chaque app).
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        working-directory: front/mobile_apps/leopardo_core
+        run: |
+          flutter pub get
+          flutter gen-l10n
+          dart run build_runner build
+
+      - name: Build release APK for staging
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        working-directory: ${{ matrix.app.project_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "API_BASE_URL=${DEFAULT_API_BASE_URL}" > .env.build
+          flutter build apk --release \
+            --dart-define-from-file=.env.build \
+            --build-name="${{ matrix.app.version_prefix }}-main-${GITHUB_RUN_NUMBER}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+
+      - name: Upload mobile artifact
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.app.artifact_name }}-${{ github.run_number }}
+          path: ${{ matrix.app.project_path }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Firebase App Distribution (staging)
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        uses: wzieba/Firebase-Distribution-Github-Action@bd494989dd4bec0343f78adee87fe66e48279ad6 # v1.7.1
+        with:
+          appId: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          token: ${{ secrets.FIREBASE_TOKEN }}
+          groups: testeurs-internes
+          file: ${{ matrix.app.project_path }}/build/app/outputs/flutter-apk/app-release.apk
+          releaseNotes: |
+            Auto deploy from main - Leopardo ${{ matrix.app.name }}
+            Build: ${{ matrix.app.version_prefix }}-main-${{ github.run_number }}
+            Commit: ${{ github.sha }}
+            Workflow: ${{ github.workflow }}
+            Backend: ${{ vars.DEV_API_BASE_URL }}
+
+      - name: Verify Firebase App Distribution release is visible
+        if: env.MOBILE_DISTRIBUTE_READY == 'true' && env.SHOULD_BUILD == 'true'
+        shell: bash
+        env:
+          FIREBASE_APP_ID: ${{ matrix.app.name == 'employee' && secrets.FIREBASE_EMPLOYEE_ANDROID_APP_ID || matrix.app.name == 'manager' && secrets.FIREBASE_MANAGER_ANDROID_APP_ID || matrix.app.name == 'platform_admin' && secrets.FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID || matrix.app.name == 'hr' && secrets.FIREBASE_APP_ID_HR || secrets.FIREBASE_APP_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_READBACK_REQUIRED: ${{ secrets.FIREBASE_READBACK_REQUIRED }}
+          APP_NAME: ${{ matrix.app.name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash dev-hub/tools/verify-firebase-readback.sh

@@ -1,0 +1,504 @@
+> ⚠️ **MAJ 2026-08-17** : l'arborescence mobile historique `front/mobile/` a été supprimée (PR #754).
+> Les apps vivent sous `front/mobile_apps/*` ; les jobs mobile de CI sont gérés par `mobile-apps-ci.yml`.
+> Les mentions `front/mobile_apps/**` ci-dessous (ex-`front/mobile/**`) sont historiques et ne peuvent plus se déclencher.
+
+> **MAJ 2026-09-13 — BC-27 SHOWCASE (#6862), surface mobile `front/mobile_apps/` touchée
+> par propagation i18n uniquement.** Le lot « Site vitrine — module horizontal de l'espace
+> client » ajoute 51 clés `showcase.*` au catalogue **partagé**
+> (`shared/i18n/locales/*.json`). Ces clés sont propagées par `sync-mobile.js` aux catalogues
+> `front/mobile_apps/leopardo_core/lib/l10n/app_*.arb` — **aucun écran, aucune route ni aucun
+> parcours mobile n'est modifié** : la garde de gouvernance exige néanmoins la mise à jour de ce
+> registre (détection par chemin `front/mobile_apps/`). Les scénarios mobile Flutter existants
+> (`SCENARIOS_TEST_MOBILE_FLUTTER.md`) restent inchangés et valides ; la surface fonctionnelle
+> réellement ajoutée est **web** (`front/web`, page `/showcase` + rendu public `/vitrine/{slug}`).
+
+
+> **MAJ 2026-09-14 — #7339, pagination du portefeuille clients.** Le lot « paginer /
+> cacher / tuer le N+1 » de `GET /platform/companies/health` arrive **après** #7302
+> (PR #7340 mergée `c3cc25c`), qui avait déjà supprimé le N+1 (674 requêtes → 12 pour
+> 45 sociétés) et posé le cache 60 s. Ce lot ne refait donc **pas** le N+1 : il ajoute
+> la **pagination** (`?page=&per_page=`, plafond 100, `limit` conservé comme alias),
+> expose `meta` (`current_page`, `per_page`, `total`, `last_page`, `from`, `to`) et
+> **explicite le défaut 20** de `GET /platform/companies` (`meta.per_page`). Aucune
+> surface web n'est modifiée : la réponse est **additive**, `CompaniesView` /
+> `DashboardView` / `SubscriptionsView` continuent de lire `data.items` / `data.summary`
+> sans changement. Spécification :
+> `docs/specifications/ISSUE_7339_PLATFORM_COMPANIES_HEALTH_PAGINATION.md`. Scénarios
+> API : `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`, section 13. Non-régression :
+> `api/tests/Feature/PlatformCompanyHealthApiTest.php`
+> (`test_portfolio_exposes_page_metadata_and_disjoint_pages`,
+> `test_portfolio_defaults_and_legacy_limit_param_stay_compatible`,
+> `test_portfolio_query_count_does_not_grow_with_company_count` — dont le comptage de
+> requêtes, faussé par un `DB::listen()` jamais retiré, est réparé).
+
+> **MAJ 2026-09-13 — #7302, cause racine de la lenteur du portefeuille clients.** Le lot
+> « le portefeuille ne recalcule plus la santé société par société » supprime le N+1 de
+> `GET /platform/companies/health` (674 requêtes → 12 pour 45 sociétés) et met le résultat en
+> cache 60 s. Le découplage de **l'affichage** (annuaire d'abord, scoring en tâche de fond) a
+> déjà été livré par ailleurs — ce lot n'y revient pas, il ne fait que :
+> `front/admin-dashboard/src/views/companies/CompaniesView.vue` transmet `?refresh=1` au clic sur
+> « Actualiser » (un rafraîchissement explicite ne doit pas resservir une valeur mise en cache) et
+> rafraîchit un commentaire devenu faux (« ~25 s à chaud »). Scénario détaillé :
+> `SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md`, section 12. Non-régression API :
+> `api/tests/Feature/PlatformCompanyHealthApiTest.php`
+> (`test_portfolio_query_count_does_not_grow_with_company_count`,
+> `test_portfolio_and_company_detail_agree_on_shared_metrics`).
+
+> **MAJ 2026-09-13 — déblocage de l'onboarding (#7320), surface web admin touchée
+> par propagation i18n uniquement.** Le lot « création de département et de
+> collaborateur depuis la page Équipe + lien d'action depuis l'assistant »
+> ajoute 4 clés `employees.*` au catalogue **partagé**
+> (`shared/i18n/locales/*.json`). Ces clés sont propagées par `sync-web.js` aux
+> dictionnaires `front/admin-dashboard/src/i18n/locales/` — **aucun écran,
+> aucune route ni aucun parcours admin n'est modifié** : la garde de gouvernance
+> exige néanmoins la mise à jour de ce registre (détection par chemin
+> `front/admin-dashboard/src/`). Les scénarios web admin existants
+> (`SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md`, section « Extension i18n
+> enterprise ») restent inchangés et valides. La surface fonctionnelle
+> réellement modifiée est **web client** (`front/web/src/app/(dashboard)/employees`
+> et `front/web/src/modules/onboarding`).
+
+
+> **MAJ 2026-09-13 — #7300, alignement des progressions d'onboarding.** Le
+> lot « une seule source de vérité pour la progression d'onboarding » modifie la
+> **fiche Entreprise** du back-office (**vraie** évolution d'UI, pas une simple
+> propagation i18n) : la carte Onboarding affiche désormais la progression
+> canonique (`onboarding_steps`) — la même que le client —, « — » quand la
+> checklist n'est pas amorcée, et l'« Adoption terrain » observée en second
+> libellé. Scénario détaillé : `SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md`,
+> section 11. Non-régression API :
+> `api/tests/Feature/Onboarding/OnboardingProgressAlignmentTest.php`.
+
+# REGISTRE DES SCENARIOS DE TESTS
+
+> ⚠️ **MAJ 2026-08-17** : les références à `front/mobile/` ci-dessous sont obsolètes
+> (chemin supprimé par la PR #754 du 2026-06-13). Le chemin actuel est `front/mobile_apps/`
+> (`leopardo_employee`, `leopardo_manager`, `leopardo_hr`, `leopardo_platform_admin`, `leopardo_marketing`).
+
+## Objectif 
+  
+Fournir une source de verite unique  pour savoir:
+
+- quelles surfaces fonctionnelles doivent etre testees
+- dans quel document de scenarios elles sont decrites
+- quel workflow CI les execute
+- quels artefacts doivent etre produits avant un deploiement
+
+## Regle de gouvernance
+
+Toute nouvelle fonctionnalite, extension de parcours critique ou changement de comportement dans:
+
+- `api/`
+- `front/mobile_apps/`
+- `front/admin-dashboard/`
+
+doit mettre a jour:
+
+1. le document de scenarios du domaine
+2. ou ce registre si le domaine, le workflow, les artefacts ou la criticite changent
+
+Le workflow `Governance Gates` bloque la PR si la surface fonctionnelle change sans mise a jour du registre ou du document de scenarios associe.
+
+## Matrice canonique
+
+| Domaine | Base de scenarios | Workflow source de verite | Artefacts minimums | Gate de deploiement |
+|---|---|---|---|---|
+| API backend | `docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md` | `Tests - Leopardo RH` | JUnit unit/feature, logs, quality summary, coverage clover + HTML | Obligatoire |
+| Mobile Flutter | `docs/GESTION_PROJET/SCENARIOS_TEST_MOBILE_FLUTTER.md` | `Tests - Leopardo RH` | `test-results.json`, `lcov.info`, quality summary, smoke APK | Obligatoire si `front/mobile_apps/**` change |
+| Web admin | `docs/GESTION_PROJET/SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md` | `Web CI - Leopardo Admin` | rapport Playwright HTML, JUnit Playwright, traces, screenshots, videos en echec | Obligatoire si `front/admin-dashboard/**` change |
+| Web vitrine / manager | `front/web/src/modules/vitrine/` + `CHANGELOG.md` | `Web Marketing CI - Leopardo Public` | lint Next.js, build Next.js, locale rail valide, metadata stables | Obligatoire si `front/web/**` change |
+| Gouvernance repo | `tools/check-governance.ps1` + ce registre | `Tests - Leopardo RH` | journal CI, verifications changelog/scenarios | Obligatoire |
+| Deploiement main | `docs/GESTION_PROJET/RUNBOOK_DEPLOY.md` | `Deploy - Leopardo RH` | healthcheck post-deploy, rollback hook si echec | Strictement bloque tant que les workflows requis ne sont pas verts |
+| EduManager BC-16 | `docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md` (Note 2026-08-31) | `Tests - Leopardo RH` | `api/tests/Feature/EduManager/*` (JUnit) | Obligatoire |
+| Release readiness | `docs/validation/RELEASE_READINESS_GATE.md` | GitHub Actions + `dev-hub/tools/release-readiness.ps1` | rapport readiness, inventaire tests, statut go/no-go | Obligatoire avant declaration production-ready |
+
+## Definition "tests concluants"
+
+Un SHA est deployable seulement si:
+
+1. `Tests - Leopardo RH` est `success`
+2. `Web CI - Leopardo Admin` est `success` si le SHA touche `front/admin-dashboard/**`
+3. `Web Marketing CI - Leopardo Public` est `success` si le SHA touche `front/web/**`
+4. les artefacts minimums du domaine existent
+5. aucun job critique n'est `failure`, `cancelled` ou `timed_out`
+
+## Politique artefacts
+
+### Backend
+
+- `backend-test-reports`
+- `backend-quality-summary`
+- `backend-quality-reports`
+- `backend-coverage-summary`
+- `backend-coverage-reports`
+
+### Mobile
+
+- `mobile-quality-summary`
+- `mobile-test-reports`
+- APK smoke si build mobile actif
+
+### Web admin
+
+- `playwright-report`
+- `test-results/junit.xml`
+- traces Playwright sur premier retry
+- videos Playwright retenues en echec
+
+### Web vitrine / manager
+
+- logs de lint Next.js
+- logs de build Next.js
+- validation du locale rail public et des metadata au travers du build
+
+## Evolution attendue
+
+Quand un domaine gagne une feature significative, ajouter:
+
+- le scenario nominal
+- les refus RBAC / tenant
+- les erreurs de validation
+- les cas de resilience
+- l'artefact CI attendu
+
+## Extension 2026-05-07 - I18N enterprise partage
+
+| Domaine transverse | Base de scenarios | Workflow source de verite | Artefacts minimums | Gate de deploiement |
+|---|---|---|---|---|
+| I18N partage backend/web/mobile | `SCENARIOS_TEST_API_GITHUB_ACTIONS.md` + `SCENARIOS_TEST_MOBILE_FLUTTER.md` + `SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md` | `I18N Enterprise` + workflows de surface | catalogues generes, checksums `versions.json`, validation locale, endpoint distant syntaxiquement valide | Obligatoire si `shared/i18n/**` ou une surface synchronisee change |
+
+## Notes 2026-05-12
+
+- v4.16.50 : Le seuil coverage mobile par defaut est un ratchet a `21%`, base sur la mesure GitHub Actions `21.85%`. La prochaine cible mobile est `25%`; ne pas augmenter sans nouvelle mesure verte.
+- v4.16.78 : Les pages GTM vitrine de la PR #495 doivent rester compatibles avec les composants `CTASection` et le Web Marketing CI doit valider lint + build avant merge.
+- v4.16.77 : Les surfaces API integrations/kiosk/ZKTeco de la PR #488 doivent conserver les scenarios device tokens, sync calendrier, heartbeat/sync ZKTeco et extension kiosk (employee info, annonces, leave balance, QR punch), y compris le formatage Pint avant merge.
+- v4.16.126 : Plan 21 ajoute les scenarios backend `DemoUserControllerTest` et `ProfileFunctionalReadinessTest` pour verrouiller les personas demo et la matrice d'acces principal/RH/dept/comptable/superviseur/employe. Toute evolution de `/api/v1/demo-users`, des seeders demo ou des sous-roles manager doit garder ces tests comme contrat commercial et QA.
+- v4.16.127 : Plan 22 ajoute les scenarios `OpenApiDocsTest` pour `/tester-guide` et `/api-explorer`, plus `DemoUserControllerTest::test_demo_login_recovers_missing_lookup_from_shared_tenant_schema` pour le login demo sans lookup public. Toute evolution de la racine Render, des comptes demo ou de l'explorer API doit garder ces parcours testeur/developpeur accessibles et pre-remplis.
+- v4.16.128 : `DemoUserControllerTest::test_demo_users_remain_available_for_public_tester_guides_in_production` verrouille `/api/v1/demo-users` comme contrat public QA, meme si une ancienne config production desactive le mode demo. Les seeders demo doivent verifier les slugs attendus et ne jamais assimiler toute entreprise `shared_tenants` a une demo deja presente.
+- v4.16.128 : `DemoUserControllerTest` couvre aussi le contrat complet demo `POST /auth/login` puis `GET /auth/me`. Les tokens Sanctum tenant doivent transporter le contexte schema/email/company/employee pour eviter qu'un `tokenable_id` entier soit resolu dans le mauvais schema shared.
+- v4.16.234 : `DemoUserControllerTest::test_demo_once_seeder_keeps_public_super_admin_credentials_usable` verrouille le contrat super-admin demo expose par `/api/v1/demo-users`. Le seeder demo doit resynchroniser le mot de passe public `password123` et retirer le 2FA demo afin que `leopardo_platform_admin` puisse etre teste sur Render.
+- v4.16.238 : `GET /api/v1/payroll/mobile-summary` reste dans le perimetre API paie critique. Les scenarios doivent couvrir la tolerance aux colonnes employees optionnelles absentes sur tenants historiques afin d'eviter un 500 mobile manager pendant le lancement.
+- v4.16.239 : les soldes paie mobiles doivent rester compatibles avec le contexte `current_company` pose par `TenantMiddleware`. Toute evolution de `PayrollCycleService` doit eviter un rechargement `Company` vulnerable au `search_path` shared PostgreSQL.
+- v4.16.240 : `GET /api/v1/employees/{employee}/balance` et `GET /api/v1/payroll/mobile-summary` doivent rester des contrats mobiles resilients : parametre route aligne, isolation tenant et fallback partiel par employe si un calcul individuel echoue.
+- v4.16.243 : `GET /api/v1/launch-readiness` fait partie des gates lancement. Il doit utiliser `currentCompany()` en contexte tenant et rester schema-aware sur les champs paie employees pour eviter des faux no-go Render.
+- v4.16.245 : le check lancement `communication_governance` depend d'une preference notification par employe actif. `notifications:backfill-preferences` doit creer les lignes manquantes et reparer le `company_id` sans ecraser les choix utilisateur existants ; scenarios couverts par `BackfillNotificationPreferencesCommandTest`, `NotificationPreferenceControllerTest` et `LaunchReadinessControllerTest`.
+- v4.16.246 : `DemoCompanyOnceSeeder` doit backfiller les signaux demo necessaires au score lancement (`payroll_base`, `attendance_entry`, `client_experience_tracking`) sans reseed destructif. Scenario couvert par `DemoUserControllerTest::test_demo_once_seeder_backfills_launch_readiness_signals_for_existing_demos`.
+- v4.16.128 : `AuthServiceTest::test_login_resolves_public_company_when_tenant_schema_shadows_companies_table` et `DemoUserControllerTest::test_demo_login_recovers_missing_lookup_from_shared_tenant_schema` couvrent le login shared PostgreSQL et `/auth/me` quand le schema tenant masque `public.companies`. Tout smoke demo doit verifier `POST /auth/login` puis `GET /auth/me`, pas seulement `/demo-users`.
+- v4.16.49 : Les tests mobiles Plan 14 couvrent desormais navigation GoRouter, surfaces principales, contrats repositories via `ApiClient` mocke et baselines structurelles paie/conges. Le poste Windows local ne fournit pas `flutter`/`dart`; GitHub Actions reste la source de verite pour compiler et executer ces tests.
+- v4.16.47 : Les benchmarks performance Plan 14 ajoutent des scripts k6 pour 100 employes simultanes, paie 500 employes et dashboard 10k employes. Les scenarios API doivent garder l'organigramme scope par tenant et le rapport mensuel attendance groupe par employe pour eviter les regressions de scans repetes.
+- v4.16.61 : Le sitemap Next `/api/sitemap` liste aussi `/changelog`, `/privacy` et `/terms` pour suivre les routes publiques FR/EN/TR/AR.
+- v4.16.60 : La vitrine expose `/changelog` (extrait public du changelog produit) ; le footer pointe vers `/pricing`, `/changelog`, `/blog`, `/privacy`, `/terms`. Le Web Marketing CI doit continuer a valider lint + build ; ajouter un smoke manuel ou E2E du lien « Changelog » si une suite Playwright vitrine est introduite.
+- v4.16.29 : La vitrine `front/web` expose maintenant les pages legales `/privacy` et `/terms` en FR/EN/TR/AR avec RTL arabe. Les scenarios Web Marketing doivent verifier les liens footer, le rendu des routes et le changement de langue sur ces pages.
+- v4.16.8 : Le cockpit `front/admin-dashboard` consomme maintenant `/platform/metrics/overview` pour les chiffres financiers globaux. Les scenarios web admin doivent verifier MRR, ARR, encaissements 30 jours, impayes et subscriptions sans recalculer ces agregats depuis des listes partielles.
+- v4.16.7 : Le contrat `GET /api/v1/platform/metrics/overview` devient une surface plateforme critique pour le cockpit super-admin. Il doit rester protege par `super_admin_api`, exposer uniquement des agregats non nominatifs et rester tolerant aux tables billing absentes pendant les migrations progressives.
+- v4.16.0 : Les annotations PHPDoc `@property`, `@return` et `@var Employee` ajoutees dans les modeles, services et controllers ne modifient aucun comportement runtime. Le helper `currentCompany()` est un remplacement fonctionnellement identique de `app('current_company')`. Le binding `LLMClient` dans AppServiceProvider preserve le meme comportement de selection provider. Aucun nouveau endpoint ni modification de contrat API.
+- v4.16.1 : Extraction des appels inline `$request->user()->` dans 8 controllers supplementaires. Aucun changement de comportement ni de contrat API.
+- v4.16.2 : Extraction des chaines `->fresh()->` nullables et ajout de null checks sur les relations. Aucun changement de comportement ni de contrat API.
+- v4.16.27 : Annotations PHPStan Partie 5 — `@mixin` sur 16 Resources, `@property` sur 4 modeles Camera, `@property-read` sur 14 modeles, `@param/@return Builder<static>` sur 48 scopes. Aucun changement de comportement runtime.
+- v4.16.3 : Guards `Schema::hasTable()` sur 8 migrations tenant + `$withinTransaction = false` sur migration public. Aucune modification de schema — uniquement idempotence des migrations existantes.
+
+## Notes 2026-05-08
+
+- Le workflow `Tests - Leopardo RH` ne doit pas lancer le job mobile uniquement parce que `.github/workflows/tests.yml` change. La dette mobile historique doit rester visible, mais elle ne doit bloquer une PR backend/admin/web que si `front/mobile_apps/**` bouge vraiment.
+- La gate `Backend Quality` doit rester veridique sur le code PHP touche par la PR. Tant que tout l'historique PHPStan n'est pas resorbe, privilegier un scope diff-aware plutot qu'un faux vert global ou un blocage hors perimetre.
+- Le contrat d'auth plateforme (`/api/v1/platform/auth/*`, `role=super_admin`, `two_fa_enabled`, `202 TWO_FA_REQUIRED`) fait maintenant partie du perimetre admin critique et doit rester documente et teste.
+- Les extensions attendance qui rendent la valeur terrain visible (impact business des anomalies, actions manager recommandees, rapport mensuel avec estimation paie, checklist go-live) font partie des scenarios API critiques et doivent rester couvertes par `Tests - Leopardo RH`.
+- Le contrat health plateforme (`/api/v1/platform/companies/{company}/health`) est une surface v5.0 critique : il soutient adoption, retention et upsell, et doit rester teste avec isolation tenant et auth super-admin.
+- La vue portefeuille health (`/api/v1/platform/companies/health`) est critique pour le pilotage commercial : elle doit garder MRR, repartition des risques et next action par client dans la CI backend.
+- Le contrat abonnement plateforme (`/api/v1/platform/companies/{company}/subscription`) est critique pour la commercialisation : il doit rester fournisseur-agnostique et valider plan, statut et dates avant toute integration paiement.
+- Le catalogue plans plateforme (`/api/v1/platform/plans`) doit rester teste afin que l'admin-dashboard ne hardcode jamais les `plan_id` ou les limites de packaging.
+- Le cockpit admin v5.0 doit afficher les donnees reelles du portefeuille, du detail health, des abonnements et des plans. Toute regression `front/admin-dashboard/**` sur ces vues doit rester couverte par build/Playwright.
+- L'intake demandes clients de l'admin-dashboard doit rester branche sur `/api/v1/platform/company-requests` : filtres statut, compteurs et actions approuver/rejeter font partie du parcours commercial critique.
+- L'accueil admin v5.0 ne doit plus dependre d'endpoints mockes `/admin/dashboard/*`; il synthetise les contrats plateforme existants pour garder un premier ecran exploitable.
+- L'approbation d'une demande client doit verifier le provisioning complet : company publique, manager principal tenant, invitation et `approved_company_id`.
+- v4.16.28 : CI/CD Hardening Partie 6 — seuil coverage 40%, PHPStan diff-gate elargi a tout `app/`, baseline auto-regen sur main avec delta, 3 suites E2E Playwright (navigation, accessibilite, error-handling). Aucun changement de comportement runtime.
+- v4.16.67 : Plan 15 Batch 1 — declarations sociales CNAS DZ / CNSS MA, import employes CSV, compression gzip API. Nouveaux endpoints : `POST /social-declarations/cnas-dz`, `POST /social-declarations/cnss-ma`, `POST /employees/import`, `GET /employees/import-template`. Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- v4.16.69 : Iteration 7 — IA Workflows metier + simulation cotisations. Nouveaux endpoints : `POST /ai/workflows/prepare-payroll`, `GET /ai/workflows/weekly-report`, `POST /cotisation-simulation`. Tests : `AIWorkflowTest.php`, `CotisationSimulationTest.php`. Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- v4.16.70 : Iteration 8 — Admin enrichments (E3 contrats detail+alertes, E5 formation detail, E8 rapports RH SPA, D6 indexes etendus, F7 newsletter footer). Ecran `/reports` dans admin-dashboard consomme les 10 endpoints rapports backend. Panneau detail contrat et formation enrichis avec alertes automatiques. Indexes PostgreSQL etendus pour contrats, formation, recrutement, audit, webhooks. Newsletter integree dans le footer vitrine.
+- v4.16.73 : Iteration 10 — IA Predictions (turnover, absenteisme, notifications proactives). Nouveaux endpoints : `GET /predictions/turnover`, `GET /predictions/absenteeism`, `GET /predictions/notifications`. Tests Feature RBAC PredictionControllerTest (6 tests). Dashboard predictif admin `PredictionsView.vue`. Mobile absences enrichi (leaveBalancesProvider). Plan 15 : C11, C12, C13, C15, E6, E7, G2-G7, G9 -> DONE.
+- v4.16.71 : Iteration 9 — Audit logs UI (E9) avec filtres action/type/recherche, export CSV, panneau detail avec diff old/new values. E4 (recrutement Kanban) confirme DONE. Good first issues (I2) et release notes v0.1.0 (I5) documentes.
+- v4.16.74 : Iteration 11 — SSO SAML/OIDC stub (K2) + audit WCAG 2.1 AA (K4). Nouveaux endpoints : `GET /sso/providers`, `GET /sso/status`, `POST /sso/configure`, `DELETE /sso/disable`, `POST /sso/saml/{id}/callback`, `GET /sso/oidc/{id}/callback`. Tests Feature SSOControllerTest (8 tests RBAC). Migration company_sso_configs. Skip-to-content WCAG 2.4.1 admin + vitrine.
+- v4.16.72 : Iteration 12 — PayrollView enrichi (onglet structures salariales), MetricCard composant, ReportsView rapports RH, PlanningOptimizer IA (C14), sidebar admin avec liens rapports/audit, corrections WCAG (role alert, aria-sort, search input). E1, E2, E10, E11, C14, F1-F6 DONE.
+- v4.16.80 : Iteration 13 — Architecture & Performance. Nouveau endpoint : `POST /auth/refresh-token` (rotation Sanctum token). Nouveaux services : TenantCacheService (D1 cache Redis tenant-scoped), ProcessPayrollBatchJob (D2 queue payroll async), SendBulkNotificationsJob (D2 queue notifications bulk), SensitiveDataEncryptor (D5 AES-256). Nouveaux tests : QueueJobsTest (4 tests dispatch/tags). Runbooks : RUNBOOK_UPTIME_MONITORING.md (B4), RUNBOOK_ALERTING.md (B6). Plan 15 : 98.5% DONE (320/325).
+- v4.16.90 : Plan 14 Phases 2-6 — Solidification technique. Nouveaux endpoints : `POST /social-declarations/dsn-fr` (DSN simplifie France S10/S20/S21/S44), `GET /notifications/stream` (SSE temps reel). Nouveau middleware : `TokenAutoRefreshMiddleware` (rotation JWT automatique via X-New-Token). Nouveaux exports bancaires : CPA/BNA format DZ. Nouveaux composants admin : CommandPalette (Ctrl+K), SkeletonLoader (6 variantes). Composable : useNotificationStream.js (client SSE). Documentation commerciale : dossier technique, comparatif concurrents, benchmarks performance. Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- v4.16.81 : Iteration 14 — Test Coverage Hardening. 7 nouveaux fichiers tests Feature : AuthRefreshTokenTest (rotation token, invalidation ancien token, preservation abilities), TenantCacheServiceTest (cache tenant-scoped, isolation, round-trip), SensitiveDataEncryptorTest (encrypt/decrypt, idempotence, batch array), CalendarSyncControllerTest (auth, validation), DeviceTokenControllerTest (auth, RBAC manager), PlanningControllerTest (RBAC optimize/coverage), ZktecoControllerTest (auth devices, heartbeat), CotisationSimulationControllerTest (auth, RBAC, validation).
+- v4.16.131 : Plan 23 Iteration 5-6 — 11 Model Policies (Absence, Contract, Department, Position, Schedule, Site, ApprovalRequest, Loan, ExpenseClaim, Invoice, WebhookEndpoint) enregistrees dans AuthServiceProvider. Select() sur index queries Approval/Site/Schedule. RBAC Route Matrix mise a jour. Scenarios ajoutes dans SCENARIOS_TEST_API_GITHUB_ACTIONS.md.
+- v4.16.130 : Plan 23 Iterations 1-4 — API Production-Grade. 11 nouvelles API Resources (Absence, Department, Position, Schedule, Site, Notification, ApprovalRequest, Invoice, AuditLog, WebhookEndpoint, Payroll). 10 FormRequests extraites (Department, Position, Schedule, Site, Webhook store/update). ApiError backed enum ~40 codes i18n FR/EN/AR/TR. DB::transaction sur ContractController::renew, ApprovalController::approve/reject, NotificationController::markRead/markAllRead. 9 controllers refactorises vers Resources+FormRequests. Scenarios ajoutes dans SCENARIOS_TEST_API_GITHUB_ACTIONS.md.
+- v4.16.129 : API Consolidation RBAC. Nouveau middleware `EnsureApiManagerMiddleware` (`api.manager`) avec roles parametrables. Routes restructurees : dashboard/exports/billing/payroll/hr_extended avec guards RBAC. `DemoCompanySeeder` enrichi : contrats, formations, recrutement, prets, notes de frais. API Explorer regroupe par categorie. Test `ApiManagerMiddlewareTest` (5 scenarios). Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- v4.16.183 : Migration HTTP v1 pour Firebase Push Notifications. Job SendPushNotificationJob cree. Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- v4.16.183 : Sync mobile FCM post-auth. Les apps employee/manager initialisent `PushNotificationService` apres login/hydratation et enregistrent le token via `POST /api/v1/device-tokens`; les checks attendus restent `DeviceTokenControllerTest`, `FrontendApiContractTest` et les analyses `mobile-apps-ci`.
+- v4.16.184 : Platform admin mobile auth hardening. Le mobile super-admin garde le login obligatoire, gere explicitement `202 TWO_FA_REQUIRED`, evite `/platform/auth/me` sans token local et valide le formulaire de creation client. Scenarios couverts par `PlatformAuthTest`, `PlatformCompanyProvisioningTest`, `FrontendApiContractTest` et `mobile-apps-ci`.
+- v4.16.184 : Cycle de vie FCM mobile. Les apps employee/manager enregistrent le token apres auth et tentent `DELETE /api/v1/device-tokens` avant logout; la deconnexion reste non bloquante si le reseau echoue. Scenarios couverts par `DeviceTokenControllerTest`, `FrontendApiContractTest` et analyses mobile.
+- v4.16.185 : Contrats notifications mobiles. Les apps employee/manager consomment `GET /notifications?unread=true`, l'alias `unread_only=true`, `PUT /notifications/{id}/read`, `PUT /notifications/read-all` et `DELETE /notifications/{id}` avec retry court. `NotificationControllerTest` couvre le scope utilisateur, l'audit communication, les alias mobiles et les routes dashboard historiques.
+- v4.16.186 : Preferences notifications mobiles. Les ecrans Compte employee/manager doivent charger et sauvegarder `/api/v1/notification-preferences` avec retry court pour app, push, email et heures calmes. Scenarios couverts par `NotificationPreferenceControllerTest`, `FrontendApiContractTest` et analyses `mobile-apps-ci`.
+- v4.16.187 : Actions liste notifications mobiles. Les ecrans notifications employee/manager doivent garder marquage lu, suppression par swipe/menu et refresh provider apres mutation. Scenarios couverts par `NotificationControllerTest`, `FrontendApiContractTest` et analyses `mobile-apps-ci`.
+- v4.16.231 : Liste equipe mobile manager. `GET /api/v1/employees` doit rester teste avec le payload complet consomme par `EmployeeResource` (`contacts personnels`, `salary_*`, horaire, biometrie, `extra_data`, `work_state`) afin d'eviter les 500 production sur modeles partiellement charges. Scenarios couverts par `EmployeesRbacTest`, `ApiListQueryContractTest`, `MobilePayloadContractTest` et les smokes Plan 69.3.
+- v4.16.188 : Bootstrap mobile anti-ecran gris. Les trois apps passent par `StartupGate`, recuperent `offlineCache` si Hive est corrompu et affichent une erreur exploitable au lieu d'un ecran gris. Scenarios couverts par analyses/builds `mobile-apps-ci` et distribution Firebase.
+- Plans 60-65 (Redis Upstash backend) : Double validation avances salaire (Plan 60), PayrollCycleService + PayrollCycleController cycles & solde employe (Plan 61), GeneratePaySlipPdfJob PDF async queue `pdf` (Plan 62), QueueHealthCheck + queues nommees Upstash (Plan 63), AutoCloseAttendanceCommand horaire (Plan 64), ProcessBulkPaymentJob + BulkPaymentController paiement masse avec progression Redis (Plan 65). Scenarios ajoutes dans SCENARIOS_TEST_API_GITHUB_ACTIONS.md.
+- v4.16.251 : Lots P0-P3 — Webhooks Svix, Onboarding Wizard, Drip Emails, Offline Sync Mobile, Portail Développeur. Scenarios couverts par tests existants et documentation mise a jour. Scenarios ajoutes dans SCENARIOS_TEST_API_GITHUB_ACTIONS.md.
+- v4.16.252 : Module Growth - Partenariat et Parrainage. Nouveau middleware PartnerLinkMiddleware (tracking affilie avec cookie 30j et redirection /signup). Service PartnerService (attribution partenaire, prevention auto-referral, calcul commissions). Tests GrowthModuleTest : attribution, prevention auto-referral, calcul commissions, workflow complet partenaire. Schema SQL fixture mis a jour (eferrer_partner_id sur companies). Scenarios API ajoutes dans SCENARIOS_TEST_API_GITHUB_ACTIONS.md.
+- v4.16.255 : Growth Module Auth Fix - Le middleware des routes `/partner/*` utilise `auth:sanctum` (compatible Employee token web/mobile) au lieu de `auth:user_api`. `PartnerDashboardController::resolveGlobalUser()` fait le pont entre l'identite `Employee` Sanctum et l'enregistrement `User` dans `public.users` pour les acces `public.partners`. Surface concernee : `POST /partner/apply`, `POST /partner/payout`, `GET /partner/stats`, `GET /partner/companies`. Contrat existant : `GrowthModuleTest` + `FrontendApiContractTest`.
+- v4.24.0 : Solutions sectorielles — questionnaire de pre-qualification public (issue #6662, PR #6663). Nouveaux endpoints publics `GET /api/v1/solutions`, `GET/POST /api/v1/solutions/{code}/survey`, `GET /api/v1/solutions/{code}/pack` (PDF). Moteur de regles deterministe (`Core/Solutions/Survey`), aucune donnee tenant, throttle 10/min. Scenarios couverts par `SolutionSurveyEndpointTest` + `SolutionSurveyEngineTest`.
+| Solutions sectorielles | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | SolutionSurveyEndpointTest | backend-tests |
+| Absence DDD | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | AbsenceServiceTest | backend-tests |
+| Expense DDD | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | ExpenseServiceTest | backend-tests |
+| Notification DDD | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | NotificationTest | backend-tests |
+
+- v4.16.256 : Migration routes vers modules DDD — Les 8 derniers contrôleurs (`MeController`, `SiteController`, `EstimationController`, `NotificationStreamController`, `AdvancedReportController`, `AuditLogController`, `EmployeeLoanController`, `PredictionController`) ont été déplacés vers les modules métier (`App\Modules\HR\...`, `App\Modules\Payroll\...`, `App\Modules\Notification\...`). Les anciens contrôleurs ont été supprimés. Scenarios couverts par les tests existants (FrontendApiContractTest, backend feature tests).
+| Routes DDD Migration | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | FrontendApiContractTest | backend-tests |
+- v4.18.0 : Edge Sync offline-first (PR #813) — Module EdgeSync Phase 4 complet. Endpoints: `POST /edge/auth/register`, `POST /edge/push`, `GET /edge/pull`, `GET /edge/health`, `GET /admin/edge-nodes`, `POST /admin/edge-nodes/{id}/sync`, `POST /admin/edge-nodes/{id}/revoke`. Flutter : `edge_database.g.dart` généré Drift v2.14, `sync_service.dart` adapté connectivity_plus v6. Fix `EdgeSyncServiceProvider::mergeConfigFrom` chemin config corrigé. Scenarios couverts par `EdgeSyncTest`, `EdgeOfflineScenarioTest`.
+| EdgeSync API | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | EdgeSyncTest, EdgeOfflineScenarioTest | backend-tests |
+
+- v4.21.0 : Refactor DDD — suppression 90 controllers legacy (`app/Http/Controllers/Api/V1/`) et 26 services (`app/Services/`), migration vers modules DDD. Infrastructure manquante créée pour Growth, Platform, Onboarding, Training. app/DTOs/ racine supprimé (3 DTOs migrés). Surface API inchangée — régression couverte par `FrontendApiContractTest` et feature suite complète.
+| DDD Legacy Cleanup | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | FrontendApiContractTest | backend-tests |
+- v4.24.0 (issue #1811) : jours fériés par pays — table publique `public_holidays` (national + entreprise, is_recurring, holiday_type), seeder fixes DZ/CM/CI/SN 2024-2027, `PublicHolidayService` (getHolidays/workingDaysBetween/forget, cache Redis 24h), `PayrollCalculator::computeWorkedDays` dynamique (fallback 22), API admin + principal. Scenarios ajoutes dans `SCENARIOS_TEST_API_GITHUB_ACTIONS.md`.
+- Vague QA 2026-08-14 (spec kit, PR #2306) : campagne de test complète plateforme — (1) Backend : suite `tests/Feature/User/UserAuthTest.php` (module user 0→10 tests), export bancaire SEPA sans placeholders (config tenant `metadata.bank`), provision mot de passe employé honorée (`CreateEmployeeDTO`), convention routes notifications documentée (PUT canonique, alias compat), module Cabinet `company_id` UUID réel (migration tenant 000019, fin du hack legacy bigint/clé 0 — tests #1921 10/10), tests unitaires payroll réalignés (caps CNSS CI #1913, ITS 2024 #1918, pilot ML/BF #1829, exception typée #1868). (2) Web App : boutons dashboard câblés (recherche, notifications, activité, Leo IA → annonces, actions rapides), détail bulletin (modal), toggle thème carrières. (3) Admin : widgets Analytics câblés, Super-Console, gestion partenaire (taux commission API), avatar upload. (4) Mobile : patterns interdits supprimés, `leopardo_marketing` compile. Scenarios couverts par les tests listés + smoke API live (signup→verify→login→simulate→employees→announces→exports).
+| DeliveryAgency API | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Delivery/* | backend-tests |
+- Train PM verdissement #6818 (09-05) : sync catalogues i18n mobiles `leopardo_core/l10n` (app_fr/en/ar/tr.arb, 4 fichiers) — parité locale couverte par la garde `i18n paie ×4`/`check-mobile-l10n-sync.sh` (non-régression clés fr/en/ar/tr).
+
+- v4.25.0 (BC-28 CATALOG #6881) : API privée de gestion du catalogue B2B — CRUD catégories (`/catalog/categories`) et produits (`/catalog/products`, publication/dépublication), gate feature flag `b2b_catalog`, RBAC gestion principal/rh, isolation tenant. Scenarios couverts par `tests/Feature/Catalog/CatalogApiTest.php` (RBAC deny-by-default, gate flag, isolation cross-tenant 404, CRUD + publication).
+| Catalog B2B API | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogApiTest.php | backend-tests |
+
+- v4.26.0 (BC-28 C-PUBLIC #6882) : catalogue public isolé — `GET /public/catalog/{companySlug}` (catégories + produits publiés, filtre `?category=`) et fiche `GET /public/catalog/{companySlug}/products/{productSlug}`, SANS auth (`throttle:shop-public` + `catalog.public`), tenant par slug, DTO strict (0 champ interne), cache Redis TTL invalidé à la publication, 404 fail-closed (slug inconnu / flag absent / suspendu). Scénarios couverts par `tests/Feature/Catalog/CatalogPublicApiTest.php`.
+| Catalog public B2B | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogPublicApiTest.php | backend-tests |
+
+- v4.27.0 (BC-28 C-LEAD #6884) : formulaire public de demande de devis — `POST /public/catalog/{companySlug}/inquiries` SANS auth (honeypot anti-spam, consentement RGPD requis, produit publié exigé) → demande `catalog_inquiries` (tenant, minimisation, rétention bornée) + événement `catalog.inquiry_received` (contrat cross-BC, catalogue d'événements v1.0.0) → lead CRM BC-11 source `b2b_catalog` + notification in-app managers (canal app). Scénarios couverts par `tests/Feature/Catalog/CatalogPublicInquiryApiTest.php`.
+| Catalog inquiries B2B | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogPublicInquiryApiTest.php | backend-tests |
+
+- v4.28.0 (BC-28 C-CURRENCY #6886) : devises & unités v1 — whitelists strictes configurables (CatalogPricePolicy), devise par défaut tenant, prix minor units int, formateur intl sans flottant. Scénarios couverts par `tests/Feature/Catalog/CatalogCurrencyRulesTest.php` + `tests/Unit/Catalog/CatalogPriceFormatterTest.php`.
+| Catalog devises/unités | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogCurrencyRulesTest.php | backend-tests |
+
+- v4.29.0 (BC-28 C-BACKOFFICE #6885) : back-office tenant des demandes de devis — `GET /catalog/inquiries` (liste + filtres), `PATCH /catalog/inquiries/{inquiry}/status` (matrice new→contacted→quote_sent→closed|lost, notes horodatées), `GET /catalog/inquiries/export` (CSV). RBAC principal/rh/manager, isolation 404. Scénarios couverts par `tests/Feature/Catalog/CatalogInquiryBackofficeTest.php`.
+| Catalog back-office devis | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogInquiryBackofficeTest.php | backend-tests |
+
+- v4.30.0 (BC-28 C-RGPD #6889) : protection données acheteur devis — `DELETE /catalog/inquiries/{inquiry}` (effacement + propagation leads CRM via `catalog.inquiry_erased`), purge rétention expirée (`catalog:purge-expired-inquiries`), revue non-fuite routes publiques, registre RGPD §10. Scénarios couverts par `tests/Feature/Catalog/CatalogRgpdTest.php`.
+| Catalog RGPD devis | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogRgpdTest.php | backend-tests |
+
+- v4.31.0 (BC-27 SHOWCASE v1 #6870 #6871 #6873 #6874 #6875 #6876 #6891) : vitrine publique — publication/dépublication + aperçu par jeton (`?token=`), SEO (meta SSR, `sitemap.xml`, `robots.txt`), i18n fr/en/ar/tr par locale, thèmes v1, bloc RGPD, section `products` (contrat Shared résolu par le catalogue BC-28), éditeur admin `/showcase` + parcours E2E Playwright. Scénarios couverts par `api/tests/Feature/Showcase/ShowcasePublishWorkflowTest.php`, `ShowcaseI18nThemesProductsTest.php` et `front/admin-dashboard/e2e/showcase-flow.spec.js`.
+| Vitrine BC-27 | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Showcase/ShowcasePublishWorkflowTest.php | backend-tests |
+
+- v4.32.0 (BC-28 CATALOG #6883 #6888 #6890) : fiche produit publique (`GET /public/catalog/{companySlug}/products/{productSlug}` — photos, `meta` SEO dérivées du contenu, `related` produits publiés, CTA devis) + SEO catalogue (`meta` du snapshot + `GET /public/catalog/sitemap.xml` des produits publiés, brouillons jamais exposés) + parcours E2E création → publication produit → fiche publique + devis. Scénarios couverts par `api/tests/Feature/Catalog/CatalogPublicPageSeoTest.php` et `CatalogEndToEndJourneyTest.php`.
+| Catalog fiche produit + SEO | docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md | Tests - Leopardo RH | tests/Feature/Catalog/CatalogPublicPageSeoTest.php | backend-tests |
+
+## Mise a jour 2026-09-10 (2) — acces admin plateforme & etats de chargement
+
+Demande proprietaire : l'admin plateforme est reserve au super-admin de la
+plateforme (pas aux utilisateurs d'un tenant), le selecteur de comptes de demo
+doit rester reserve au deploiement DEV, et la zone de contenu de l'admin ne doit
+plus s'afficher vide a l'arrivee.
+
+- **Surface web admin** — `stores/auth.js` : garde explicite `role === 'super_admin'`
+  a la connexion ET a la reprise de session (`/platform/auth/me`). Le backend
+  separait deja `super_admins` (schema public) des `employees` du tenant ; la
+  garde front rend la regle opposable cote client. Nouveau scenario a couvrir :
+  identifiants tenant -> refus explicite, pas d'acces a l'admin.
+- **Selecteur de comptes de demo** : toujours conditionne a `GET /demo-users`
+  (404 hors mode demo, donc en production) — aucun identifiant dans le bundle,
+  verifie sur le bundle de production (0 occurrence de mot de passe de demo).
+  Aucun changement de comportement attendu.
+- **Etats de chargement** : `layouts/DashboardLayout.vue` entoure le `<router-view>`
+  d'un `<Suspense>` avec indicateur (les vues sont chargees dynamiquement : la zone
+  de droite restait vide pendant le telechargement du chunk). 10 vues principales
+  demarrent desormais avec leur drapeau de chargement a `true` (1er rendu = indicateur,
+  plus de contenu a zero puis spinner puis donnees).
+- **i18n** : nouvelle cle `auth.platform_admin_only` dans les 4 langues du catalogue
+  partage, puis chaine de sync rejouee (admin/web/ARB mobile + `versions.json`).
+
+Scenarios admin a verifier apres deploiement : refus d'un compte tenant, absence du
+selecteur de demo hors DEV, affichage d'un indicateur (et non d'une page vide) au
+premier rendu de chaque vue principale.
+## Mise a jour 2026-09-10 — honnetete de la copie publique & propagation i18n
+
+Contexte : audit de la presentation publique (vitrine Next.js + site GitHub Pages)
+et de la veracite des termes employes. La correction a entraine :
+
+- `shared/i18n/locales/{fr,tr}.json` : prix public Operations corrige (99 € -> 79 €,
+  prix canonique ADR-0014 / `PlanSeeder`), puis chaine de sync rejouee — les
+  catalogues **admin** (`front/admin-dashboard/src/i18n/locales/*`) et **mobile**
+  (`front/mobile_apps/leopardo_core/lib/l10n/*.arb`) ont donc ete regeneres
+  mecaniquement, sans changement fonctionnel.
+- Surface **web admin** : aucun scenario n'est invalide (catalogues uniquement).
+  Le prix affiche reste celui de la page pricing ; le controle de non-regression
+  porte sur l'egalite des libelles entre catalogue genere et source.
+- Surface **mobile** : aucun comportement modifie ; seule la valeur traduite du
+  meme bloc est propagee aux ARB.
+- Surface **vitrine** (hors perimetre admin/mobile) : suppression des chiffres
+  non mesures (« 99.9% », « 50K+ utilisateurs », « SOC2 », « 4.9 App Store »),
+  remplacement des revendications de conformite par leurs formulations etayees,
+  ajout des mentions « exemple illustratif » manquantes (equipe `/about`,
+  detail des etudes de cas), alignement des metriques sur le registre
+  `docs/REFERENTIEL_PRODUIT/METRIQUES_VITRINE.md`.
+- `dev-hub/tools/check-public-promises.sh` : 7 motifs supplementaires (conformite
+  RGPD affirmative, conformite garantie, SOC2/ISO 27001, « always compliant »).
+
+Aucun parcours critique n'est modifie : le lint, le build et les suites vitrine
+restent les gates applicables.
+- **#7223 — Web E2E admin : rôle `super_admin` + init carte flotte.** Les specs `accounting-dashboard-golden`, `travel-content`, `travel-contacts` et `fleet-no-session-kill` ont été réalignées sur le garde-fou de rôle introduit par #7205 (le backend plateforme renvoie toujours `super_admin`) ; `FleetView.vue` n'initialise plus Leaflet sans conteneur monté (`await nextTick()` + garde). Aucun changement de parcours fonctionnel.
+- **#6872 (V-MEDIA, BC-27 SHOWCASE) — médias de vitrine.** Upload/suppression/liste des médias (logo, images de sections) : types et taille validés (`StoreShowcaseMediaRequest`), isolation tenant, rendu public des médias publiés avec en-têtes de cache, UI d'upload dans l'éditeur de vitrine (`ShowcaseMediaUploader.vue`). Scénarios API : `docs/GESTION_PROJET/SCENARIOS_TEST_API_GITHUB_ACTIONS.md` ; UI : `docs/GESTION_PROJET/SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md`.
+- **#7235 / #7234 — inscription par profil + vitrine.** Surface **mobile** : aucun comportement modifié ; seules les **valeurs traduites** des ARB (`front/mobile_apps/leopardo_core/lib/l10n/app_{fr,en,ar,tr}.arb`) sont propagées depuis le catalogue partagé — nouvelles clés `signup.*` (profil d'activité, outils, métier), `signupPage.*` (récit de la page d'inscription) et `trial.*` (jours d'essai restants), et mise à jour des libellés `signup.badge/title/subtitle/submitLabel` + `pricing.plans.*.cta` (fin du discours « essai 14 jours » à l'inscription). Aucun parcours mobile n'est modifié : les gates applicables restent le lint, le build et les suites web/vitrine (`e2e/client-company-profile.spec.ts`, `e2e/marketing-funnel.spec.ts`).
+- **#7238 / #7240 — inscription : le tunnel s'ouvre sur le choix de l'OFFRE (et l'offre pilote la création du compte).** Le parcours `/signup` gagne une **étape 0 « Offre »** (les 4 offres du catalogue tarifaire, pré-sélectionnées par `?plan=` des CTA `/pricing`, `Continuer` bloqué sans sélection) et le tunnel passe à 4 temps (offre → profil → outils/métier → coordonnées). L'offre choisie est désormais **réellement appliquée** : `POST /trial/signup` restreint `plan` aux codes connus (`Rule::in`) et `VerifyTrialSignup::resolveTrialPlan($code)` crée la société sur l'offre **demandée** (au lieu du premier plan actif, soit Free). Surface **web client** : scénarios `e2e/marketing-funnel.spec.ts`, `e2e/client-company-profile.spec.ts`. Surface **web admin** : aucun comportement modifié — seules les **valeurs traduites** des catalogues (`front/admin-dashboard/src/i18n/locales/*.json`) sont propagées depuis le catalogue partagé (4 clés `signup.stepPlanLabel`/`planTitle`/`planSubtitle`/`planContinue`). Surface **mobile** : seules les ARB (`front/mobile_apps/leopardo_core/lib/l10n/app_{fr,en,ar,tr}.arb`) sont régénérées, aucun parcours modifié.
+
+## Mise a jour 2026-09-13 — inscription sans friction (PR #7275, issues #7273/#7274)
+
+- **Surface web client / vitrine — parcours d'inscription modifie** : le formulaire ne demande
+  plus le role (fondateur implicite), ni la taille d'equipe, ni le telephone (l'e-mail est
+  verifie par code), ni le pays (resolu cote serveur par geolocalisation via l'en-tete
+  plateforme `x-vercel-ip-country` — `request.geo` n'existe plus en Next 16, correction du
+  2026-09-13 ci-dessous), avec
+  repli `COUNTRY_REQUIRED` + selecteur affiche uniquement si la detection echoue). Le choix
+  **entreprise / independant** est conserve. Apres le code de verification, la session est
+  ouverte automatiquement (cookie httpOnly) et l'utilisateur entre directement dans son espace.
+  L'offre choisie (`?plan=`) est rappelee sur le formulaire. Scenarios applicables :
+  `front/web/e2e/marketing-funnel.spec.ts`, `front/web/e2e/client-company-profile.spec.ts`,
+  et la suite unitaire `jest` (desormais executee par le job requis
+  « Frontend — ESLint + TypeScript »).
+- **Surface API** : `POST /api/v1/trial/signup` accepte un champ optionnel `locale`
+  (`fr|en|ar|tr`) qui pilote la langue de l'e-mail de verification **et** la langue du tenant
+  provisionne ; `POST /api/v1/trial/verify` renvoie `data.token` (jeton de session, `null` si
+  l'auto-connexion n'a pas pu etre ouverte). Les chaines de l'e-mail de verification
+  (`api/resources/views/emails/trial-verification.blade.php`) sont desormais externalisees dans
+  `api/lang/*/emails.php` (garde I18N).
+- **Surface mobile** : aucun comportement modifie ; seules les **valeurs traduites** des ARB
+  (`front/mobile_apps/leopardo_core/lib/l10n/app_{fr,en,ar,tr}.arb`) sont propagees depuis le
+  catalogue partage — 3 nouvelles cles `signup.planSelected`, `signup.planChange`,
+  `signup.countryDetectionFailed`. Aucun parcours mobile n'est modifie.
+- **Surface web admin** : aucun comportement modifie ; seules les **valeurs traduites** des
+  catalogues (`front/admin-dashboard/src/i18n/locales/*.json`) sont propagees depuis le
+  catalogue partage (memes 3 cles). Gates applicables : lint, build et suites web/admin.
+- **Suite unitaire web remise au vert** : les 5 tests rouges sur `main` (boutique, travel
+  portal, absences, lettering) sont corriges — aucun n'etait un « timeout jsdom » : selecteur
+  faussement positif, dates figees devenues anterieures au `min` des champs date, periode
+  figee, locale non fixee. La suite `jest` est desormais executee par un job **requis**, ce qui
+  empeche toute regression unitaire silencieuse.
+
+## Mise a jour 2026-09-13 (2) — tunnel d'inscription : retours fondateur
+
+- **Geolocalisation du pays reellement lue (defaut de la PR #7275, corrige)** : `request.geo`
+  a ete retire de `NextRequest` en Next 16, et `next/headers` n'expose ni `geolocation()` ni
+  `ipAddress()`. Le repli etait donc TOUJOURS `undefined` : le pays n'etait jamais detecte et
+  le selecteur de repli s'affichait pour 100 % des visiteurs, avec un message negatif
+  (« nous n'avons pas pu detecter votre pays »). La route lit desormais l'en-tete injecte par
+  la plateforme (`x-vercel-ip-country`, plus `cf-ipcountry` pour Cloudflare Pages), ne
+  transmet qu'un code ISO a 2 lettres, et le libelle de repli devient neutre
+  (« Selectionnez votre pays. », x4 langues). Le test unitaire qui fabriquait un
+  `request.geo` inexistant — donc validait une fiction — est remplace par des tests sur les
+  en-tetes reels, un cas d'en-tete invalide, et la priorite du choix de l'utilisateur.
+- **Page tarifs : acces direct aux offres** : la redirection `/signup` sans `?plan=` pointe
+  vers `/pricing#plans` (fragment, pas query : un prefetch de `/signup` suit la
+  redirection, et une cible avec query laissait ce prefetch en suspens — e2e vitrine
+  `marketing-funnel` en timeout a 90 s), qui affiche immediatement les 4 offres (titre court
+  « Choisissez votre offre », libelles du tunnel reutilises) sans le hero marketing de 60 vh,
+  sans tableau comparatif, sans FAQ ni bandeau final. Mesure au navigateur (viewport 800 px) :
+  le nom du premier plan passe de y=1254 a y=357 ; le selecteur de devise, simple confort
+  d'affichage, est masque sur ce chemin. `/pricing` sans parametre est inchange.
+- **Colonne gauche de `/signup` allegee et rendue vraie** : la liste « Ce que vous obtenez
+  tout de suite » (3 preuves) est retiree, et les 3 etapes decrivent le parcours REEL
+  (e-mail + entreprise -> code a 6 chiffres par e-mail -> entree directe, sans mot de passe a
+  creer). Deux des trois textes precedents etaient faux : l'etape « outils et metier » avait
+  ete retiree par #7249 et l'etape « vous definissez votre mot de passe » est remplacee par
+  l'auto-connexion apres verification. Le sous-titre du hero est aligne.
+- **Surface web client / vitrine** : aucun changement de contrat API. Scenarios applicables :
+  `front/web/e2e/marketing-funnel.spec.ts` et la suite unitaire `jest`
+  (`src/app/api/forms/signup/__tests__/route.test.ts`, 8 cas).
+- **Surface API** : aucun changement de code dans ce lot. Le correctif d'auto-connexion
+  (`data.token`) et de langue de l'e-mail de verification est deja sur `main` (PR #7275).
+- **Surface mobile / web admin** : aucun comportement modifie ; seules les valeurs traduites
+  sont propagees depuis le catalogue partage (suppression des cles `signupPage.proof*`,
+  reecriture de `signupPage.sideTitle`/`step1..3`/`subheadline` et du libelle
+  `signup.countryDetectionFailed`).
+
+## Mise a jour 2026-09-13 (3) — SEO & AI-Search de la vitrine (PR #7315, issue #7314)
+
+- **Pourquoi ce lot existe** : audit SEO/AI-SEO de la vitrine. Le SEO classique etait deja
+  sain (robots.txt + `Sitemap:`, sitemap 49 URL / 49 en HTTP 200, canonicals, hreflang,
+  titres/descriptions localises x4, `SoftwareApplication`/`FAQPage`/`Article`/`JobPosting`),
+  mais le SEO generatif etait absent : recherche `llms.txt`, `GPTBot`, `ClaudeBot`,
+  `PerplexityBot`, `Google-Extended`, `GEO`, `AEO` dans le depot = **zero occurrence**.
+- **Ajouts** : routes `/llms.txt` et `/llms-full.txt` (localisees `?lang=fr|en|tr|ar`,
+  `text/plain`, composees depuis les sources existantes — aucune duplication de contenu) ;
+  groupe explicite de 17 crawlers IA dans `robots.txt` avec **repetition des prefixes
+  proteges** (un groupe dedie ecrase `*` : l'oublier ouvrait `/dashboard`, `/api`,
+  `/payroll`) ; noeud `WebSite` + `alternateName`/`sameAs` sur `SoftwareApplication` et
+  `Article` ; `BreadcrumbList` serveur (blog, etudes de cas, guides) ; `Article` JSON-LD
+  deplace du composant client `BlogArticle` vers `blog/[slug]/layout.tsx` (il n'existait
+  qu'apres execution du JavaScript, donc invisible aux crawlers sans JS) ; `x-default`
+  hreflang (seo.ts, sitemap.ts, layout racine) ; `VideoObject` serveur sur `/videos`.
+- **Contenu / metadonnees** : 12 etudes de cas reecrites (titres 21-35 -> 47-53 car.,
+  descriptions 39-54 -> 137-154) **et localisees x4** — c'etait la derniere surface vitrine
+  servie en FR sur les pages en/tr/ar ; maillage du hub `/case-studies` retabli (0 -> 12 liens
+  sortants vers les etudes de detail) ; 10 titres > 60 car. retailles -> **0 sur 196
+  pages-locales mesurees** ; marque dupliquee dans le `<title>` de `/terms` et `/privacy`
+  corrigee ; H1 anglais « Integrations » -> « Integrations » accentue ; `<title>` de
+  `/download` aligne sur l'acces pilote reel ; hero d'accueil « 8 pays » -> **21** (verite de
+  `GET /api/v1/supported-countries`, 21 pays tous `available: true`).
+- **Surface web vitrine** : c'est la surface modifiee. Scenario applicable : suite unitaire
+  `jest` (`src/lib/__tests__/ai-search.test.ts`, `src/app/__tests__/robots.test.ts`, garde de
+  longueur des titres dans `seo-locale.test.ts`, `sitemap.test.ts` realigne sur `x-default`).
+  Verification de recette : `196 pages-locales` (49 URL x 4 locales) servies par un build de
+  production -> 0 titre > 60, 0 page sans JSON-LD, `/llms.txt` 200 en `text/plain`, hub a 12
+  liens x4 locales.
+- **Surface API** : aucun changement de code. Aucune route, aucun payload modifie.
+- **Surface mobile / web admin** : **aucun comportement modifie**. Les catalogues
+  `front/admin-dashboard/src/i18n/locales/*.json` et `front/mobile_apps/leopardo_core/lib/l10n/*.arb`
+  evoluent uniquement comme **artefacts generes** par les syncs i18n
+  (`shared/i18n/sync/sync-{web,backend,mobile}.js`), du fait de l'ajout des cles partagees
+  `seo.llms.*` et `seo.breadcrumb.*` (20 cles x 4 langues). Ces cles n'ont pas d'ecran admin :
+  elles alimentent les fichiers AI-search et les fils d'Ariane de la vitrine. Aucun scenario
+  de test admin n'est donc impacte.
+- **Non fait, volontairement** : aucun signal de confiance fabrique (pas de
+  `Review`/`AggregateRating` sur les temoignages et etudes de cas, explicitement fictifs ;
+  pas de bios d'auteur — les 4 auteurs du blog sont des personnes fictives). Migration i18n
+  `?lang=` -> sous-repertoires `/en/ /tr/ /ar/` laissee en chantier dedie (~40 fichiers :
+  middleware, 25 layouts, sitemap, liens internes, 301).
+
+## Mise a jour 2026-09-14 — onboarding client : tunnel honnete, Google, mot de passe (PR #7353, issue #7352)
+
+- **Contexte** : test de bout en bout de l'inscription d'un compte client (navigateur reel + API, dev et prod).
+  Le tunnel n'aboutissait pas et le prospect ne pouvait pas le savoir (« Still being created — we will email you the
+  access link » alors que le job de provisioning etait en echec).
+- **Surface API** : `POST /api/v1/trial/signup` (repli `guided_trial`), `GET /api/v1/trial/status`,
+  `POST /api/v1/trial/set-password` (politique de mot de passe : 12 caracteres minimum + 1 chiffre),
+  `GET /api/v1/auth/google` (nouveau parametre `intent=signup`), `GET /api/v1/auth/google/callback`
+  (renvoie l'identite verifiee sur e-mail inconnu **uniquement** avec l'intention d'inscription ; le parcours
+  invitation-first reste inchange). Scenarios a couvrir par les suites existantes
+  (`AuthGoogleSignInTest`, `GoogleOAuthStateTest`, tests du module Billing) — aucune suite retiree.
+- **Surface web vitrine** : `/signup` (page epuree, bouton « Continuer avec Google », reprise du suivi apres
+  rechargement), ecran de suivi du provisioning (message d'echec actionnable), copie FR de la connexion,
+  `e2e/marketing-funnel.spec.ts` (assertion alignee sur le formulaire, plus sur le hero retire).
+- **Surface mobile / web admin** : **aucun comportement admin modifie.** Seul le libelle du champ de mot de passe de
+  la connexion plateforme passe de « Access Key » / « Cle d'Acces » a « Mot de passe » (cles `auth.access_key_label`
+  et `auth.access_key_required`, x4 langues), ainsi que l'accent de `shell.pushUnconfigured` en francais. Les scories
+  de test admin existantes (`login-smoke.spec.js`, `login-ux.spec.js`, `platform-auth-smoke.spec.js`) ne dependent pas
+  de ce libelle : aucun scenario admin n'est impacte, aucune nouvelle spec n'est requise.
+## Mise a jour 2026-09-14 — dette front : `middleware` -> `proxy` (Next 16), racine Turbopack, `AnimatePresence`, attributs Vue (PR #7305)
+
+- **Surface web client / vitrine — proxy serveur renomme (aucun changement de comportement)** : la convention
+  de fichier Next 16 est passee de `middleware` (depreciee : « The "middleware" file convention is deprecated.
+  Please use "proxy" instead. ») a `proxy`. `front/web/src/middleware.ts` -> `front/web/src/proxy.ts`, fonction
+  exportee `middleware` -> `proxy`. Les **trois responsabilites critiques portees par ce fichier sont
+  inchangees** et couvertes individuellement par le nouveau test unitaire
+  `front/web/src/lib/__tests__/proxy-responsibilities.test.ts` : (1) gate d'auth de la zone dashboard (sans
+  cookie `leopardo_token` valide -> `/auth/login`) ; (2) `/signup` sans offre souscriptible -> `/pricing#plans` ;
+  (3) normalisation de la locale vitrine (`?lang=` puis `Accept-Language`) -> en-tete `x-vitrine-lang`. Les
+  suites existantes sont realignees (`proxy-session-token.test.ts`, `session-token-format.test.ts`,
+  `protected-prefixes.test.ts`). Scenario de recette manuelle : `curl` sur le dev server — `/signup` 307 ->
+  `/pricing#plans`, `/signup?plan=pilot` 200, `/dashboard` 307 -> `/auth/login`, `/employees/42` 307 ->
+  `/auth/login`, `/restaurant` 307 -> `/restaurateur`, `/pricing?lang=en` -> `x-vitrine-lang: en`.
+- **Surface web vitrine — avertissement framer-motion du funnel** : la `AnimatePresence mode="wait"` de la FAQ
+  de `/pricing` recevait une **liste mappee** (`filteredFaq.map(...)`) donc plusieurs enfants par passe ;
+  c'est la page servie par la redirection `/signup` sans `?plan=`, d'ou le constat d'audit « reproduit sur
+  `/signup` ». Le mode est retire (mode par defaut = liste qui filtre). Garde de non-regression :
+  `front/web/src/lib/__tests__/animate-presence-mode-wait.test.ts` (analyse AST : aucune `AnimatePresence`
+  `mode="wait"` ne recoit un `xxx.map(...)` comme enfant direct ; reste rouge avant le correctif). Les
+  transitions d'etapes du tunnel (`SignupForm`, `checkout`, `RestaurantSolutionWizard`) sont inchangees : leurs
+  blocs conditionnels sont mutuellement exclusifs (un seul enfant par passe), verifie par la meme garde.
+- **Surface web admin** : la racine du composant `<Sidebar>` (deux noeuds racines : overlay mobile + panneau) ne
+  pouvait rien heriter, ce qui produisait a chaque montage du back-office
+  `[Vue warn]: Extraneous non-props attributes (class)`. `inheritAttrs: false` + `v-bind="$attrs"` sur le
+  panneau rendent l'attribut du consommateur (`DashboardLayout` passe `class="fixed inset-y-0 left-0 z-50"`)
+  heritable, rendu inchange. Scenario de non-regression : charger une vue du back-office et verifier l'absence
+  de l'avertissement dans la console (cf. `SCENARIOS_TEST_WEB_ADMIN_GITHUB_ACTIONS.md`, section 3).
+- **Surface API / mobile** : aucun changement de code, aucun contrat modifie.
+- **Non traite, hors perimetre de ce lot** : avertissement Next `scroll-behavior: smooth` (attribut
+  `data-scroll-behavior` a poser sur `<html>`) et migration i18n `?lang=` -> sous-repertoires `/en/ /tr/ /ar/`.
+>

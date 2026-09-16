@@ -1,0 +1,100 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * ⚠️ S-3 (#1663) : cette migration a été modifiée RÉTROACTIVEMENT
+     * (commit 0e82521a, F-13b) pour que `kiosk_announcements.company_id`
+     * soit uuid et non bigint. Les environnements déjà migrés avec
+     * l'ancienne version doivent appliquer
+     * `2026_08_09_000007_kiosk_announcements_company_id_uuid` (conversion
+     * additive) — ne PAS réécrire cette migration à nouveau.
+     *
+     * F-13b (#1663) : `zkteco_devices.company_id` est passé de
+     * `unsignedBigInteger` à `uuid` (les deux étaient incompatibles avec
+     * `companies.id` = uuid → SQLSTATE 22P02 sur schéma réel). Environnements
+     * déjà migrés : appliquer
+     * `2026_08_19_000003_zkteco_devices_company_id_uuid` (conversion additive).
+     */
+    public function up(): void
+    {
+        if (schemaTableExists('zkteco_devices')) {
+            return;
+        }
+
+        Schema::create('zkteco_devices', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('company_id')->index();
+            $table->index(['company_id', 'status']);
+            $table->string('serial_number', 100)->unique();
+            $table->string('name', 120);
+            $table->string('ip_address', 45)->nullable();
+            $table->unsignedSmallInteger('port')->default(4370);
+            $table->enum('protocol', ['tcp', 'udp', 'cloud_api'])->default('tcp');
+            $table->string('location_label', 120)->nullable();
+            $table->enum('status', ['online', 'offline', 'maintenance'])->default('offline');
+            $table->string('model', 60)->nullable();
+            $table->string('firmware_version', 60)->nullable();
+            $table->unsignedInteger('employee_capacity')->default(1000);
+            $table->unsignedInteger('fingerprint_capacity')->default(3000);
+            $table->unsignedInteger('face_capacity')->default(500);
+            $table->timestamp('last_heartbeat_at')->nullable();
+            $table->timestamp('last_sync_at')->nullable();
+            $table->json('capabilities')->nullable();
+            $table->timestamps();
+
+        });
+
+        if (schemaTableExists('zkteco_sync_logs')) {
+            return;
+        }
+
+        Schema::create('zkteco_sync_logs', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('zkteco_device_id')->constrained('zkteco_devices')->cascadeOnDelete();
+            $table->enum('direction', ['pull', 'push'])->default('pull');
+            $table->enum('sync_type', ['attendance', 'users', 'fingerprints', 'faces'])->default('attendance');
+            $table->unsignedInteger('records_count')->default(0);
+            $table->unsignedInteger('errors_count')->default(0);
+            $table->enum('status', ['started', 'completed', 'failed'])->default('started');
+            $table->text('error_message')->nullable();
+            $table->timestamp('started_at');
+            $table->timestamp('completed_at')->nullable();
+            $table->timestamps();
+
+            $table->index(['zkteco_device_id', 'created_at']);
+        });
+
+        if (schemaTableExists('kiosk_announcements')) {
+            return;
+        }
+
+        Schema::create('kiosk_announcements', function (Blueprint $table): void {
+            $table->id();
+            // `companies.id` est un UUID (uuid primary key) : la colonne doit
+            // être uuid, pas bigint — un bigint empêche toute référence réelle
+            // à companies et casse l'isolation tenant (F-13b, tests Contracts).
+            $table->uuid('company_id');
+            $table->string('title', 200);
+            $table->text('body');
+            $table->enum('priority', ['low', 'normal', 'high', 'urgent'])->default('normal');
+            $table->boolean('is_active')->default(true);
+            $table->timestamp('starts_at')->nullable();
+            $table->timestamp('expires_at')->nullable();
+            $table->timestamps();
+
+            $table->index(['company_id', 'is_active', 'starts_at']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('kiosk_announcements');
+        Schema::dropIfExists('zkteco_sync_logs');
+        Schema::dropIfExists('zkteco_devices');
+    }
+};

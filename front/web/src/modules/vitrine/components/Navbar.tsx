@@ -1,0 +1,600 @@
+'use client';
+
+import { RmihLogo } from './RmihLogo';
+﻿
+import { useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { withLocaleHref } from '../lib/locale-href'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  ArrowRight,
+  Book,
+  BookOpen,
+  Building2,
+  ChevronDown,
+  Download,
+  FileText,
+  Globe,
+  HelpCircle,
+  Laptop,
+  Mail,
+  Menu,
+  MessageCircle,
+  Monitor,
+  Moon,
+  PenTool,
+  Smartphone,
+  Sun,
+  Users,
+  X,
+} from 'lucide-react'
+import { useVitrineLocale } from '../lib/vitrine-locale'
+import { getEnvConfig } from '../lib/env'
+
+type Props = {
+  isDark: boolean
+  onToggleDark: () => void
+}
+
+type DropdownItem = {
+  href: string
+  icon: React.ReactNode
+  label: string
+  description: string
+}
+
+type NavLink = {
+  href: string
+  label: string
+}
+
+type NavDropdown = {
+  label: string
+  items: DropdownItem[]
+}
+
+type NavEntry = NavLink | NavDropdown
+
+function isDropdown(entry: NavEntry): entry is NavDropdown {
+  return 'items' in entry
+}
+
+export function buildLocaleUrl(pathname: string, search: string, locale: string): string {
+  const params = new URLSearchParams(search)
+  params.set('lang', locale)
+  const query = params.toString()
+  return query ? `${pathname}?${query}` : pathname
+}
+
+// Hide the Blog link when NEXT_PUBLIC_ENABLE_BLOG is disabled (issue #1305):
+// the route itself now returns 404 in that case (see blog/layout.tsx), so
+// the nav must not keep pointing at it.
+function filterNavEntries(entries: NavEntry[]): NavEntry[] {
+  const { enableBlog } = getEnvConfig()
+  if (enableBlog) return entries
+
+  return entries.reduce<NavEntry[]>((acc, entry) => {
+    if (!isDropdown(entry)) {
+      acc.push(entry)
+      return acc
+    }
+
+    const items = entry.items.filter((item) => item.href !== '/blog')
+    if (items.length > 0) acc.push({ ...entry, items })
+    return acc
+  }, [])
+}
+
+const navByLocale: Record<string, NavEntry[]> = {
+  id: [
+    {
+      label: 'Produk & Layanan',
+      items: [
+        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Presensi GPS & Mobile App', description: 'Pointage mobile, self-service karyawan & cuti' },
+        { href: '/pricing', icon: <FileText className="w-4 h-4" />, label: 'Penggajian & Payroll', description: 'Kalkulasi PPh 21 TER, BPJS, & slip gaji digital' },
+        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Kiosk & Mesin ZKTeco', description: 'Integrasi mesin absensi biometrik & offline bridge' },
+        { href: '/download', icon: <Download className="w-4 h-4" />, label: 'Pusat Unduhan Aplikasi', description: 'Unduh versi Android, iOS, Windows & macOS' },
+      ],
+    },
+    {
+      label: 'Solusi',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'UMKM & Startup', description: 'Solusi HR praktis dan cepat diterapkan' },
+        { href: '/#solutions', icon: <Building2 className="w-4 h-4" />, label: 'Multi-Cabang & Ritel', description: 'Monitoring jadwal shift dan kehadiran real-time' },
+        { href: '/contact?topic=enterprise', icon: <Users className="w-4 h-4" />, label: 'Enterprise & Korporasi', description: 'Integrasi kustom, multi-tenant & SLA terjamin' },
+      ],
+    },
+    {
+      label: 'Resources',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'Panduan HR', description: 'Praktik terbaik & tutorial implementasi' },
+        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'Dokumentasi API', description: 'Panduan teknis dan integrasi sistem' },
+        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'Catatan Rilis', description: 'Pembaruan fitur dan sistem terbaru' },
+        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'FAQ', description: 'Pertanyaan yang sering diajukan' },
+      ],
+    },
+    { href: '/pricing', label: 'Harga' },
+  ],
+
+  fr: [
+    { href: '/pricing', label: 'Tarifs' },
+    {
+      label: 'Ressources',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'Guides', description: 'Bonnes pratiques RH et tutoriels' },
+        { href: '/blog', icon: <PenTool className="w-4 h-4" />, label: 'Insights RH', description: 'Analyses, cas pratiques et idees de croissance' },
+        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'Docs API', description: 'Guides techniques et integration' },
+        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'Changelog', description: 'Dernieres mises a jour produit' },
+      ],
+    },
+    { href: '/contact', label: 'Contact' },
+    {
+      label: 'Pasang RMIH',
+      items: [
+        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Windows', description: 'Client desktop pour ZKTeco et synchronisation' },
+        { href: '/download?platform=macos', icon: <Laptop className="w-4 h-4" />, label: 'macOS', description: 'Espace bureau pour les equipes terrain' },
+        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Android', description: 'Pointage mobile et self-service employe' },
+        { href: '/download?platform=ios', icon: <Smartphone className="w-4 h-4" />, label: 'iPhone', description: 'Application mobile iOS pour employés et managers' },
+      ],
+    },
+    {
+      label: 'Communaute',
+      items: [
+        { href: '/contact?topic=community', icon: <Users className="w-4 h-4" />, label: 'Communaute', description: 'Echangez avec la communaute' },
+        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'FAQ', description: 'Questions frequentes' },
+        { href: '/contact?topic=support', icon: <MessageCircle className="w-4 h-4" />, label: 'Support', description: 'Contactez notre equipe' },
+      ],
+    },
+  ],
+  en: [
+    { href: '/pricing', label: 'Pricing' },
+    {
+      label: 'Resources',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'Guides', description: 'HR best practices and tutorials' },
+        { href: '/blog', icon: <PenTool className="w-4 h-4" />, label: 'HR Insights', description: 'Analysis, playbooks and growth ideas' },
+        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'API Docs', description: 'Technical guides and integration' },
+        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'Changelog', description: 'Latest product updates' },
+      ],
+    },
+    { href: '/contact', label: 'Contact' },
+    {
+      label: 'Install RMIH',
+      items: [
+        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Windows', description: 'Desktop client for ZKTeco and sync' },
+        { href: '/download?platform=macos', icon: <Laptop className="w-4 h-4" />, label: 'macOS', description: 'Desktop workspace for field teams' },
+        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Android', description: 'Mobile attendance and employee self-service' },
+        { href: '/download?platform=ios', icon: <Smartphone className="w-4 h-4" />, label: 'iPhone', description: 'iOS app for employees and managers' },
+      ],
+    },
+    {
+      label: 'Community',
+      items: [
+        { href: '/contact?topic=community', icon: <Users className="w-4 h-4" />, label: 'Community', description: 'Connect with the community' },
+        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'FAQ', description: 'Frequently asked questions' },
+        { href: '/contact?topic=support', icon: <MessageCircle className="w-4 h-4" />, label: 'Support', description: 'Contact our team' },
+      ],
+    },
+  ],
+  tr: [
+    { href: '/pricing', label: 'Fiyatlar' },
+    {
+      label: 'Kaynaklar',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'Rehberler', description: 'IK en iyi uygulamalari' },
+        { href: '/blog', icon: <PenTool className="w-4 h-4" />, label: 'IK Icgoruleri', description: 'Analizler, rehberler ve buyume fikirleri' },
+        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'API Dokumanlari', description: 'Teknik rehberler ve entegrasyon' },
+        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'Degisiklikler', description: 'Son urun guncellemeleri' },
+      ],
+    },
+    { href: '/contact', label: 'Iletisim' },
+    {
+      label: 'Leopardo yu Kur',
+      items: [
+        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Windows', description: 'ZKTeco ve senkronizasyon icin masaustu istemcisi' },
+        { href: '/download?platform=macos', icon: <Laptop className="w-4 h-4" />, label: 'macOS', description: 'Saha ekipleri icin masaustu calisma alani' },
+        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Android', description: 'Mobil yoklama ve calisan self-servis' },
+        { href: '/download?platform=ios', icon: <Smartphone className="w-4 h-4" />, label: 'iPhone', description: 'Calisan ve yoneticiler icin iOS uygulamasi' },
+      ],
+    },
+    {
+      label: 'Topluluk',
+      items: [
+        { href: '/contact?topic=community', icon: <Users className="w-4 h-4" />, label: 'Topluluk', description: 'Toplulukla baglanti kurun' },
+        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'SSS', description: 'Sik sorulan sorular' },
+        { href: '/contact?topic=support', icon: <MessageCircle className="w-4 h-4" />, label: 'Destek', description: 'Ekibimize ulasin' },
+      ],
+    },
+  ],
+  ar: [
+    { href: '/pricing', label: 'الأسعار' },
+    {
+      label: 'الموارد',
+      items: [
+        { href: '/guides/rh-startup', icon: <BookOpen className="w-4 h-4" />, label: 'الأدلة', description: 'ممارسات عملية للموارد البشرية والفرق الميدانية' },
+        { href: '/blog', icon: <PenTool className="w-4 h-4" />, label: 'رؤى التشغيل', description: 'تحليلات وأفكار نمو للشركات الصغيرة والمتوسطة' },
+        { href: '/docs', icon: <Book className="w-4 h-4" />, label: 'توثيق API', description: 'أدلة تقنية للتكاملات والشركاء' },
+        { href: '/changelog', icon: <FileText className="w-4 h-4" />, label: 'سجل التغييرات', description: 'آخر تحديثات المنتج' },
+      ],
+    },
+    { href: '/contact', label: 'اتصل بنا' },
+    {
+      label: 'تثبيت Leopardo',
+      items: [
+        { href: '/download?platform=windows', icon: <Monitor className="w-4 h-4" />, label: 'Windows', description: 'عميل سطح المكتب للمزامنة وأجهزة ZKTeco' },
+        { href: '/download?platform=macos', icon: <Laptop className="w-4 h-4" />, label: 'macOS', description: 'مساحة عمل للفرق الميدانية' },
+        { href: '/download?platform=android', icon: <Smartphone className="w-4 h-4" />, label: 'Android', description: 'الحضور والخدمة الذاتية على الجوال' },
+        { href: '/download?platform=ios', icon: <Smartphone className="w-4 h-4" />, label: 'iPhone', description: 'تطبيق iOS للموظفين والمديرين' },
+      ],
+    },
+    {
+      label: 'المجتمع',
+      items: [
+        { href: '/contact?topic=community', icon: <Users className="w-4 h-4" />, label: 'المجتمع', description: 'تواصل مع المجتمع' },
+        { href: '/faq', icon: <HelpCircle className="w-4 h-4" />, label: 'الأسئلة الشائعة', description: 'إجابات سريعة قبل الإطلاق' },
+        { href: '/contact?topic=support', icon: <MessageCircle className="w-4 h-4" />, label: 'الدعم', description: 'تواصل مع فريقنا' },
+      ],
+    },
+  ],
+}
+
+function DropdownMenu({
+  entry,
+  onClose,
+  search,
+  id,
+}: {
+  entry: NavDropdown;
+  onClose: () => void;
+  search: string;
+  id: string;
+}) {
+  const pathname = usePathname()
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+      transition={{ duration: 0.15, ease: 'easeOut' }}
+      id={id}
+      className="absolute top-full left-1/2 -translate-x-1/2 pt-2 z-50"
+    >
+      <div className="w-72 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800/80 shadow-xl shadow-slate-900/5 dark:shadow-black/20 p-2">
+        {entry.items.map((item) => (
+          <Link
+            key={item.href}
+            href={withLocaleHref(item.href, search)}
+            onClick={onClose}
+            aria-current={pathname === item.href ? 'page' : undefined}
+            className="flex items-start gap-3 px-3 py-2.5 rounded-xl hover:bg-transparent dark:hover:bg-slate-800/80 transition-colors group"
+          >
+            <div className="mt-0.5 flex-shrink-0 w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 flex items-center justify-center group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/50 transition-colors">
+              {item.icon}
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-slate-900 dark:text-white">{item.label}</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">{item.description}</div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
+export function Navbar({ isDark, onToggleDark }: Props) {
+  const [scrolled, setScrolled] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null)
+  const dropdownTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { copy, locale, options, setLocale } = useVitrineLocale()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const entries = filterNavEntries(navByLocale[locale] ?? navByLocale.fr)
+  const search = searchParams.toString()
+
+  const handleLocaleChange = (nextLocale: typeof locale) => {
+    setLocale(nextLocale)
+    router.replace(buildLocaleUrl(pathname, searchParams.toString(), nextLocale), { scroll: false })
+  }
+
+  useEffect(() => {
+    const handler = () => setScrolled(window.scrollY > 40)
+    window.addEventListener('scroll', handler, { passive: true })
+    return () => window.removeEventListener('scroll', handler)
+  }, [])
+
+  const handleDropdownEnter = (label: string) => {
+    if (dropdownTimeoutRef.current) clearTimeout(dropdownTimeoutRef.current)
+    setOpenDropdown(label)
+  }
+
+  const handleDropdownLeave = () => {
+    dropdownTimeoutRef.current = setTimeout(() => setOpenDropdown(null), 150)
+  }
+
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null)
+
+  // Échap ferme le menu mobile et rend le focus au bouton hamburger.
+  useEffect(() => {
+    if (!mobileOpen) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobileOpen(false)
+        menuButtonRef.current?.focus()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [mobileOpen])
+
+  // Un clic/toucher en dehors du panneau referme le menu (hors bouton hamburger,
+  // sinon le toggle du bouton et ce handler se neutraliseraient).
+  useEffect(() => {
+    if (!mobileOpen) return
+
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (mobilePanelRef.current?.contains(target)) return
+      if (menuButtonRef.current?.contains(target)) return
+      setMobileOpen(false)
+    }
+
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('touchstart', onPointerDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('touchstart', onPointerDown)
+    }
+  }, [mobileOpen])
+
+  // Referme le menu mobile à chaque navigation et réinitialise les accordéons.
+  useEffect(() => {
+    setMobileOpen(false)
+    setOpenDropdown(null)
+  }, [pathname])
+
+  return (
+    <motion.header
+      initial={{ y: -100 }}
+      animate={{ y: 0 }}
+      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+      className={`fixed top-0 inset-x-0 z-50 transition-all duration-500 ${
+        scrolled
+          ? 'bg-white/80 dark:bg-slate-950/80 backdrop-blur-2xl shadow-[0_1px_0_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_0_rgba(255,255,255,0.04)]'
+          : 'bg-transparent'
+      }`}
+    >
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-20">
+          <RmihLogo size="md" href="/" />
+
+          <nav className="hidden lg:flex items-center gap-1">
+            {entries.map((entry, i) =>
+              isDropdown(entry) ? (
+                <div
+                  key={entry.label}
+                  className="relative"
+                  onMouseEnter={() => handleDropdownEnter(entry.label)}
+                  onMouseLeave={handleDropdownLeave}
+                >
+                  <button
+                    className="flex items-center gap-1 px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors rounded-lg hover:bg-slate-100/80 dark:hover:bg-slate-800/80"
+                    onClick={() => setOpenDropdown(openDropdown === entry.label ? null : entry.label)}
+                    aria-expanded={openDropdown === entry.label}
+                    aria-haspopup="true"
+                    aria-controls={`dropdown-menu-${i}`}
+                  >
+                    {entry.label}
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${openDropdown === entry.label ? 'rotate-180' : ''}`} />
+                  </button>
+                  <AnimatePresence>
+                    {openDropdown === entry.label && (
+                      <DropdownMenu entry={entry} onClose={() => setOpenDropdown(null)} search={search} id={`dropdown-menu-${i}`} />
+                    )}
+                  </AnimatePresence>
+                </div>
+              ) : (
+                <Link
+                  key={entry.href}
+                  href={withLocaleHref(entry.href, search)}
+                  aria-current={pathname === entry.href ? 'page' : undefined}
+                  className={`relative px-4 py-2 text-sm font-medium transition-colors rounded-lg hover:bg-slate-100/80 dark:hover:bg-slate-800/80 ${
+                    entry.href === '/download'
+                      ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-1.5'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {entry.href === '/download' && <Monitor className="w-3.5 h-3.5" />}
+                  {entry.label}
+                </Link>
+              )
+            )}
+          </nav>
+
+          <div className="flex items-center gap-3">
+            {/* Compact Corporate Language Indicator matching Mekari reference */}
+            <label className="hidden md:flex items-center gap-1.5 rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer">
+              <Globe className="w-3.5 h-3.5 text-slate-500" />
+              <span className="uppercase">{locale}</span>
+              <ChevronDown className="w-3 h-3 text-slate-400" />
+              <select
+                value={locale}
+                onChange={(event) => handleLocaleChange(event.target.value as typeof locale)}
+                className="sr-only"
+                aria-label={copy.nav.localeLabel}
+              >
+                {options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.nativeLabel}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              onClick={onToggleDark}
+              className="p-2 rounded-lg bg-slate-100/80 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              aria-label={copy.nav.themeLabel}
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+
+            <Link
+              href="/auth/login"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-white transition-colors"
+            >
+              {copy.nav.login}
+            </Link>
+
+            <span className="hidden sm:inline-block w-px h-5 bg-slate-200 dark:bg-slate-800 mx-1" />
+
+            <Link
+              href="/signup"
+              prefetch={false}
+              className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition-all shadow-md shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]"
+            >
+              {copy.nav.trial}
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+
+            <button
+              ref={menuButtonRef}
+              type="button"
+              className="lg:hidden p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              onClick={() => setMobileOpen(!mobileOpen)}
+              aria-label={copy.nav.menuLabel}
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-menu-panel"
+            >
+              {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {mobileOpen && (
+          <motion.div
+            ref={mobilePanelRef}
+            id="mobile-menu-panel"
+            role="region"
+            aria-label={copy.nav.menuLabel}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            className="lg:hidden bg-white/95 dark:bg-slate-950/95 backdrop-blur-2xl border-t border-slate-200/50 dark:border-slate-800/50 max-h-[80vh] overflow-y-auto"
+          >
+            <div className="px-6 py-6 space-y-1">
+              <div className="mb-4 flex items-center gap-2 rounded-xl border border-slate-200/80 dark:border-slate-800/80 px-4 py-3 text-sm text-slate-700 dark:text-slate-300">
+                <Globe className="w-4 h-4" />
+                <select
+                  value={locale}
+                  onChange={(event) => handleLocaleChange(event.target.value as typeof locale)}
+                  className="w-full bg-transparent outline-none"
+                  aria-label={copy.nav.localeLabel}
+                >
+                  {options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.nativeLabel}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {entries.map((entry, index) =>
+                isDropdown(entry) ? (
+                  <div key={entry.label}>
+                    <motion.button
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.05 }}
+                      className="w-full flex items-center justify-between px-4 py-3 text-lg font-semibold text-slate-900 dark:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      aria-expanded={openDropdown === entry.label}
+                      aria-haspopup="true"
+                      onClick={() => setOpenDropdown(openDropdown === entry.label ? null : entry.label)}
+                    >
+                      {entry.label}
+                      <ChevronDown className={`w-4 h-4 transition-transform ${openDropdown === entry.label ? 'rotate-180' : ''}`} />
+                    </motion.button>
+                    <AnimatePresence>
+                      {openDropdown === entry.label && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="pl-4 space-y-1 overflow-hidden"
+                        >
+                          {entry.items.map((item) => (
+                            <Link
+                              key={item.href}
+                              href={withLocaleHref(item.href, search)}
+                              onClick={() => setMobileOpen(false)}
+                              className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                            >
+                              <span className="text-emerald-500">{item.icon}</span>
+                              <div>
+                                <div className="text-sm font-medium">{item.label}</div>
+                                <div className="text-xs text-slate-400">{item.description}</div>
+                              </div>
+                            </Link>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                ) : (
+                  <motion.div
+                    key={entry.href}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                  >
+                    <Link
+                      href={withLocaleHref(entry.href, search)}
+                      className={`block px-4 py-3 text-lg font-semibold rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors ${
+                        entry.href === '/download'
+                          ? 'text-emerald-700 dark:text-emerald-400 flex items-center gap-2'
+                          : 'text-slate-900 dark:text-white'
+                      }`}
+                      onClick={() => setMobileOpen(false)}
+                    >
+                      {entry.href === '/download' && <Monitor className="w-5 h-5" />}
+                      {entry.label}
+                    </Link>
+                  </motion.div>
+                )
+              )}
+
+              <div className="pt-4 space-y-2">
+                <Link
+                  href="/auth/login"
+                  className="block w-full text-center py-3 text-slate-700 dark:text-slate-300 font-semibold rounded-xl border border-slate-200 dark:border-slate-800"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  {copy.nav.login}
+                </Link>
+                <Link
+                  href="/signup"
+                  prefetch={false}
+                  className="block w-full text-center py-3.5 bg-gradient-to-r from-emerald-700 to-emerald-800 text-white font-bold rounded-xl shadow-lg shadow-emerald-500/20"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  {copy.nav.trial}
+                </Link>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.header>
+  )
+}
+

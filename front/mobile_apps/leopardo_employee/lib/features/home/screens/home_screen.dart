@@ -1,0 +1,391 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
+
+import 'package:leopardo_core/core/theme/app_colors.dart';
+import 'package:leopardo_core/core/theme/app_typography.dart';
+import 'package:leopardo_core/core/theme/mobile_experience_icons.dart';
+import 'package:leopardo_core/core/widgets/leopardo_badge.dart';
+import 'package:leopardo_core/core/widgets/mobile_surface.dart';
+import 'package:leopardo_core/core/widgets/glass_tile.dart';
+import 'package:leopardo_core/core/branding/tenant_brand_mark.dart';
+import 'package:leopardo_core/core/branding/tenant_branding.dart';
+import 'package:leopardo_employee/features/auth/providers/auth_provider.dart';
+import 'package:leopardo_employee/features/company_branding/providers/tenant_branding_provider.dart';
+import 'package:leopardo_core/models/mobile_experience.dart';
+import 'package:leopardo_core/core/i18n/device_locale.dart';
+import 'package:leopardo_core/l10n/l10n.dart';
+
+class HomeScreen extends ConsumerWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final employee = ref.watch(authProvider).employee;
+    final experience =
+        employee?.mobileExperience ??
+        const MobileExperience(
+          stage: 'regular',
+          modules: <MobileModule>[],
+          quickActions: <MobileQuickAction>[],
+        );
+    final stage = experience.stage;
+    final quickActions = experience.quickActions.take(3).toList();
+    final activeModules = experience.activeModules.take(4).toList();
+    final firstName = employee?.firstName.isNotEmpty == true
+        ? employee!.firstName
+        : employee?.email.split('@').first ?? '';
+    final branding = ref.watch(
+      tenantBrandingProvider.select(
+        (value) => value.maybeWhen(data: (data) => data, orElse: () => null),
+      ),
+    );
+    final primary = branding?.safePrimaryColor ?? AppColors.rh;
+    final accent = branding?.safeAccentColor ?? AppColors.ia;
+    const background = MobileSurface.background;
+
+    return Scaffold(
+      backgroundColor: background,
+      body: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              primary.withValues(alpha: 0.08),
+              background,
+              accent.withValues(alpha: 0.05),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                  children: [
+                    _HeaderRow(
+                      firstName: firstName,
+                      stage: stage,
+                      branding: branding,
+                    ),
+                    if (stage == 'new') ...[
+                      const SizedBox(height: 12),
+                      // T117 (QA omnichannel 2026-08-15) : l'onboarding était
+                      // déclaré dans le routeur mais injoignable — entrée
+                      // visible quand le stage est « new ».
+                      _OnboardingEntryCard(primary: primary),
+                    ],
+                    const SizedBox(height: 18),
+                    _SectionTitle(
+                      title: 'Actions rapides',
+                      subtitle: stage == 'new'
+                          ? 'Les premiers gestes vraiment utiles.'
+                          : 'Vos trois gestes RH du jour.',
+                    ),
+                    const SizedBox(height: 12),
+                    _QuickActionsGrid(actions: quickActions),
+                    const SizedBox(height: 20),
+                    _SectionTitle(
+                      title: 'Modules actifs',
+                      subtitle:
+                          'Uniquement les espaces ouverts pour votre profil.',
+                    ),
+                    const SizedBox(height: 12),
+                    _ModulesScroller(modules: activeModules),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderRow extends StatelessWidget {
+  const _HeaderRow({
+    required this.firstName,
+    required this.stage,
+    required this.branding,
+  });
+
+  final String firstName;
+  final String stage;
+  final TenantBranding? branding;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: _HeroHeader(
+            firstName: firstName,
+            stage: stage,
+            branding: branding,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Container(
+          decoration: MobileSurface.cardDecoration(
+            color: MobileSurface.chip,
+            radius: 14,
+          ),
+          child: IconButton(
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.tune, color: MobileSurface.secondary),
+            tooltip: 'Parametres',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HeroHeader extends StatelessWidget {
+  const _HeroHeader({
+    required this.firstName,
+    required this.stage,
+    required this.branding,
+  });
+
+  final String firstName;
+  final String stage;
+  final TenantBranding? branding;
+
+  @override
+  Widget build(BuildContext context) {
+    const text = MobileSurface.text;
+    const muted = MobileSurface.muted;
+    final dateLabel = DateFormat.EEEE(deviceIntlDateLocale)
+        .add_d()
+        .add_MMMM()
+        .format(DateTime.now());
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: MobileSurface.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: MobileSurface.border, width: 0.7),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.rh.withValues(alpha: 0.05),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TenantBrandMark(branding: branding, compact: true),
+              LeopardoBadge.domain(
+                'rh',
+                'Experience employe',
+                icon: Icons.smartphone,
+              ),
+              LeopardoBadge.forStatus(
+                stage == 'new' ? 'pending' : 'active',
+                stage == 'new' ? 'Nouveau parcours' : 'Flux complet',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            firstName.isEmpty
+                ? _greetingForHour(DateTime.now().hour)
+                : '${_greetingForHour(DateTime.now().hour)}, $firstName',
+            style: AppTypography.display.copyWith(color: text, fontSize: 28),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            dateLabel,
+            style: AppTypography.bodySmall.copyWith(color: muted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _greetingForHour(int hour) {
+    if (hour < 12) return 'Bonjour';
+    if (hour < 18) return 'Bon apres-midi';
+    return 'Bonsoir';
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    const text = MobileSurface.text;
+    const muted = MobileSurface.secondary;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: AppTypography.subtitle.copyWith(color: text)),
+        const SizedBox(height: 3),
+        Text(subtitle, style: AppTypography.bodySmall.copyWith(color: muted)),
+      ],
+    );
+  }
+}
+
+class _QuickActionsGrid extends StatelessWidget {
+  const _QuickActionsGrid({required this.actions});
+
+  final List<MobileQuickAction> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    if (actions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth > 540 ? 3 : 2;
+
+        return GridView.count(
+          crossAxisCount: columns,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 1.04,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          children: actions
+              .map((action) => _QuickActionCard(action: action))
+              .toList(),
+        );
+      },
+    );
+  }
+}
+
+class _QuickActionCard extends StatelessWidget {
+  const _QuickActionCard({required this.action});
+
+  final MobileQuickAction action;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = AppColors.forDomain(action.domain);
+
+    return GlassTile(
+      title: action.title,
+      subtitle: action.description,
+      icon: MobileExperienceIcons.forAction(action.key, action.icon),
+      iconColor: color,
+      onTap: () => context.push(action.route),
+    );
+  }
+}
+
+class _ModulesScroller extends StatelessWidget {
+  const _ModulesScroller({required this.modules});
+
+  final List<MobileModule> modules;
+
+  @override
+  Widget build(BuildContext context) {
+    if (modules.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final module in modules) ...[
+            _ModuleCard(module: module),
+            const SizedBox(width: 10),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ModuleCard extends StatelessWidget {
+  const _ModuleCard({required this.module});
+
+  final MobileModule module;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = AppColors.forDomain(module.domain);
+
+    return SizedBox(
+      width: 180,
+      child: GlassTile(
+        title: module.title,
+        subtitle: module.description,
+        icon: MobileExperienceIcons.forModule(module.key),
+        iconColor: color,
+        onTap: module.isActive ? () => context.push(module.route!) : null,
+      ),
+    );
+  }
+}
+
+/// T117 (QA omnichannel 2026-08-15) — entrée vers l'écran /onboarding,
+/// affichée quand le stage mobile est « new » (checklist non complétée).
+class _OnboardingEntryCard extends StatelessWidget {
+  const _OnboardingEntryCard({required this.primary});
+
+  final Color primary;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => context.push('/onboarding'),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: primary.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: primary.withValues(alpha: 0.30)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.rocket_launch, color: primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    context.l10n.homeCompleteOnboarding,
+                    style: AppTypography.body.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    context.l10n.homeOnboardingHint,
+                    style: AppTypography.caption,
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: primary),
+          ],
+        ),
+      ),
+    );
+  }
+}

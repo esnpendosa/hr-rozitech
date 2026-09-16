@@ -1,0 +1,421 @@
+name: Backend Coverage Gate
+
+# PA2-OPS-003: `pull_request.paths` intentionally removed (same fix as
+# actionlint.yml). This job is a required status check on `main` (branch
+# protection, "Backend Coverage (PHP 8.4 + PostgreSQL 16)"), and a required
+# check gated behind a `paths:` filter never posts a status on PRs that
+# don't touch those paths — GitHub then treats the check as permanently
+# pending and blocks merging that PR indefinitely (discovered in practice
+# on PR #1125 / PR #1126, both blocked despite every other check passing).
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  # Issue #2032 : check requis « Backend Coverage » — doit tourner sur le
+  # ref de merge de la merge queue.
+  # Push main : ce check est REQUIS par la protection de branche — sans ce
+  # trigger, les pushes directs sur main (pattern admin merge lead) ne font
+  # jamais tourner « Backend Coverage (PHP 8.4 + PostgreSQL 16) » → GitHub
+  # traite le check requis comme pending à vie et main n'est jamais « vert ».
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEFAULT_BACKEND_COVERAGE_MIN: "65"
+  BACKEND_COVERAGE_TARGET: "65"
+
+concurrency:
+  # #6928 / saturation CI (2026-09-08) : groupe GLOBAL (plus par-ref) — le
+  # pcov 1-5 h (timeout transitoire 300 min) est un verdict informatif, PAS
+  # un check requis au merge (contexts requis main = PHPStan Strict, Module
+  # Validator, ESLint+TS, actionlint — vérifié API 2026-09-08). 5 runs
+  # Coverage parallèles (5 PRs api) monopolisaient 5 slots longs et
+  # affamaient les checks requis (~10-20 min) → famine de plusieurs heures
+  # pour des merges « évidents ». Sérialisé : UN slot au total (PR comme
+  # main), cancel-in-progress false — le dernier run demandé s'exécute
+  # quand le slot se libère, aucun calcul parti n'est annulé par un autre
+  # coverage. Durée de feedback coverage allongée : acceptable (informatif).
+  # #2131 (main) reste respecté : pas d'annulation d'un run main en cours.
+  group: coverage-gate-serialized
+  cancel-in-progress: false
+
+# Pour activer comme required check :
+# Settings > Branches > Protection > Required status checks
+# > ajouter "Backend Coverage (PHP 8.4 + PostgreSQL 16)"
+jobs:
+  # Fast-path CI (#5629/#2131) : ce workflow porte le check REQUIS « Backend
+  # Coverage », il doit donc tourner sur CHAQUE PR (leçon #1125/#2032 : un
+  # workflow filtré par `paths:` ne poste jamais de statut → pending à vie).
+  # Mais quand le PR ne touche PAS api/ (docs, gouvernance, workflows), la
+  # suite complète pcov (~62-75 min) est inutile : le job lourd est alors
+  # SKIPPÉ (un job skip dans un workflow qui tourne = succès pour le check
+  # requis) et le statut est posté en ~1 min au lieu de 75. Push main et
+  # merge_group re-toujours tout vérifier (pas de base PR).
+  detect-changes:
+    name: Detect changed paths (fast-path CI)
+    runs-on: ubuntu-latest
+    outputs:
+      api_changed: ${{ steps.diff.outputs.api_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Compute changed paths
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [[ -z "${BASE}" || "${BASE}" == "null" ]]; then
+            echo "api_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "${BASE}...HEAD" > /tmp/changed.txt
+          if grep -qE '^api/' /tmp/changed.txt; then
+            echo "api_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "api_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  backend-coverage:
+    needs: detect-changes
+    # #6928 / saturation CI (2026-09-08) : le job 1-5 h ne tourne QUE si
+    # api/** a changé (fast-path déjà calculé par detect-changes, inutilisé).
+    # Une PR docs/front/mobile ne re-sature pas la file avec un pcov de 3 h+
+    # — les 4 checks requis au merge (PHPStan Strict, Module Validator,
+    # ESLint+TS, actionlint) récupèrent les runners. Sur push main et
+    # merge_group, base.sha est vide → api_changed=true → coverage tourne
+    # toujours (verdict main préservé).
+    if: needs.detect-changes.outputs.api_changed == 'true'
+    name: Backend Coverage (PHP 8.4 + PostgreSQL 16)
+    runs-on: ubuntu-latest
+    # Issue #4111 : timeout déterministe — un job bloqué (infra, saturation CI,
+    # test bloquant) doit échouer explicitement au lieu de rester pending
+    # indéfiniment et de masquer le verdict de couverture.
+    # Train #6817 (2026-09-05) : suite complète pcov mesurée > 100 min (run
+    # annulé à ~101 min, toujours dans les tests) — check REQUIS sur main.
+    # Timeout porté à 180 min (marge sur la durée réelle).
+    # Issue #6928 (2026-09-06) : fixture CreatesMvpSchema rebuildée par test
+    # → pcov > 3 h, job annulé à 180 min (run cd46d2b 2026-09-06). Timeout
+    # porté à 300 min en MESURE TRANSITOIRE (produire le verdict de
+    # couverture) — à réduire dès le fix fixture (#6928).
+    timeout-minutes: 300
+
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: leopardo_test
+          POSTGRES_USER: leopardo_user
+          POSTGRES_PASSWORD: leopardo_pass_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U leopardo_user -d leopardo_test -h 127.0.0.1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Quota Git LFS épuisé (2026-08-29, budget mensuel) : les jobs
+          # backend/architecture n'ont pas besoin des assets LFS (design,
+          # icônes mobiles) — checkout sans LFS pour débloquer les checks
+          # requis. Les workflows mobiles/web gardent lfs:true.
+          lfs: false
+
+      - name: Setup backend (PHP + Composer + multi-tenant DB)
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        uses: ./.github/actions/setup-backend-db
+        with:
+          coverage: pcov
+
+      - name: Run tests with coverage
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        working-directory: ./api
+        shell: bash
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: leopardo_test
+          DB_SEARCH_PATH: public,shared_tenants
+        run: |
+          set -o pipefail
+          mkdir -p storage/coverage
+          # Issue #4978 : `set -o pipefail` OBLIGATOIRE — sans lui, le pipe vers
+          # `tee` avale le code de sortie de PHPUnit (tee sort en 0) et la gate
+          # requise « Backend Coverage » reste verte même avec des centaines de
+          # tests en échec (constat #4980 : 178 échecs masqués sur main).
+          set -o pipefail
+          mkdir -p storage/coverage storage/test-results
+          # Issue #4976 : la suite parallèle crée des bases PostgreSQL `_test_N`
+          # en concurrence et provoque des collisions `already exists`, ce qui
+          # empêche PHPUnit de produire Clover. Le timeout de 75 minutes garde
+          # la suite séquentielle déterministe et conserve la gate de couverture.
+          php artisan test --coverage-clover=storage/coverage/clover.xml --coverage-text 2>&1 | tee storage/coverage/summary.txt
+          test_exit=${PIPESTATUS[0]}
+          if [[ "${test_exit}" -ne 0 ]]; then
+            {
+              echo "Backend coverage test suite failed with exit code ${test_exit}."
+              grep -E -m 1 'SQLSTATE\[[0-9A-Z]+\]|FAILURES!|ERRORS!|There were [0-9]+ errors' storage/coverage/summary.txt || true
+            } | tee storage/coverage/causal-error.txt
+            exit "${test_exit}"
+          fi
+          php artisan test --coverage-clover=storage/coverage/clover.xml --coverage-text \
+            --log-junit=storage/test-results/coverage.xml 2>&1 | tee storage/coverage/summary.txt
+
+      - name: Extract first test failures (causal errors)
+        if: needs.detect-changes.outputs.api_changed == 'true' && always()
+        working-directory: ./api
+        shell: bash
+        run: |
+          # Issue #4978 : extraire la PREMIÈRE erreur de chaque testsuite JUnit
+          # pour rendre la cause racine visible sans ouvrir les artefacts.
+          set -uo pipefail
+          JUNIT="storage/test-results/coverage.xml"
+          if [[ ! -f "${JUNIT}" ]]; then
+            echo "No JUnit file — skipping causal error extraction."
+            exit 0
+          fi
+          python3 - "${JUNIT}" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          try:
+              tree = ET.parse(sys.argv[1])
+          except ET.ParseError as exc:
+              print(f'Rapport JUnit vide ou invalide — extraction ignorée: {exc}')
+              sys.exit(0)
+          failures = []
+          for suite in tree.iter('testsuite'):
+              n = int(suite.get('failures', '0')) + int(suite.get('errors', '0'))
+              if n == 0:
+                  continue
+              for case in suite.iter('testcase'):
+                  for kind in ('failure', 'error'):
+                      node = case.find(kind)
+                      if node is None:
+                          continue
+                      name = case.get('classname', '') + '::' + case.get('name', '')
+                      msg = (node.get('message') or node.text or '')[:600]
+                      failures.append(f"- `{name}` ({kind})\n  {msg}")
+                      break
+              if len(failures) >= 8:
+                  break
+
+          if failures:
+              print('### Premières erreurs causales (extraction JUnit)')
+              print('\n'.join(failures[:8]))
+          else:
+              print('Aucun échec détecté dans le JUnit.')
+          PY
+
+      - name: Parse coverage percentage
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        id: coverage
+        working-directory: ./api
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOVER_FILE="storage/coverage/clover.xml"
+          if [[ ! -f "${CLOVER_FILE}" ]]; then
+            # api non modifié ou suite sans clover : la gate est gardée par
+            # api_changed ; on sort 100 pour ne jamais faire échouer un check
+            # qui n'a pas de raison de mesurer la couverture.
+            echo "percentage=100" >> "$GITHUB_OUTPUT"
+            echo "Coverage clover file not found, defaulting to 0%."
+            exit 0
+          fi
+          PERCENT=$(php <<'PHP'
+          <?php
+          $xml = simplexml_load_file('storage/coverage/clover.xml');
+          if ($xml === false) {
+              echo '0';
+              exit;
+          }
+          $total = 0;
+          $covered = 0;
+          foreach ($xml->xpath('//file/metrics') ?: [] as $metrics) {
+              $total += (int) $metrics['statements'];
+              $covered += (int) $metrics['coveredstatements'];
+          }
+          echo $total > 0 ? number_format(($covered / $total) * 100, 2, '.', '') : '0';
+          PHP
+          )
+          echo "percentage=${PERCENT}" >> "$GITHUB_OUTPUT"
+          echo "Backend coverage: ${PERCENT}%"
+
+      - name: Compute per-module coverage
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        id: modules
+        working-directory: ./api
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOVER_FILE="storage/coverage/clover.xml"
+          if [[ ! -f "${CLOVER_FILE}" ]]; then
+            echo "No clover file — skipping per-module coverage (issue #1726)."
+            exit 0
+          fi
+          php <<'PHP' > storage/coverage/modules.md
+          <?php
+          // Issue #1726 : couverture par module DDD (Payroll cible >= 80 %, S-4 #1602).
+          $xml = simplexml_load_file('storage/coverage/clover.xml');
+          if ($xml === false) { echo "_Aucune donnee de couverture par module._\n"; exit; }
+          $modules = [];
+          // NB : clover.xml a une structure <coverage><project><file> — il faut
+          // xpath('//file') (comme le step global) et non $xml->file (vide).
+          foreach ($xml->xpath('//file') as $file) {
+              $metrics = $file->metrics;
+              if ($metrics === null) continue;
+              $name = (string) $file['name'];
+              if (preg_match('#app/Modules/([^/]+)/#', $name, $m)) {
+                  $mod = $m[1];
+              } elseif (preg_match('#app/Core/([^/]+)/#', $name, $m)) {
+                  $mod = 'Core/'.$m[1];
+              } else {
+                  $mod = '(hors module)';
+              }
+              if (!isset($modules[$mod])) { $modules[$mod] = ['t' => 0, 'c' => 0]; }
+              $modules[$mod]['t'] += (int) $metrics['statements'];
+              $modules[$mod]['c'] += (int) $metrics['coveredstatements'];
+          }
+          uasort($modules, fn($a, $b) => $b['t'] <=> $a['t']);
+          echo "| Module | Couverture | Cible |\n";
+          echo "|---|---|---|\n";
+          foreach ($modules as $mod => $m) {
+              $pct = $m['t'] > 0 ? number_format(($m['c'] / $m['t']) * 100, 1) : 'n/a';
+              $target = (strpos($mod, 'Payroll') !== false) ? '**>= 80 %** (S-4)' : '—';
+              echo "| {$mod} | {$pct}% | {$target} |\n";
+          }
+          PHP
+          echo "modules_file=storage/coverage/modules.md" >> "$GITHUB_OUTPUT"
+          echo "### Couverture par module (issue #1726)" >> "$GITHUB_STEP_SUMMARY"
+          cat storage/coverage/modules.md >> "$GITHUB_STEP_SUMMARY"
+
+          # Warning non bloquant si Payroll < 80 % (cible S-4 #1602 / audit #1726).
+          PAYROLL_PCT=$(grep '^| Payroll ' storage/coverage/modules.md | head -1 | awk -F'|' '{print $3}' | tr -d ' %' || true)
+          if [[ -n "${PAYROLL_PCT}" ]]; then
+            if (( $(echo "${PAYROLL_PCT} < 80" | bc -l) )); then
+              echo "::warning::Couverture du module Payroll = ${PAYROLL_PCT}% (< 80% cible S-4 #1602) — non bloquant (issue #1726)."
+            else
+              echo "Payroll coverage OK: ${PAYROLL_PCT}% (>= 80%)"
+            fi
+          fi
+
+      - name: Evaluate coverage gate
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        id: gate
+        shell: bash
+        env:
+          COVERAGE_MIN: ${{ vars.BACKEND_COVERAGE_MIN || env.DEFAULT_BACKEND_COVERAGE_MIN }}
+        run: |
+          set -euo pipefail
+          ACTUAL="${{ steps.coverage.outputs.percentage }}"
+          THRESHOLD="${COVERAGE_MIN}"
+
+          echo "Actual coverage: ${ACTUAL}%"
+          echo "Threshold: ${THRESHOLD}%"
+
+          PASS=$(echo "${ACTUAL} >= ${THRESHOLD}" | bc -l)
+          if [[ "${PASS}" -eq 1 ]]; then
+            echo "Coverage gate PASSED (${ACTUAL}% >= ${THRESHOLD}%)"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Coverage gate FAILED (${ACTUAL}% < ${THRESHOLD}%)"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload coverage artifacts
+        if: needs.detect-changes.outputs.api_changed == 'true' && always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-coverage-report
+          path: |
+            api/storage/coverage/clover.xml
+            api/storage/coverage/summary.txt
+            api/storage/coverage/modules.md
+            api/storage/coverage/causal-error.txt
+            api/storage/test-results/coverage.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request' && needs.detect-changes.outputs.api_changed == 'true' && always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const percentage = `${{ steps.coverage.outputs.percentage }}`;
+            const threshold = `${{ vars.BACKEND_COVERAGE_MIN || '65' }}`; // keep in sync with env.DEFAULT_BACKEND_COVERAGE_MIN
+            const passed = `${{ steps.gate.outputs.passed }}` === 'true';
+            const icon = passed ? ':white_check_mark:' : ':x:';
+            let modulesTable = ''
+            try {
+              modulesTable = fs.readFileSync('api/storage/coverage/modules.md', 'utf8')
+            } catch (e) {
+              modulesTable = '_Couverture par module indisponible._'
+            }
+
+            const body = [
+              `## ${icon} Backend Coverage Report`,
+              '',
+              `| Metric | Value |`,
+              `|--------|-------|`,
+              `| **Lines covered** | ${percentage}% |`,
+              `| **Threshold** | ${threshold}% |`,
+              `| **Status** | ${passed ? 'PASSED' : 'FAILED'} |`,
+              '',
+              `### Par module (issue #1726)`,
+              '',
+              modulesTable.trim(),
+              '',
+              `> Configure threshold via GitHub variable \`BACKEND_COVERAGE_MIN\` (default: 65; ratchet atteint — A-4, #1682).`,
+              `> Ratchet: 60 -> 65 % (2026-08-10, coverage mesure >= 68 % — A-4, #1682).`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Backend Coverage Report')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if coverage below threshold
+        if: needs.detect-changes.outputs.api_changed == 'true' && steps.gate.outputs.passed == 'false'
+        run: |
+          echo "Coverage gate failed (threshold: ${COVERAGE_MIN:-65}%). Increase test coverage or adjust BACKEND_COVERAGE_MIN variable."
+          exit 1

@@ -1,0 +1,95 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Core\Tenant\Domain\Models\Company;
+use App\Core\Auth\Domain\Models\Employee;
+use Illuminate\Support\Facades\Hash;
+use Tests\Support\CreatesMvpSchema;
+use Tests\TestCase;
+
+class AuthLoginGuardrailsTest extends TestCase
+{
+    use CreatesMvpSchema;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->setUpMvpSchema();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->tearDownMvpSchema();
+        parent::tearDown();
+    }
+
+    public function test_login_rejects_archived_employee(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        $sensitiveEmployee1 = new Employee([
+            'email' => 'archived@company.test',
+        ]);
+        $sensitiveEmployee1->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $sensitiveEmployee1->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'archived',
+        ])->save();
+
+        $response = $this->postJson('/api/v1/auth/login', [
+            'email' => 'archived@company.test',
+            'password' => 'password123',
+            'device_name' => 'tests',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('error', 'EMPLOYEE_NOT_ACTIVE');
+    }
+
+    public function test_login_rejects_when_company_is_suspended(): void
+    {
+        $company = Company::query()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'suspended',
+        ]);
+
+        $sensitiveEmployee0 = new Employee([
+            'email' => 'employee@company.test',
+        ]);
+        $sensitiveEmployee0->forceFill(['password_hash' => Hash::make('password123')])->save();
+        $sensitiveEmployee0->forceFill([
+            'company_id' => $company->id,
+            'role' => 'employee',
+            'status' => 'active',
+        ])->save();
+
+        $response = $this->postJson('/api/v1/auth/login', [
+            'email' => 'employee@company.test',
+            'password' => 'password123',
+            'device_name' => 'tests',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('error', 'ACCOUNT_SUSPENDED');
+    }
+}
+

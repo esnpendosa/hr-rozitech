@@ -1,0 +1,150 @@
+param()
+
+$ErrorActionPreference = "Stop"
+
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+Set-Location $repoRoot
+
+$failures = New-Object System.Collections.Generic.List[string]
+
+function Add-Failure([string]$message) {
+    $failures.Add($message) | Out-Null
+}
+
+function Assert-Contains([string]$content, [string]$needle, [string]$label) {
+    if (-not $content.Contains($needle)) {
+        Add-Failure "$label must contain '$needle'"
+    }
+}
+
+function Assert-ContainsAny([string]$content, [string[]]$needles, [string]$label) {
+    if (-not ($needles | Where-Object { $content.Contains($_) })) {
+        Add-Failure "$label must contain one of: $($needles -join ', ')"
+    }
+}
+
+$appRoot = Join-Path $repoRoot "front/mobile_apps/leopardo_platform_admin"
+$coreRoot = Join-Path $repoRoot "front/mobile_apps/leopardo_core"
+
+foreach ($path in @($appRoot, $coreRoot)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Failure "Missing mobile path: $path"
+    }
+}
+
+if (Test-Path -LiteralPath $appRoot) {
+    $pubspec = Get-Content -LiteralPath (Join-Path $appRoot "pubspec.yaml") -Raw
+    $androidGradle = Get-Content -LiteralPath (Join-Path $appRoot "android/app/build.gradle.kts") -Raw
+    $androidManifest = Get-Content -LiteralPath (Join-Path $appRoot "android/app/src/main/AndroidManifest.xml") -Raw
+    $iosProject = Get-Content -LiteralPath (Join-Path $appRoot "ios/Runner.xcodeproj/project.pbxproj") -Raw
+    $appContent = (Get-ChildItem -LiteralPath (Join-Path $appRoot "lib") -Recurse -File -Filter *.dart | ForEach-Object {
+        Get-Content -LiteralPath $_.FullName -Raw
+    }) -join "`n"
+
+    Assert-Contains $pubspec "name: leopardo_platform_admin" "Platform admin pubspec"
+    Assert-Contains $pubspec "path: ../leopardo_core" "Platform admin core dependency"
+    Assert-Contains $androidGradle 'applicationId = "com.leopardo.platformadmin"' "Platform admin Android id"
+    Assert-Contains $androidGradle 'namespace = "com.leopardo.platformadmin"' "Platform admin Android namespace"
+    Assert-Contains $androidManifest 'android:label="Leopardo Platform Admin"' "Platform admin Android label"
+    Assert-Contains $iosProject "PRODUCT_BUNDLE_IDENTIFIER = com.leopardo.platformadmin;" "Platform admin iOS bundle"
+
+    foreach ($endpoint in @(
+        "/platform/auth/login",
+        "/platform/auth/me",
+        "/platform/auth/logout",
+        "/platform/metrics/overview",
+        "/platform/companies",
+        "/platform/company-requests"
+    )) {
+        Assert-Contains $appContent $endpoint "Platform admin API contract"
+    }
+
+    foreach ($route in @(
+        "/platform/login",
+        "/platform/account",
+        "/platform/companies/new",
+        "/platform/company-requests"
+    )) {
+        Assert-Contains $appContent $route "Platform admin router"
+    }
+
+    foreach ($forbidden in @(
+        "/attendance/check-in",
+        "/attendance/check-out",
+        "/absences",
+        "/salary-advances",
+        "/team",
+        "/approvals"
+    )) {
+        if ($appContent.Contains($forbidden)) {
+            Add-Failure "Platform admin app must not contain tenant persona route or endpoint: $forbidden"
+        }
+    }
+
+    $emptyHandlers = Select-String -Path (Join-Path $appRoot "lib/**/*.dart") -Pattern "onPressed:\s*\(\)\s*\{\s*\}|onTap:\s*\(\)\s*\{\s*\}" -AllMatches
+    if ($emptyHandlers) {
+        foreach ($match in $emptyHandlers) {
+            Add-Failure "Platform admin contains empty UI handler in $($match.Path):$($match.LineNumber)"
+        }
+    }
+
+    Assert-Contains $appContent "admin@leopardo-rh.com" "Platform admin demo login"
+    Assert-Contains $appContent "password123" "Platform admin demo login"
+    if ($appContent.Contains("_passwordController.text = 'admin';")) {
+        Add-Failure "Platform admin demo login must use the seeded password password123, not the stale password admin."
+    }
+}
+
+Assert-Contains `
+    (Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/mobile-apps-ci.yml") -Raw) `
+    "leopardo_platform_admin" `
+    "Mobile Apps CI"
+
+# PR #1396 extracted mobile distribution from deploy-main.yml into the
+# dedicated mobile-distribute-main.yml workflow — the auto-trigger
+# (`push: [main]` + `front/mobile_apps/**`) lives THERE, not in
+# mobile-distribute.yml (qui ne garde que les tags staging/prod et le
+# workflow_dispatch manuel). Régression 2026-08-16 : l'assertion visait
+# encore mobile-distribute.yml → « Mobile apps split guard » rouge sur
+# chaque push main (#4388).
+$deployMain = Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/deploy-main.yml") -Raw
+$mobileDistribute = Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/mobile-distribute.yml") -Raw
+$mobileDistributeMain = Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/mobile-distribute-main.yml") -Raw
+
+Assert-Contains $mobileDistributeMain "leopardo_platform_admin" "Deploy main mobile distribution"
+Assert-Contains $mobileDistributeMain "FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID" "Deploy main mobile distribution"
+Assert-Contains $mobileDistributeMain "leopardo-platform-admin-staging" "Deploy main mobile distribution"
+
+Assert-Contains $mobileDistributeMain "branches:" "Mobile distribute auto trigger"
+Assert-Contains $mobileDistributeMain "front/mobile_apps/**" "Mobile distribute auto trigger"
+Assert-Contains $mobileDistribute "type: string" "Mobile distribute dispatch schema"
+Assert-Contains $mobileDistribute "platform_admin" "Mobile distribute app selector"
+Assert-Contains $mobileDistribute "leopardo_platform_admin" "Mobile distribute matrix"
+Assert-Contains $mobileDistribute "FIREBASE_PLATFORM_ADMIN_ANDROID_APP_ID" "Mobile distribute matrix"
+Assert-Contains $mobileDistribute "FIREBASE_READBACK_REQUIRED" "Mobile distribute Firebase readback strict toggle"
+Assert-Contains $mobileDistributeMain "FIREBASE_READBACK_REQUIRED" "Deploy main Firebase readback strict toggle"
+Assert-Contains $mobileDistribute "mobilesdk_app_id" "Mobile distribute Firebase app id/native config guard"
+Assert-ContainsAny $mobileDistribute @(
+    "dev-hub/tools/verify-firebase-readback.sh",
+    "retrying readback with FIREBASE_TOKEN"
+) "Mobile distribute Firebase readback implementation"
+Assert-Contains $mobileDistributeMain "mobilesdk_app_id" "Deploy main Firebase app id/native config guard"
+Assert-ContainsAny $mobileDistributeMain @(
+    "dev-hub/tools/verify-firebase-readback.sh",
+    "retrying readback with FIREBASE_TOKEN"
+) "Deploy main Firebase readback implementation"
+
+Assert-Contains `
+    (Get-Content -LiteralPath (Join-Path $repoRoot "dev-hub/tools/install-mobile-firebase-configs.ps1") -Raw) `
+    "com.leopardo.platformadmin" `
+    "Firebase config installer"
+
+if ($failures.Count -gt 0) {
+    Write-Host "Mobile Plan 29 validation failed:" -ForegroundColor Red
+    foreach ($failure in $failures) {
+        Write-Host "- $failure" -ForegroundColor Red
+    }
+    exit 1
+}
+
+Write-Host "Mobile Plan 29 validation passed."

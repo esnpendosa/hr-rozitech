@@ -1,0 +1,441 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Modules\Notification\Infrastructure\Services\PushNotificationService;
+use App\Modules\Payroll\Domain\Models\PayrollRun;
+use App\Modules\Payroll\Domain\Models\PaySlip;
+use App\Modules\Payroll\Domain\Models\PaySlipLine;
+use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class PaySlipControllerTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    public function test_manager_can_list_all_pay_slips_for_tenant(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [, $slipA] = $this->payrollSlip($company, $employee);
+        $employeeB = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => fake()->unique()->safeEmail(),
+        ]);
+        [, $slipB] = $this->payrollSlip($company, $employeeB);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson('/api/v1/pay-slips?per_page=10');
+
+        $response->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.total', 2);
+
+        $ids = collect($response->json('data'))->pluck('id')->sort()->values()->all();
+        $this->assertSame([$slipA->id, $slipB->id], $ids);
+    }
+
+    public function test_manager_pay_slips_index_never_leaks_other_tenant(): void
+    {
+        [$companyA, $managerA, $employeeA] = $this->payrollActor();
+        [, $slipA] = $this->payrollSlip($companyA, $employeeA);
+        [$companyB, , $employeeB] = $this->payrollActor();
+        $this->payrollSlip($companyB, $employeeB);
+
+        Sanctum::actingAs($managerA);
+
+        $this->getJson('/api/v1/pay-slips?per_page=50')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $slipA->id);
+    }
+
+    public function test_manager_pay_slips_index_filters_by_payroll_run_and_status(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [$runCalc] = $this->payrollSlip($company, $employee, ['status' => 'calculated']);
+        [$runVal, $slipVal] = $this->payrollSlip($company, $employee, [
+            'run_status' => 'validated',
+            'status' => 'validated',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $this->getJson('/api/v1/pay-slips?payroll_run_id='.$runVal->id.'&status=validated')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $slipVal->id);
+
+        $this->getJson('/api/v1/pay-slips?payroll_run_id='.$runCalc->id)
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+    }
+
+    public function test_manager_pay_slips_index_returns_404_for_foreign_payroll_run(): void
+    {
+        [$companyA, $managerA] = $this->payrollActor();
+        [$companyB, , $employeeB] = $this->payrollActor();
+        [$runB] = $this->payrollSlip($companyB, $employeeB);
+
+        Sanctum::actingAs($managerA);
+
+        $this->getJson('/api/v1/pay-slips?payroll_run_id='.$runB->id)
+            ->assertNotFound();
+    }
+
+    public function test_pay_slips_index_rejects_invalid_status_filter(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        $this->payrollSlip($company, $employee);
+
+        Sanctum::actingAs($manager);
+
+        $this->getJson('/api/v1/pay-slips?status=hack')
+            ->assertStatus(422);
+    }
+
+    public function test_manager_can_list_pay_slips_for_own_payroll_run(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [$run, $slip] = $this->payrollSlip($company, $employee);
+        $otherCompany = Company::factory()->create();
+        $otherEmployee = Employee::factory()->create(['company_id' => $otherCompany->id]);
+        $this->payrollSlip($otherCompany, $otherEmployee);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->getJson("/api/v1/payroll-runs/{$run->id}/pay-slips");
+
+        $response->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $slip->id)
+            ->assertJsonPath('meta.total', 1);
+    }
+
+    public function test_employee_self_service_lists_only_validated_or_sent_own_slips(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        [, $validated] = $this->payrollSlip($company, $employee, ['status' => 'validated']);
+        $this->payrollSlip($company, $employee, ['status' => 'calculated']);
+        $otherEmployee = Employee::factory()->create(['company_id' => $company->id]);
+        $this->payrollSlip($company, $otherEmployee, ['status' => 'sent']);
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/me/pay-slips');
+
+        $response->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $validated->id)
+            ->assertJsonPath('data.0.status', 'validated');
+    }
+
+    public function test_employee_can_open_own_validated_pay_slip_but_not_other_tenant_slip(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        [, $ownSlip] = $this->payrollSlip($company, $employee, ['status' => 'sent']);
+        [$otherCompany, , $otherEmployee] = $this->payrollActor();
+        [, $otherSlip] = $this->payrollSlip($otherCompany, $otherEmployee, ['status' => 'sent']);
+
+        Sanctum::actingAs($employee);
+
+        $this->getJson("/api/v1/me/pay-slips/{$ownSlip->id}")
+            ->assertOk()
+            ->assertJsonPath('data.id', $ownSlip->id);
+
+        $this->getJson("/api/v1/me/pay-slips/{$otherSlip->id}")
+            ->assertNotFound();
+    }
+
+    public function test_manager_can_download_pdf_for_company_pay_slip(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [, $slip] = $this->payrollSlip($company, $employee, ['status' => 'validated']);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->get("/api/v1/pay-slips/{$slip->id}/pdf");
+
+        $response->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertHeader('Content-Disposition', 'attachment; filename="bulletin_'.$employee->id.'_2026_05.pdf"');
+    }
+
+    public function test_manager_download_pdf_serves_warmup_file_when_pdf_path_present(): void
+    {
+        Storage::fake('local');
+
+        [$company, $manager, $employee] = $this->payrollActor();
+        [, $slip] = $this->payrollSlip($company, $employee, ['status' => 'validated']);
+
+        $path = sprintf('pay-slips/%d/%d.pdf', $company->id, $slip->id);
+        Storage::disk('local')->put($path, '%PDF-1.4 test');
+        $slip->update(['pdf_path' => $path]);
+
+        Sanctum::actingAs($manager);
+
+        $response = $this->get("/api/v1/pay-slips/{$slip->id}/pdf");
+
+        $response->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf');
+        $this->assertSame('%PDF-1.4 test', $response->getContent());
+    }
+
+    public function test_send_slips_requires_validated_run_and_marks_emailable_slips_sent(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [$draftRun] = $this->payrollSlip($company, $employee, ['run_status' => 'calculated']);
+        [$validatedRun, $slip] = $this->payrollSlip($company, $employee, [
+            'run_status' => 'validated',
+            'status' => 'validated',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $this->postJson("/api/v1/payroll-runs/{$draftRun->id}/send-slips")
+            ->assertStatus(422);
+
+        $response = $this->postJson("/api/v1/payroll-runs/{$validatedRun->id}/send-slips");
+
+        $response->assertOk()
+            ->assertJsonPath('sent_count', 1)
+            ->assertJsonPath('total_slips', 1);
+        $this->assertSame('sent', $slip->fresh()->status);
+    }
+
+    public function test_employee_cannot_list_pay_slips_for_payroll_run(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        [$run] = $this->payrollSlip($company, $employee);
+
+        Sanctum::actingAs($employee);
+
+        $this->getJson("/api/v1/payroll-runs/{$run->id}/pay-slips")
+            ->assertForbidden();
+    }
+
+    public function test_employee_cannot_list_global_pay_slips_index(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        $this->payrollSlip($company, $employee);
+
+        Sanctum::actingAs($employee);
+
+        $this->getJson('/api/v1/pay-slips')
+            ->assertForbidden();
+    }
+
+    /**
+     * Issue #2116 — le contrat de liste expose le bloc `compliance`
+     * (niveau de confiance des règles pays, contrat #1872) + champs
+     * calculés `employee_name`/`period`/`country_code` (rétro-compatibles).
+     */
+    public function test_pay_slips_expose_compliance_contract(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        $this->payrollSlip($company, $employee, ['country_code' => 'CI']);
+
+        Sanctum::actingAs($manager);
+
+        $this->getJson('/api/v1/pay-slips?per_page=10')
+            ->assertOk()
+            ->assertJsonPath('data.0.country_code', 'CI')
+            ->assertJsonPath('data.0.period', '2026-05')
+            ->assertJsonPath('data.0.employee_name', $employee->first_name.' '.$employee->last_name)
+            ->assertJsonPath('data.0.compliance.level', 'pilot')
+            ->assertJsonPath('data.0.compliance.warning_key', 'payroll.compliance_warning_pilot')
+            ->assertJsonPath('data.0.compliance.source', 'docs/payroll/CI_COMPLIANCE.md')
+            ->assertJsonPath('data.0.compliance.verification_date', null);
+    }
+
+    /**
+     * Issue #2116 — depuis #5255, US dispose de règles de paie (pilot) : le
+     * bulletin expose le bloc `compliance` comme tout pays supporté (la
+     * rétro-compatibilité « compliance: null » ne concernait que les pays
+     * display-only, désormais tous couverts par le moteur).
+     */
+    public function test_pay_slips_expose_compliance_for_us(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        $this->payrollSlip($company, $employee, ['country_code' => 'US']);
+
+        Sanctum::actingAs($manager);
+
+        $this->getJson('/api/v1/pay-slips?per_page=10')
+            ->assertOk()
+            ->assertJsonPath('data.0.country_code', 'US')
+            ->assertJsonPath('data.0.compliance.level', 'pilot')
+            ->assertJsonPath('data.0.compliance.warning_key', 'payroll.compliance_warning_pilot')
+            ->assertJsonPath('data.0.compliance.source', 'docs/payroll/US_COMPLIANCE.md')
+            ->assertJsonPath('data.0.compliance.verification_date', null);
+    }
+
+    /**
+     * Issue #2116 — le contrat self-service `/me/pay-slips` expose aussi le
+     * bloc `compliance` (même ressource, mêmes champs calculés).
+     */
+    public function test_employee_self_service_pay_slips_expose_compliance_block(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        $this->payrollSlip($company, $employee, ['status' => 'validated']);
+
+        Sanctum::actingAs($employee);
+
+        $response = $this->getJson('/api/v1/me/pay-slips');
+
+        $response->assertOk();
+        $compliance = $response->json('data.0.compliance');
+        $this->assertIsArray($compliance);
+        $this->assertContains($compliance['level'], ['production', 'pilot', 'placeholder', 'unknown']);
+        $this->assertArrayHasKey('warning', $compliance);
+        $this->assertArrayHasKey('warning_key', $compliance);
+        $this->assertSame('payroll.compliance_warning_'.$compliance['level'], $compliance['warning_key']);
+        $this->assertSame('docs/payroll/DZ_COMPLIANCE.md', $compliance['source']);
+        $this->assertTrue($compliance['verification_date'] === null || is_string($compliance['verification_date']));
+    }
+
+    /**
+     * @return array{0: Company, 1: Employee, 2: Employee}
+     */
+    private function payrollActor(): array
+    {
+        $company = Company::factory()->create();
+        $manager = Employee::factory()->manager()->create(['company_id' => $company->id]);
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => fake()->unique()->safeEmail(),
+        ]);
+
+        return [$company, $manager, $employee];
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array{0: PayrollRun, 1: PaySlip}
+     */
+    private function payrollSlip(Company $company, Employee $employee, array $overrides = []): array
+    {
+        $run = $overrides['run'] ?? PayrollRun::query()->create([
+            'company_id' => $company->id,
+            'country_code' => $overrides['country_code'] ?? 'DZ',
+            'period_start' => $overrides['period_start'] ?? '2026-05-01',
+            'period_end' => $overrides['period_end'] ?? '2026-05-31',
+            'status' => $overrides['run_status'] ?? 'validated',
+            'employee_count' => 1,
+            'total_gross' => 120000,
+            'total_deductions' => 22000,
+            'total_net' => 98000,
+        ]);
+
+        $slip = PaySlip::query()->create([
+            'payroll_run_id' => $run->id,
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'period_start' => $run->period_start,
+            'period_end' => $run->period_end,
+            'gross_salary' => $overrides['gross_salary'] ?? 120000,
+            'total_deductions' => $overrides['total_deductions'] ?? 22000,
+            'net_salary' => $overrides['net_salary'] ?? 98000,
+            'employer_contributions' => 31200,
+            'total_cost' => 151200,
+            'working_days' => 22,
+            'actual_days_worked' => 22,
+            'overtime_hours' => 0,
+            'status' => $overrides['status'] ?? 'validated',
+        ]);
+
+        PaySlipLine::query()->create([
+            'pay_slip_id' => $slip->id,
+            'name' => 'Salaire de base',
+            'type' => 'earning',
+            'base_amount' => 120000,
+            'rate' => 1,
+            'amount' => 120000,
+            'order' => 1,
+        ]);
+
+        return [$run, $slip];
+    }
+
+    /**
+     * Issue #3946 — « Envoyer les bulletins » était un no-op : seul le statut
+     * passait à `sent`. Depuis le fix, une notification push réelle est
+     * déclenchée par employé (même canal que GeneratePaySlipPdfJob).
+     */
+    public function test_send_slips_marks_sent_and_dispatches_push_notification(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [$run, $slipA] = $this->payrollSlip($company, $employee, [
+            'run_status' => 'validated',
+            'status' => 'calculated',
+        ]);
+        $employeeB = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => fake()->unique()->safeEmail(),
+            'preferred_language' => 'ar',
+        ]);
+        $this->payrollSlip($company, $employeeB, [
+            'run' => $run,
+            'status' => 'validated',
+        ]);
+
+        $push = $this->mock(PushNotificationService::class);
+        $push->shouldReceive('sendToEmployee')
+            ->twice()
+            ->withArgs(function (Employee $target, string $title, string $body, array $data): bool {
+                return $data['type'] === 'pay_slip_sent'
+                    && $data['pay_slip_id'] > 0
+                    && $title !== ''
+                    && $body !== '';
+            })
+            ->andReturn(1);
+
+        Sanctum::actingAs($manager);
+
+        $this->postJson("/api/v1/payroll-runs/{$run->id}/send-slips")
+            ->assertOk()
+            ->assertJsonPath('sent_count', 2)
+            ->assertJsonPath('notified_count', 2)
+            ->assertJsonPath('total_slips', 2);
+
+        $this->assertSame('sent', $slipA->fresh()->status);
+    }
+
+    public function test_send_slips_forbidden_for_non_manager(): void
+    {
+        [$company, , $employee] = $this->payrollActor();
+        [$run] = $this->payrollSlip($company, $employee, ['run_status' => 'validated', 'status' => 'calculated']);
+
+        Sanctum::actingAs($employee);
+
+        $this->postJson("/api/v1/payroll-runs/{$run->id}/send-slips")
+            ->assertForbidden();
+    }
+
+    public function test_send_slips_returns_404_for_foreign_tenant_run(): void
+    {
+        [$companyA, $managerA] = $this->payrollActor();
+        [$companyB, , $employeeB] = $this->payrollActor();
+        [$runB] = $this->payrollSlip($companyB, $employeeB, ['run_status' => 'validated', 'status' => 'calculated']);
+
+        Sanctum::actingAs($managerA);
+
+        $this->postJson("/api/v1/payroll-runs/{$runB->id}/send-slips")
+            ->assertNotFound();
+    }
+
+    public function test_send_slips_rejects_unvalidated_run(): void
+    {
+        [$company, $manager, $employee] = $this->payrollActor();
+        [$run] = $this->payrollSlip($company, $employee, ['run_status' => 'calculated', 'status' => 'calculated']);
+
+        Sanctum::actingAs($manager);
+
+        $this->postJson("/api/v1/payroll-runs/{$run->id}/send-slips")
+            ->assertStatus(422);
+    }
+}

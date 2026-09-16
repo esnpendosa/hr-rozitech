@@ -1,0 +1,11 @@
+includes:
+    - phpstan.neon
+    - phpstan-strict-baseline.neon
+
+parameters:
+    level: 8
+
+    paths:
+        - app/Core
+        - app/Modules
+        - app/Shared

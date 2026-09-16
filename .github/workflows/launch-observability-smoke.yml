@@ -1,0 +1,73 @@
+name: Launch Observability Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "API Render base URL (défaut : vars.DEV_API_BASE_URL)"
+        required: false
+      web_url:
+        description: "Public web/vitrine base URL (défaut : vars.DEV_WEB_URL)"
+        required: false
+      admin_url:
+        description: "Admin dashboard base URL (défaut : vars.DEV_ADMIN_URL)"
+        required: false
+      max_latency_ms:
+        description: "Maximum accepted latency per probe, including Render cold start"
+        required: false
+        default: "10000"
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: launch-observability-smoke
+  # Issue #3968 : cron */30 (48 runs/jour) + cancel-in-progress: false → les
+  # runs en retard s'empilent sur une queue déjà saturée (#3545). Un run en
+  # retard REMPLACE le précédent au lieu d'attendre derrière.
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    timeout-minutes: 30
+    name: Probe launch surfaces
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Guard production URLs (fail-closed, #4720)
+        if: ${{ (!github.event.inputs.api_url && !vars.DEV_API_BASE_URL) || (!github.event.inputs.web_url && !vars.DEV_WEB_URL) || (!github.event.inputs.admin_url && !vars.DEV_ADMIN_URL) }}
+        run: |
+          echo "::error::DEV_API_BASE_URL / DEV_WEB_URL / DEV_ADMIN_URL must be set (legacy defaults removed, issue #4720)."
+          exit 1
+
+      - name: Run launch probes
+        env:
+          # Render free-tier cold starts can exceed 2.5 s while still serving
+          # healthy HTTP 200 responses; keep the budget explicit and observable.
+          LAUNCH_MAX_P95_MS: ${{ github.event.inputs.max_latency_ms || '10000' }}
+          LAUNCH_SMOKE_RETRIES: "5"
+          LAUNCH_SMOKE_RETRY_DELAY_SECONDS: "15"
+        run: |
+          bash dev-hub/tools/launch-observability-smoke.sh \
+            "${{ github.event.inputs.api_url || vars.DEV_API_BASE_URL }}" \
+            "${{ github.event.inputs.web_url || vars.DEV_WEB_URL }}" \
+            "${{ github.event.inputs.admin_url || vars.DEV_ADMIN_URL }}"
+
+      - name: Upload launch smoke report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: launch-observability-smoke-report
+          path: dev-hub/observability/reports/launch-observability-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14

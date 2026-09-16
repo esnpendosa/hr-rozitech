@@ -1,0 +1,57 @@
+name: "Setup Flutter + Java for Android builds"
+description: >
+  Composite action wrapping the repeated Java 17 + Flutter setup used by
+  mobile-apps-ci.yml, mobile-distribute.yml, deploy-main.yml (distribute-mobile)
+  and previously release.yml. See docs/audits/AUDIT_CICD_2026-07-19.md section 3.2.
+
+inputs:
+  java-version:
+    description: "Temurin JDK version"
+    required: false
+    default: "17"
+  flutter-channel:
+    description: "Flutter channel (stable | beta)"
+    required: false
+    default: "stable"
+  flutter-version:
+    description: "Pinned Flutter version; 'any' uses the channel's latest (subosito/flutter-action default)"
+    required: false
+    default: "any"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Java ${{ inputs.java-version }}
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      with:
+        channel: ${{ inputs.flutter-channel }}
+        flutter-version: ${{ inputs.flutter-version }}
+        cache: true
+
+    # Les apps mobiles compilent en compileSdk 36 (flutter.compileSdkVersion,
+    # permission_handler pinné en ^12 — audit #1715). La plateforme
+    # platforms;android-37 n'existe PAS sur le canal stable de Google
+    # (canal preview uniquement, répertoire android-37.0 non reconnu par AGP) :
+    # on installe donc le SDK stable android-36 + build-tools 36.
+    # android-actions/setup-android (pinné, #1706) pose ANDROID_HOME/
+    # ANDROID_SDK_ROOT dans GITHUB_ENV et accepte les licences de façon fiable.
+    - name: Setup Android SDK (platform 36)
+      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: 'tools platform-tools platforms;android-36 build-tools;36.0.0'
+
+    - name: Verify Android SDK platform 36
+      shell: bash
+      run: |
+        echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+        if [[ -d "${ANDROID_HOME}/platforms/android-36" ]]; then
+          echo "platforms;android-36 OK (${ANDROID_HOME}/platforms/android-36)."
+        else
+          echo "::warning::platforms;android-36 absent (ANDROID_HOME=${ANDROID_HOME}) — builds Android peuvent échouer."
+        fi

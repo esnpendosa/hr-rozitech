@@ -1,0 +1,25 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\AI\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class AgentRunRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return (bool) $this->user();
+    }
+
+    /** @return array<string, string> */
+    public function rules(): array
+    {
+        return [
+            'task' => 'required|string|max:2000',
+            'conversation_id' => 'nullable|string',
+            'max_steps' => 'nullable|integer|min:1|max:20',
+        ];
+    }
+}

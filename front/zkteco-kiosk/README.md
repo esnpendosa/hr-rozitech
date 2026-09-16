@@ -1,0 +1,138 @@
+# ZKTeco Kiosk
+
+## Statut
+
+Client-side only, distribué en copie locale (pas de service docker/render/cloud — voir #6597) :
+l'installation se fait sur le PC local du client (README + `docs/GESTION_PROJET/RUNBOOK_ZKTECO_CLIENT.md`).
+Le pont Python (`desktop-bridge/bridge.py`) est couvert par la CI kiosk (`kiosk-ci.yml`) ; `npm test` lance i18n + feedback + les 27 tests Python.
+## Bridge
+
+Ce dossier contient le code de la **borne d entree entreprise** et du **bridge desktop local**.
+
+L objectif est simple :
+
+- l employe peut pointer avec son doigt ou son visage a l entree
+- si internet est present, la synchronisation vers Leopardo RH est immediate
+- si internet est absent, les pointages sont gardes en local puis synchronises plus tard
+
+## Architecture recommandee
+
+```text
+Lecteur ZKTeco / capteur visage
+          |
+          v
+   PC local / mini-PC client
+          |
+          +--> bridge desktop local (Python stdlib + SQLite)
+          |        |
+          |        +--> stocke la file offline
+          |        +--> expose une UI locale a la borne
+          |        +--> synchronise avec l API quand internet revient
+          |
+          +--> navigateur plein ecran sur la page kiosk
+```
+
+## Parcours metier
+
+1. Manager / RH cree l employe
+2. L employe recoit un email d invitation pour l app mobile
+3. L employe se connecte sur mobile
+4. L employe soumet ses donnees biometrie
+5. Manager / RH approuve
+6. L employe peut ensuite pointer :
+   - depuis son mobile
+   - ou depuis la borne ZKTeco de l entreprise
+
+## Experience kiosk attendue
+
+- Le premier geste visible est la reconnaissance biometrie : doigt, visage, puis fallback QR ou matricule.
+- L interface garde de gros boutons tactiles `Arrivee` / `Depart`.
+- En cas de reseau lent, le bridge local continue de mettre les evenements en file SQLite puis synchronise plus tard.
+- Si le roster local connait l identifiant, la confirmation affiche le nom de l employe au lieu d un simple matricule.
+- Les donnees biometriques brutes ne sont pas stockees par l interface web : le terminal ZKTeco ou son SDK reste responsable du matching.
+
+## Contenu du dossier
+
+- `index.html` : interface kiosque tactile
+- `admin.html` : interface locale manager / RH pour synchroniser
+- `app.js` : logique front kiosque
+- `admin.js` : logique front administration locale
+- `config.example.json` : configuration de depart
+- `desktop-bridge/bridge.py` : serveur local offline-first
+
+## Lancement simple
+
+1. Copier `config.example.json` en `config.json`
+2. Renseigner :
+   - `apiBaseUrl`
+   - `deviceCode`
+   - `kioskToken`
+   - `companyName`
+3. Sur le PC local :
+
+```bash
+python desktop-bridge/bridge.py
+```
+
+4. Ouvrir :
+   - borne : [http://127.0.0.1:8037/index.html](http://127.0.0.1:8037/index.html)
+   - admin local : [http://127.0.0.1:8037/admin.html](http://127.0.0.1:8037/admin.html)
+
+## Mode sans internet
+
+Quand il n y a pas de connexion :
+
+- les pointages sont sauvegardes dans `desktop-bridge/data/kiosk.db`
+- l interface continue de fonctionner
+- le manager ou le RH peut synchroniser plus tard depuis `admin.html`
+
+Tu peux donc garder :
+
+- une journee
+- une semaine
+- ou meme un mois de pointages
+
+en local avant envoi vers l API.
+
+## Integration ZKTeco
+
+Deux modes reels sont prevus :
+
+1. **Clavier HID / keyboard wedge**
+   - le lecteur ou terminal injecte le `zkteco_id` ou le matricule
+   - la borne l envoie au bridge local
+
+2. **Bridge local / SDK**
+   - un service local peut appeler :
+   - `POST /local/punch`
+   - ou dans le navigateur :
+   - `window.ZKTecoBridge.submitIdentifier("FP-00042", "check_in", "fingerprint")`
+
+## Securite du bridge local (2026-08-15, #3586/#3587/#3588)
+
+- Tous les endpoints `/local/*` exigent le header `X-Local-Bridge-Token` :
+  token de session genere a chaque demarrage du bridge et injecte dans les
+  pages servies (`window.__LOCAL_BRIDGE_TOKEN`). Les integrations SDK locales
+  doivent le lire depuis la page servie par le bridge.
+- Le bridge ne sert que les assets UI (`index.html`, `admin.html`, `app.js`,
+  `admin.js`, `i18n.js`) : `config.json` et `desktop-bridge/data/kiosk.db`
+  ne sont jamais exposes.
+- Les POST exigent `Content-Type: application/json` et un `Origin` same-origin.
+- Sync offline resiliente : les evenements refuses par l API sont isoles en
+  `dead_letter` (visibles via `/local/status` → `dead_letter_count`,
+  reparables via `POST /local/events/requeue`) au lieu de bloquer la file ;
+  les erreurs transitoires suivent un backoff exponentiel (cap 10 essais).
+
+## Important sur la biometrie
+
+Le materiel ZKTeco reste responsable de la capture / matching brut de l empreinte ou du visage.
+
+Leopardo RH gere ici :
+
+- l autorisation metier
+- le lien employe <-> identifiant ZKTeco
+- la file offline
+- la synchronisation API
+- l affichage mobile une fois les donnees synchronisees
+
+Donc oui, la borne supporte bien le doigt et le visage, mais le **matching biometrie reel** depend du terminal / SDK ZKTeco branche sur le PC local.

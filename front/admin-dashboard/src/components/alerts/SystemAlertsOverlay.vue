@@ -1,0 +1,176 @@
+<template>
+  <!-- Critical alerts overlay -->
+  <div
+    v-if="showCriticalAlert"
+    class="fixed inset-x-0 top-0 z-50"
+  >
+    <div class="bg-red-600">
+      <div class="mx-auto max-w-7xl py-3 px-3 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap items-center justify-between">
+          <div class="flex w-0 flex-1 items-center">
+            <span class="flex rounded-lg bg-red-800 p-2">
+              <ExclamationTriangleIcon class="h-6 w-6 text-white" />
+            </span>
+            <p class="ml-3 truncate font-medium text-white">
+              <span class="md:hidden">{{ $t('systemAlerts.criticalShort') }}</span>
+              <span class="hidden md:inline">
+                {{ currentCriticalAlert?.message || $t('systemAlerts.criticalFallback') }}
+              </span>
+            </p>
+          </div>
+          <div class="order-3 mt-2 w-full flex-shrink-0 sm:order-2 sm:mt-0 sm:w-auto">
+            <button
+              @click="viewSystemAlerts"
+              class="flex items-center justify-center rounded-md border border-transparent bg-white/70 px-4 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50 backdrop-blur-md dark:bg-slate-800/70"
+            >
+              {{ $t('systemAlerts.viewDetails') }}
+            </button>
+          </div>
+          <div class="order-2 flex-shrink-0 sm:order-3 sm:ml-3">
+            <button
+              @click="dismissCriticalAlert"
+              class="-mr-1 flex rounded-md p-2 hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-white sm:-mr-2"
+              :aria-label="$t('systemAlerts.closeLabel')"
+            >
+              <XMarkIcon class="h-6 w-6 text-white" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection status banner (masqué quand le push n'est pas configuré :
+       état neutre, pas une panne — issue #3269) -->
+  <div
+    v-if="!realtimeStore.isConnected && !realtimeStore.pushUnavailable"
+    class="fixed inset-x-0 top-0 z-30"
+    :class="{
+      'mt-16': showCriticalAlert
+    }"
+  >
+    <div class="bg-gray-600">
+      <div class="mx-auto max-w-7xl py-2 px-3 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap items-center justify-between">
+          <div class="flex w-0 flex-1 items-center">
+            <span class="flex rounded-lg bg-gray-800 p-2">
+              <WifiIcon class="h-5 w-5 text-white" />
+            </span>
+            <p class="ml-3 font-medium text-white">
+              <span class="md:hidden">{{ realtimeStore.isPolling ? $t('systemAlerts.fallbackMode') : $t('systemAlerts.connectionLost') }}</span>
+              <span class="hidden md:inline">
+                <template v-if="realtimeStore.isPolling">
+                  {{ $t('systemAlerts.pollingMessage') }}
+                </template>
+                <template v-else>
+                  {{ $t('systemAlerts.reconnectMessage') }}
+                </template>
+              </span>
+            </p>
+          </div>
+          <div class="order-2 flex-shrink-0 sm:ml-3">
+            <button
+              @click="realtimeStore.connect()"
+              class="flex items-center justify-center rounded-md border border-transparent bg-white/70 px-4 py-1 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 backdrop-blur-md dark:bg-slate-800/70"
+            >
+              {{ $t('systemAlerts.reconnect') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  ExclamationTriangleIcon,
+  XMarkIcon,
+  WifiIcon
+} from '@heroicons/vue/24/outline'
+import { useDashboardStore } from '@/stores/dashboard'
+import { useRealtimeStore } from '@/stores/realtime'
+
+const router = useRouter()
+const dashboardStore = useDashboardStore()
+const realtimeStore = useRealtimeStore()
+
+const showCriticalAlert = ref(false)
+const currentCriticalAlert = ref(null)
+
+// Auto-check for critical alerts
+let alertCheckInterval = null
+let stopNotificationWatch = null
+
+onMounted(() => {
+  checkForCriticalAlerts()
+
+  // Check for alerts every 30 seconds
+  alertCheckInterval = setInterval(checkForCriticalAlerts, 30000)
+
+  // Issue #2716 — $subscribe(mutation.events) ne se déclenche jamais pour les
+  // mutations directes Pinia (events === null) : on écoute l'état du store.
+  stopNotificationWatch = watch(
+    () => realtimeStore.notifications[0],
+    (newNotification, oldNotification) => {
+      if (!newNotification) return
+      if (oldNotification && oldNotification.id === newNotification.id) return
+      if (newNotification.priority === 'critical' && newNotification.type === 'system_alert') {
+        showCriticalAlertBanner(newNotification)
+      }
+    }
+  )
+})
+
+onUnmounted(() => {
+  if (alertCheckInterval) {
+    clearInterval(alertCheckInterval)
+  }
+  if (stopNotificationWatch) {
+    stopNotificationWatch()
+  }
+})
+
+// Computed
+const criticalAlerts = computed(() => dashboardStore.criticalAlerts)
+
+// Methods
+function checkForCriticalAlerts() {
+  const alerts = criticalAlerts.value
+  if (alerts.length > 0 && !showCriticalAlert.value) {
+    showCriticalAlertBanner(alerts[0])
+  }
+}
+
+function showCriticalAlertBanner(alert) {
+  currentCriticalAlert.value = alert
+  showCriticalAlert.value = true
+
+  // Auto-dismiss after 30 seconds if not critical
+  if (alert.level !== 'critical') {
+    setTimeout(() => {
+      if (showCriticalAlert.value && currentCriticalAlert.value?.id === alert.id) {
+        dismissCriticalAlert()
+      }
+    }, 30000)
+  }
+}
+
+function dismissCriticalAlert() {
+  showCriticalAlert.value = false
+  currentCriticalAlert.value = null
+}
+
+function viewSystemAlerts() {
+  router.push('/system')
+  dismissCriticalAlert()
+}
+
+// Expose methods for external control
+defineExpose({
+  showCriticalAlertBanner,
+  dismissCriticalAlert
+})
+</script>

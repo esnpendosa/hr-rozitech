@@ -1,0 +1,62 @@
+name: Kiosk CI — ZKTeco Kiosk
+
+# Issue #1501 : le kiosque était hors écosystème (aucun package.json,
+# aucun lint/test/CI). Ce workflow couvre front/zkteco-kiosk/**.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'front/zkteco-kiosk/**'
+  push:
+    branches: [main]
+    paths:
+      - 'front/zkteco-kiosk/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: kiosk-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kiosk-ci:
+    timeout-minutes: 90
+    name: Lint + i18n tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20'
+
+      # Audit #1712 : sans npm ci, lint/test échouaient (aucune dépendance
+      # installée sur le runner).
+      - name: Install dependencies
+        working-directory: front/zkteco-kiosk
+        run: npm ci
+
+      - name: Lint (node --check)
+        working-directory: front/zkteco-kiosk
+        run: npm run lint
+
+      - name: i18n parity & usage tests
+        working-directory: front/zkteco-kiosk
+        run: npm test
+
+      # Issues #3586/#3587/#3588 : le bridge Python (auth locale, dead-letter,
+      # contrat skipped) est couvert par unittest — ne plus le laisser hors CI.
+      - name: Bridge Python tests (unittest)
+        working-directory: front/zkteco-kiosk
+        run: |
+          python3 tests/test_bridge_globals.py
+          python3 tests/test_bridge_security.py

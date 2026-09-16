@@ -1,0 +1,393 @@
+name: Mobile Apps CI - Flutter
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    # PAS de filtre paths au niveau workflow : le job `mobile-apps-guard`
+    # (validations structurelles) reste inconditionnel, et dorny/paths-filter
+    # (job `changes`) est la source de vérité pour les jobs lourds. Depuis
+    # 2026-09-08 (#6928) la matrice `flutter-analyze` est gatée par
+    # `changes.outputs.mobile` — les checks Analyze/Split guard ne font PAS
+    # partie des contexts requis de la protection main (vérifié via l'API
+    # branche protection) : un skip de PR docs/backend-only est sans effet
+    # sur la mergeabilité, et libère la file pour les checks requis.
+  push:
+    branches: [main]
+    paths:
+      - 'front/mobile_apps/**'
+      - 'dev-hub/tools/validate-mobile-apps-split.ps1'
+      - 'dev-hub/tools/validate-mobile-release-readiness.ps1'
+      - 'dev-hub/tools/validate-mobile-runtime-smoke.ps1'
+      - 'dev-hub/tools/validate-mobile-location-readiness.ps1'
+      - 'dev-hub/tools/validate-mobile-tenant-branding.ps1'
+      - 'dev-hub/tools/validate-mobile-notification-production-proof.ps1'
+      - 'dev-hub/tools/validate-mobile-workflow-contracts.ps1'
+      - 'dev-hub/tools/validate-mobile-plan28.ps1'
+      - 'dev-hub/tools/validate-mobile-plan29.ps1'
+      - 'dev-hub/tools/validate-mobile-color-tokens.ps1'
+      - 'dev-hub/tools/check-mobile-number-locale.sh'
+      - 'dev-hub/tools/check-mobile-l10n-sync.sh'
+      - 'dev-hub/tools/check-mobile-manifest-routes.sh'
+      - 'dev-hub/tools/mobile-workflow-contracts.json'
+      - 'api/app/Modules/HR/Infrastructure/Services/MobileExperienceService.php'
+      - '.github/workflows/mobile-apps-ci.yml'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  API_BASE_URL: ${{ vars.DEV_API_BASE_URL }}
+
+concurrency:
+  group: mobile-apps-ci-${{ github.ref }}
+  # Issue #2131 : sur main, ne jamais annuler le run du commit précédent
+  # (builds Flutter longs relancés en cascade). Runs PR annulés.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #5629 : annuler les runs PR obsolètes pour libérer les runners
+
+jobs:
+  changes:
+    name: Detect mobile changes
+    runs-on: ubuntu-latest
+    outputs:
+      mobile: ${{ steps.filter.outputs.mobile }}
+    steps:
+      # dorny/paths-filter exige un dépôt git cloné — sans checkout, le job
+      # échouait sur chaque push main (git rev-parse: not a git repository).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            mobile:
+              - 'front/mobile_apps/**'
+              - 'api/app/Modules/HR/Infrastructure/Services/MobileExperienceService.php'
+              - '.github/workflows/mobile-apps-ci.yml'
+
+  mobile-apps-guard:
+    timeout-minutes: 90
+    name: Mobile apps split guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - name: Guard DEV_API_BASE_URL (#4524)
+        shell: bash
+        run: |
+          if [[ -z "${{ vars.DEV_API_BASE_URL }}" ]]; then
+            echo "::error::DEV_API_BASE_URL must be set (fail-open fallback removed, issue #4524)."
+            exit 1
+          fi
+          echo "DEV_API_BASE_URL=${{ vars.DEV_API_BASE_URL }}"
+
+      - name: Validate mobile apps boundaries
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-apps-split.ps1'
+
+      - name: Validate mobile release readiness
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-release-readiness.ps1'
+
+      - name: Validate mobile runtime smoke
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-runtime-smoke.ps1'
+
+      - name: Validate mobile location readiness
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-location-readiness.ps1'
+
+      - name: Validate mobile tenant branding
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-tenant-branding.ps1'
+
+      - name: Validate mobile notification production proof
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-notification-production-proof.ps1'
+
+      - name: Validate mobile workflow contracts
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-workflow-contracts.ps1'
+
+      - name: Validate Plan 28 multi-app excellence
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-plan28.ps1'
+
+      - name: Validate Plan 29 platform admin app
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-plan29.ps1'
+
+      - name: Validate mobile color tokens (no hardcoded hex outside AppColors)
+        shell: pwsh
+        run: '& ./dev-hub/tools/validate-mobile-color-tokens.ps1'
+
+      - name: Validate manifest routes exist in app GoRouter routers
+        # #2212 : chaque route servie par MobileExperienceService doit exister
+        # dans le routeur GoRouter de l'app cible, sinon context.push() crashe.
+        shell: bash
+        run: 'bash ./dev-hub/tools/check-mobile-manifest-routes.sh'
+
+      - name: Validate no hardcoded FR number formats (locale-aware)
+        # #4197 : NumberFormat.decimalPattern('fr') / deviceIntlDateLocale
+        # sur des montants = locale forcée FR pour les utilisateurs AR/TR/EN.
+        shell: bash
+        run: 'bash ./dev-hub/tools/check-mobile-number-locale.sh'
+
+      # Note #6590 : le check l10n (check-mobile-l10n-sync.sh) a été déplacé
+      # dans le job flutter-analyze, APRÈS `flutter gen-l10n` : les fichiers
+      # générés (lib/l10n/generated/*) ne sont plus commités, ils n'existent
+      # donc pas dans le checkout brut où tourne ce job guard.
+
+      - name: Validate no mojibake drift on duplicated mobile files (#7091)
+        # RETEX L-09/L-07 : correctifs d'encodage répétés sur des fichiers
+        # byte-identiques dupliqués entre employee/manager/hr (chantier #2661)
+        # — un fix appliqué à une seule copie laisse le mojibake chez les
+        # sœurs. Détecte les copies divergentes sur le diff de la PR.
+        #
+        # #7198 : hors `pull_request` et hors `push`, `github.event.before`
+        # n'existe pas (workflow_dispatch, relance manuelle des builds Flutter
+        # après une saturation de runners). Le garde, lui, exige 2 SHA et sort
+        # en `exit 1` avec « Usage: » — il rougissait donc `main` à chaque
+        # relance manuelle (constaté sur le run 34517288447, job 103015978924).
+        # Même repli que l'étape « Identify changed Dart files » ci-dessous :
+        # base absente ou tout-à-zéro → `HEAD^` (checkout en fetch-depth: 0).
+        shell: bash
+        env:
+          DIFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="${DIFF_BASE_SHA:-}"
+          if [[ -z "$base" || "$base" == "0000000000000000000000000000000000000000" ]]; then
+            base="$(git rev-parse HEAD^)"
+            echo "::notice::DIFF_BASE_SHA absent (event=${{ github.event_name }}) — repli sur HEAD^ (${base})."
+          fi
+          bash ./dev-hub/tools/check-mobile-duplicated-drift.sh "$base" "${DIFF_HEAD_SHA:-$(git rev-parse HEAD)}"
+
+  flutter-analyze:
+    timeout-minutes: 90
+    name: Analyze ${{ matrix.project.name }}
+    runs-on: ubuntu-latest
+    needs: [changes, mobile-apps-guard]
+    # #6928 / saturation CI (2026-09-08) : la matrice 8× Flutter (pub get +
+    # analyze + gate Dart incrémental, ~5-15 min/app) ne tourne QUE si les
+    # apps mobiles (ou le workflow lui-même) ont changé. Vérifié 2026-09-08 :
+    # ces checks ne sont PAS dans les contexts requis de la protection main
+    # (seuls PHPStan Strict, Module Validator, ESLint+TS, actionlint le sont)
+    # → un skip est sans effet sur la mergeabilité. Le `mobile-apps-guard`
+    # (validations structurelles légères) reste inconditionnel.
+    if: needs.changes.outputs.mobile == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - name: leopardo_accounting
+            path: front/mobile_apps/leopardo_accounting
+          - name: leopardo_core
+            path: front/mobile_apps/leopardo_core
+          - name: leopardo_employee
+            path: front/mobile_apps/leopardo_employee
+          - name: leopardo_manager
+            path: front/mobile_apps/leopardo_manager
+          - name: leopardo_hr
+            path: front/mobile_apps/leopardo_hr
+          - name: leopardo_platform_admin
+            path: front/mobile_apps/leopardo_platform_admin
+          - name: leopardo_marketing
+            path: front/mobile_apps/leopardo_marketing
+          - name: leopardo_travel_agent
+            path: front/mobile_apps/leopardo_travel_agent
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Flutter + Java
+        uses: ./.github/actions/setup-flutter-android
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.project.path }}
+        run: flutter pub get
+
+      - name: Regenerate shared localizations
+        # #4762 : les apps consomment AppLocalizations depuis le package core.
+        # Régénérer avec la version Flutter de CI évite une interface générée
+        # obsolète après pub get ou restauration de cache.
+        working-directory: front/mobile_apps/leopardo_core
+        run: flutter gen-l10n
+
+      - name: Regenerate codegen (build_runner — drift / json_serializable)
+        # #6590 : les *.g.dart (drift `edge_database`, json_serializable
+        # `*_schema.g.dart`, `feature*.g.dart`) ne sont PLUS commités (cf.
+        # .gitignore) — ils sont régénérés ici avant analyze/test. Le pub get
+        # local du package core est requis pour résoudre ses dev_dependencies
+        # (build_runner, drift_dev, json_serializable) dans ce job.
+        working-directory: front/mobile_apps/leopardo_core
+        run: |
+          flutter pub get
+          dart run build_runner build
+
+      - name: Validate ARB keys exist in generated localizations
+        # #4762 (récurrence) : toute clé ARB absente des générés casse la
+        # compile des apps qui la référencent. #6590 : exécuté APRÈS
+        # `flutter gen-l10n` (les générés ne sont plus commités) — une seule
+        # exécution suffit (package core), d'où la condition sur le projet.
+        if: matrix.project.name == 'leopardo_core'
+        shell: bash
+        run: 'bash ./dev-hub/tools/check-mobile-l10n-sync.sh'
+
+      - name: Fetch diff base for incremental Dart gate
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BASE_SHA}" && "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]] && ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          fi
+
+      - name: Identify changed Dart files
+        id: changed-dart
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BASE_SHA}" && "${BASE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+            git diff -z --diff-filter=ACMR --name-only "${BASE_SHA}" HEAD -- '*.dart' > /tmp/changed-dart-files
+          else
+            git diff -z --diff-filter=ACMR --name-only HEAD^ HEAD -- '*.dart' > /tmp/changed-dart-files
+          fi
+          project_prefix="${{ matrix.project.path }}/"
+          : > /tmp/changed-dart-files-relative
+          while IFS= read -r -d '' file; do
+            if [[ "${file}" == "${project_prefix}"* ]]; then
+              printf '%s\0' "${file#"$project_prefix"}" >> /tmp/changed-dart-files-relative
+            fi
+          done < /tmp/changed-dart-files
+          if [[ -s /tmp/changed-dart-files-relative ]]; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "Dart files changed in this project:"
+            tr '\0' '\n' < /tmp/changed-dart-files-relative
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "No Dart files changed in this project."
+          fi
+
+      - name: Check formatting of changed Dart files
+        if: steps.changed-dart.outputs.changed == 'true'
+        working-directory: ${{ matrix.project.path }}
+        shell: bash
+        run: xargs -r -0 dart format --set-exit-if-changed < /tmp/changed-dart-files-relative
+
+      - name: Run flutter analyze
+        working-directory: ${{ matrix.project.path }}
+        run: flutter analyze
+
+      # #3822 : chaque app livrée exécute ses tests en CI. Avant, seuls
+      # leopardo_core et leopardo_employee lançaient `flutter test` — les
+      # 43 fichiers de test de HR (21), Manager (21) et Platform Admin (1)
+      # ne tournaient jamais, et une régression de compile (#3952) passait
+      # inaperçue. Marketing n'a pas encore de dossier test/ (socle smoke en
+      # follow-up) : l'étape est sautée proprement avec un warning.
+      - name: Run app test suite
+        working-directory: ${{ matrix.project.path }}
+        run: |
+          if [ -d test ]; then
+            flutter test
+          else
+            echo "::warning::Pas de dossier test/ — aucune suite à exécuter pour ${{ matrix.project.name }} (voir #3822)."
+          fi
+
+  flutter-build-debug:
+    needs: [changes, flutter-analyze]
+    if: needs.changes.outputs.mobile == 'true'
+    timeout-minutes: 90
+    name: Build Debug ${{ matrix.project.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - name: leopardo_employee
+            path: front/mobile_apps/leopardo_employee
+            artifact: leopardo-employee-debug-apk
+          - name: leopardo_manager
+            path: front/mobile_apps/leopardo_manager
+            artifact: leopardo-manager-debug-apk
+          - name: leopardo_hr
+            path: front/mobile_apps/leopardo_hr
+            artifact: leopardo-hr-debug-apk
+          - name: leopardo_platform_admin
+            path: front/mobile_apps/leopardo_platform_admin
+            artifact: leopardo-platform-admin-debug-apk
+          - name: leopardo_marketing
+            path: front/mobile_apps/leopardo_marketing
+            artifact: leopardo-marketing-debug-apk
+          - name: leopardo_accounting
+            path: front/mobile_apps/leopardo_accounting
+            artifact: leopardo-accounting-debug-apk
+          - name: leopardo_travel_agent
+            path: front/mobile_apps/leopardo_travel_agent
+            artifact: leopardo-travel-agent-debug-apk
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Flutter + Java
+        uses: ./.github/actions/setup-flutter-android
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.project.path }}
+        run: flutter pub get
+
+      - name: Regenerate core generated files (l10n + codegen)
+        # #6590 : fichiers générés non commités — régénérés avant le build
+        # debug (compile le package core : AppLocalizations + *.g.dart).
+        working-directory: front/mobile_apps/leopardo_core
+        run: |
+          flutter pub get
+          flutter gen-l10n
+          dart run build_runner build
+
+      - name: Restore Firebase config from secret (issue #1467)
+        # google-services.json n'est PLUS committé (clé API réelle exposée) :
+        # un stub à clés factices est versionné pour les builds locaux/forks ;
+        # le fichier réel est restauré depuis le secret GOOGLE_SERVICES_JSON.
+        shell: bash
+        run: |
+          if [[ -n "${GOOGLE_SERVICES_JSON}" ]]; then
+            for target in front/mobile_apps/leopardo_employee front/mobile_apps/leopardo_hr front/mobile_apps/leopardo_manager front/mobile_apps/leopardo_platform_admin; do
+              printf '%s' "${GOOGLE_SERVICES_JSON}" > "${target}/android/app/google-services.json"
+            done
+            echo "Firebase config restaurée depuis le secret."
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON non défini — build avec le stub (clés factices)."
+          fi
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+
+      - name: Build debug APK
+        working-directory: ${{ matrix.project.path }}
+        run: flutter build apk --debug --dart-define=API_BASE_URL=${{ env.API_BASE_URL }}
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.project.artifact }}
+          path: ${{ matrix.project.path }}/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

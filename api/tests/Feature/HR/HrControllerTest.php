@@ -1,0 +1,150 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\HR;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use Laravel\Sanctum\Sanctum;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+/**
+ * Feature tests for HR module controllers.
+ *
+ * Covers:
+ * - Employee CRUD with tenant isolation (cross-tenant 404)
+ * - Department management scoped to company
+ * - Training access (manager-only)
+ * - RBAC: HR manager vs regular employee vs other company manager
+ */
+class HrControllerTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    protected Company $company;
+
+    protected Company $otherCompany;
+
+    protected Employee $manager;
+
+    protected Employee $employee;
+
+    protected Employee $otherManager;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->company = Company::factory()->create();
+        $this->otherCompany = Company::factory()->create();
+        $this->manager = Employee::factory()->manager()->create(['company_id' => $this->company->id]);
+        $this->employee = Employee::factory()->create(['company_id' => $this->company->id]);
+        $this->otherManager = Employee::factory()->manager()->create(['company_id' => $this->otherCompany->id]);
+    }
+
+    // ── Employees ────────────────────────────────────────────────────────────
+
+    public function test_manager_can_list_employees_in_own_company(): void
+    {
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->getJson('/api/v1/employees');
+
+        $response->assertOk();
+        $response->assertJsonStructure(['data']);
+    }
+
+    public function test_manager_cannot_see_employees_of_other_company(): void
+    {
+        Sanctum::actingAs($this->otherManager);
+
+        // The other manager must not see employees from $this->company
+        $response = $this->getJson('/api/v1/employees');
+
+        $response->assertOk();
+
+        $ids = collect($response->json('data'))->pluck('id')->toArray();
+        $this->assertNotContains($this->employee->id, $ids, 'Cross-tenant employee leak detected');
+        $this->assertNotContains($this->manager->id, $ids, 'Cross-tenant manager leak detected');
+    }
+
+    public function test_regular_employee_cannot_list_all_employees(): void
+    {
+        Sanctum::actingAs($this->employee);
+
+        $response = $this->getJson('/api/v1/employees');
+
+        // #5585 : la liste des employés est réservée aux managers → 403 pour un employé lambda.
+        $response->assertForbidden();
+    }
+
+    public function test_manager_can_show_own_company_employee(): void
+    {
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->getJson("/api/v1/employees/{$this->employee->id}");
+
+        $response->assertOk();
+        $response->assertJsonPath('data.id', $this->employee->id);
+        // #2327 : la fiche expose le contexte entreprise (company + currency)
+        // sans eager-load `company` sous le search_path tenant (42703).
+        $response->assertJsonPath('data.company.id', $this->company->id);
+        $response->assertJsonPath('data.currency', $this->company->currency);
+    }
+
+    public function test_manager_gets_404_for_cross_tenant_employee(): void
+    {
+        $crossTenantEmployee = Employee::factory()->create(['company_id' => $this->otherCompany->id]);
+
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->getJson("/api/v1/employees/{$crossTenantEmployee->id}");
+
+        $response->assertStatus(404);
+    }
+
+    // ── Departments ──────────────────────────────────────────────────────────
+
+    public function test_manager_can_list_departments(): void
+    {
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->getJson('/api/v1/departments');
+
+        $response->assertOk();
+    }
+
+    public function test_other_company_manager_cannot_see_departments(): void
+    {
+        Sanctum::actingAs($this->otherManager);
+
+        $response = $this->getJson('/api/v1/departments');
+
+        $response->assertOk();
+
+        // All returned departments must belong to otherCompany only
+        $deptCompanyIds = collect($response->json('data'))->pluck('company_id')->unique()->toArray();
+        $this->assertNotContains($this->company->id, $deptCompanyIds, 'Cross-tenant department leak');
+    }
+
+    // ── Training ─────────────────────────────────────────────────────────────
+
+    public function test_manager_can_access_training_list(): void
+    {
+        Sanctum::actingAs($this->manager);
+
+        $response = $this->getJson('/api/v1/training');
+
+        // #5585 : le module Training n'existe plus (supprimé) → route absente → 404.
+        $response->assertNotFound();
+    }
+
+    public function test_unauthenticated_user_cannot_access_employees(): void
+    {
+        $response = $this->getJson('/api/v1/employees');
+
+        $response->assertUnauthorized();
+    }
+}

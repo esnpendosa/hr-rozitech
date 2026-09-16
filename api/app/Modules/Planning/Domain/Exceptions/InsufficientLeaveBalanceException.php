@@ -1,0 +1,28 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Planning\Domain\Exceptions;
+
+use App\Exceptions\DomainException;
+
+class InsufficientLeaveBalanceException extends DomainException
+{
+    /**
+     * Issue #6573 — signature alignee sur l'exception legacy (available,
+     * requested) pour que les sites d'appel existants fonctionnent sans
+     * modification.
+     */
+    public function __construct(float $available, float $requested)
+    {
+        parent::__construct(
+            "Insufficient leave balance. Available: {$available} days, requested: {$requested} days.",
+            422
+        );
+    }
+
+    public function errorCode(): string
+    {
+        return 'INSUFFICIENT_LEAVE_BALANCE';
+    }
+}

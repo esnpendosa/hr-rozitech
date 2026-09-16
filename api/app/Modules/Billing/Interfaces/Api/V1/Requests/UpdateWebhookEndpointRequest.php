@@ -1,0 +1,28 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Billing\Interfaces\Api\V1\Requests;
+
+use App\Modules\Billing\Interfaces\Api\V1\Controllers\WebhookController;
+use App\Rules\NotPrivateUrl;
+use Illuminate\Foundation\Http\FormRequest;
+
+class UpdateWebhookEndpointRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return $this->user() && $this->user()->hasManagerRole('principal');
+    }
+
+    /** @return array<string, mixed> */
+    public function rules(): array
+    {
+        return [
+            'url' => ['sometimes', 'url', 'max:500', new NotPrivateUrl],
+            'events' => ['sometimes', 'array', 'min:1'],
+            'events.*' => ['string', 'in:'.implode(',', WebhookController::AVAILABLE_EVENTS)],
+            'active' => ['boolean'],
+        ];
+    }
+}

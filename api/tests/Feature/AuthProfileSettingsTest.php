@@ -1,0 +1,391 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Core\Auth\Domain\Models\Employee;
+use App\Core\Tenant\Domain\Models\Company;
+use App\Modules\Cabinet\Domain\Models\CabinetDocument;
+use App\Modules\Cabinet\Domain\Models\CabinetFolder;
+use App\Shared\Models\Language;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Tests\RefreshTenantDatabase;
+use Tests\TestCase;
+
+class AuthProfileSettingsTest extends TestCase
+{
+    use RefreshTenantDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+    }
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+    }
+
+    public function test_employee_can_update_own_profile(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'first_name' => 'Karim',
+            'last_name' => 'Aouad',
+            'email' => 'karim@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->patchJson('/api/v1/auth/profile', [
+                'first_name' => 'Karim Updated',
+                'last_name' => 'Aouad Updated',
+                'email' => 'karim.updated@company.test',
+                // #5587 : changement d'email → mot de passe actuel exigé.
+                'current_password' => 'password123',
+                'personal_email' => 'karim.personal@example.test',
+                'recovery_email' => 'karim.recovery@example.test',
+                'personal_phone' => '+213555000111',
+            ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('data.first_name', 'Karim Updated');
+        $response->assertJsonPath('data.email', 'karim.updated@company.test');
+        $response->assertJsonPath('data.personal_email', 'karim.personal@example.test');
+        $response->assertJsonPath('data.recovery_email', 'karim.recovery@example.test');
+        $response->assertJsonPath('data.personal_phone', '+213555000111');
+
+        $this->assertDatabaseHas('employees', [
+            'id' => $employee->id,
+            'personal_email' => 'karim.personal@example.test',
+            'recovery_email' => 'karim.recovery@example.test',
+            'personal_phone' => '+213555000111',
+        ]);
+    }
+
+    public function test_employee_can_view_durable_career_summary(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a-career',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'career@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'first_name' => 'Karim',
+            'last_name' => 'Aouad',
+            'email' => 'career.employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+            'contract_start' => '2026-01-15',
+            'contract_type' => 'CDI',
+            'extra_data' => ['job_title' => 'Technicien terrain'],
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/v1/me/career');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.available_for_new_company', false);
+        $response->assertJsonPath('data.current_company_id', $company->id);
+        $response->assertJsonPath('data.timeline.0.company_name', 'Company A');
+        $response->assertJsonPath('data.timeline.0.start_date', '2026-01-15');
+        $response->assertJsonPath('data.timeline.0.job_title', 'Technicien terrain');
+        $response->assertJsonPath('data.timeline.0.current', true);
+    }
+
+    public function test_employee_can_view_personal_cabinet_stats(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a-cabinet',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'cabinet@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'first_name' => 'Karim',
+            'last_name' => 'Aouad',
+            'email' => 'cabinet.employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        CabinetFolder::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'name' => 'Contrats',
+        ]);
+
+        CabinetDocument::query()->create([
+            'company_id' => $company->id,
+            'employee_id' => $employee->id,
+            'name' => 'Contrat CDI',
+            'original_name' => 'contrat.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 2048,
+            'disk' => 'local',
+            'path' => 'cabinet/contrat.pdf',
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/v1/cabinet/stats');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.total_documents', 1);
+        $response->assertJsonPath('data.total_folders', 1);
+        $response->assertJsonPath('data.total_size', 2048);
+    }
+
+    public function test_employee_can_change_password_with_current_password(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => 'employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        $otherToken = $employee->createToken('other-device')->plainTextToken;
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->postJson('/api/v1/auth/change-password', [
+                'current_password' => 'password123',
+                'new_password' => 'password456789',
+                'new_password_confirmation' => 'password456789',
+            ]);
+
+        $response->assertOk();
+        $this->assertTrue(Hash::check('password456789', $employee->fresh()->password_hash));
+
+        // Sanctum tokens issued before the password change (this request's own
+        // token included) must all be revoked, and a fresh token returned for
+        // the current device. See docs/security/AUDIT_API_2026-07-19.md, section 3.
+        $this->assertNotNull($response->json('token'));
+        $this->assertNotSame($token, $response->json('token'));
+
+        // Laravel's Sanctum RequestGuard memoizes the resolved user on the
+        // guard instance for the lifetime of the request/guard object, so
+        // each subsequent assertion needs a fresh guard to actually re-run
+        // token lookup instead of reusing the previous call's cached user.
+        Auth::forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$otherToken}")
+            ->getJson('/api/v1/auth/me')
+            ->assertStatus(401);
+
+        Auth::forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/v1/auth/me')
+            ->assertStatus(401);
+
+        $freshToken = $response->json('token');
+        Auth::forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$freshToken}")
+            ->getJson('/api/v1/auth/me')
+            ->assertOk();
+    }
+
+    public function test_employee_cannot_change_password_with_wrong_current_password(): void
+    {
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => 'employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->postJson('/api/v1/auth/change-password', [
+                'current_password' => 'wrong-password',
+                'new_password' => 'password456789',
+                'new_password_confirmation' => 'password456789',
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('error', 'INVALID_CURRENT_PASSWORD');
+        $response->assertJsonPath('message', 'INVALID_CURRENT_PASSWORD');
+        $this->assertNotNull($response->json('localized_message'));
+        $this->assertTrue(Hash::check('password123', $employee->fresh()->password_hash));
+    }
+
+    public function test_employee_can_update_preferred_language_and_receive_rtl_metadata(): void
+    {
+        Language::query()->create([
+            'code' => 'fr',
+            'name_fr' => 'Français',
+            'name_native' => 'Français',
+            'is_rtl' => false,
+            'is_active' => true,
+        ]);
+
+        Language::query()->create([
+            'code' => 'ar',
+            'name_fr' => 'Arabe',
+            'name_native' => 'العربية',
+            'is_rtl' => true,
+            'is_active' => true,
+        ]);
+
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'language' => 'fr',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => 'employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->patchJson('/api/v1/auth/language', [
+                'language' => 'ar',
+            ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('data.language', 'ar');
+        $response->assertJsonPath('data.is_rtl', true);
+        $this->assertSame('ar', $employee->fresh()->preferred_language);
+    }
+
+    public function test_employee_cannot_select_inactive_language(): void
+    {
+        Language::query()->create([
+            'code' => 'fr',
+            'name_fr' => 'Français',
+            'name_native' => 'Français',
+            'is_rtl' => false,
+            'is_active' => true,
+        ]);
+
+        Language::query()->create([
+            'code' => 'tr',
+            'name_fr' => 'Turc',
+            'name_native' => 'Türkçe',
+            'is_rtl' => false,
+            'is_active' => false,
+        ]);
+
+        /** @var Company $company */
+        $company = Company::factory()->create([
+            'name' => 'Company A',
+            'slug' => 'company-a',
+            'sector' => 'restaurant',
+            'country' => 'DZ',
+            'city' => 'Alger',
+            'email' => 'a@company.test',
+            'schema_name' => 'shared_tenants',
+            'tenancy_type' => 'shared',
+            'status' => 'active',
+            'language' => 'fr',
+        ]);
+
+        /** @var Employee $employee */
+        $employee = Employee::factory()->create([
+            'company_id' => $company->id,
+            'email' => 'employee@company.test',
+            'password_hash' => Hash::make('password123'),
+            'role' => 'employee',
+            'status' => 'active',
+        ]);
+
+        $token = $employee->createToken('tests')->plainTextToken;
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->patchJson('/api/v1/auth/language', [
+                'language' => 'tr',
+            ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('error', 'VALIDATION_ERROR');
+        $this->assertNull($employee->fresh()->preferred_language);
+    }
+}

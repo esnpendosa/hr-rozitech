@@ -1,0 +1,82 @@
+<?php
+
+return [
+    'rate_limits' => [
+        'auth_per_minute' => (int) env('RATE_LIMIT_AUTH_PER_MINUTE', 10),
+        'privacy_per_minute' => (int) env('RATE_LIMIT_PRIVACY_PER_MINUTE', 20),
+        'payroll_per_minute' => (int) env('RATE_LIMIT_PAYROLL_PER_MINUTE', 60),
+        'fuel_per_minute' => (int) env('RATE_LIMIT_FUEL_PER_MINUTE', 120), // FUEL-020 #5814 (écritures verticale FuelStation)
+        'platform_per_minute' => (int) env('RATE_LIMIT_PLATFORM_PER_MINUTE', 60),
+        'metrics_per_minute' => (int) env('RATE_LIMIT_METRICS_PER_MINUTE', 30), // #4694 GET /metrics (anti-fingerprinting)
+        'ai_per_minute' => (int) env('RATE_LIMIT_AI_PER_MINUTE', 20),
+        'client_analytics_per_minute' => (int) env('RATE_LIMIT_CLIENT_ANALYTICS_PER_MINUTE', 120),
+        'webhooks_inbound_per_minute' => (int) env('RATE_LIMIT_WEBHOOKS_INBOUND_PER_MINUTE', 60),
+        'restaurant_shop_public_per_minute' => (int) env('RATE_LIMIT_RESTAURANT_SHOP_PUBLIC_PER_MINUTE', 30),
+        // Audit fiabilité #6555 — bucket ZKTeco par device (serial_number + IP).
+        'zkteco_device_per_minute' => (int) env('RATE_LIMIT_ZKTECO_DEVICE_PER_MINUTE', 120),
+        // #6557 — durée du verrou anti-course de l'idempotence (RTMX #5277) :
+        // alignée sur la durée max de requête raisonnable (défaut 300 s) pour
+        // éviter qu'une requête longue relance la course après expiration du lock.
+        'idempotency_lock_ttl_seconds' => (int) env('IDEMPOTENCY_LOCK_TTL_SECONDS', 300),
+        // PA2-API-005: web (session-based) login forms and kiosk punch endpoints
+        // sit outside the API 'auth-sensitive'/'api' limiters, so they need their
+        // own dedicated buckets to stay protected against brute-force attempts.
+        'web_login_per_minute' => (int) env('RATE_LIMIT_WEB_LOGIN_PER_MINUTE', 10),
+        'web_activate_per_minute' => (int) env('RATE_LIMIT_WEB_ACTIVATE_PER_MINUTE', 10),
+        'kiosk_punch_per_minute' => (int) env('RATE_LIMIT_KIOSK_PUNCH_PER_MINUTE', 30),
+        // #6555 — heartbeat/sync ZKTeco : bucket dédié par serial (les devices
+        // derrière un NAT ne doivent pas partager le quota IP du bucket api).
+        'zkteco_per_minute' => (int) env('RATE_LIMIT_ZKTECO_PER_MINUTE', 120),
+        'kiosk_show_per_minute' => (int) env('RATE_LIMIT_KIOSK_SHOW_PER_MINUTE', 120),
+        // Issue #6555 : bucket dedie par serial_number pour les devices
+        // ZKTeco (plusieurs devices derriere un NAT partagent l'IP).
+        'zkteco_device_per_minute' => (int) env('RATE_LIMIT_ZKTECO_DEVICE_PER_MINUTE', 120),
+        // Public careers portal (job listing, job detail, XML feed, and
+        // candidate application submission) is unauthenticated by design,
+        // so it gets its own dedicated throttle bucket keyed by IP.
+        'public_careers_per_minute' => (int) env('RATE_LIMIT_PUBLIC_CAREERS_PER_MINUTE', 60),
+    ],
+
+    'plan_rate_limits' => [
+        'free_per_minute' => (int) env('RATE_LIMIT_PLAN_FREE_PER_MINUTE', 60),
+        'pilot_per_minute' => (int) env('RATE_LIMIT_PLAN_PILOT_PER_MINUTE', 100),
+        'operations_per_minute' => (int) env('RATE_LIMIT_PLAN_OPERATIONS_PER_MINUTE', 1000),
+        'enterprise_per_minute' => (int) env('RATE_LIMIT_PLAN_ENTERPRISE_PER_MINUTE', 0),
+        'default_per_minute' => (int) env('RATE_LIMIT_PLAN_DEFAULT_PER_MINUTE', 100),
+    ],
+
+    // S-1 (#1661) — Rétention des templates biométriques (RGPD / Loi 18-07).
+    // Durée par défaut : 24 mois après la fin de contrat (ou après le
+    // consentement si pas de fin de contrat). Référence :
+    // docs/security/POLITIQUE_RETENTION_DOCUMENTS.md §Biométrie.
+    'biometric' => [
+        'retention_months' => (int) env('BIOMETRIC_RETENTION_MONTHS', 24),
+    ],
+
+    // S-2 (#1662) — Journalisation des accès en lecture aux données sensibles
+    // (paie, exports, bulletins). Volume borné : échantillonnage + liste
+    // blanche de ressources. Référence : SPECS_AUDIT_EXPERT_2026-08-09 §S-2.
+    'sensitive_access_logging' => [
+        'enabled' => (bool) env('SENSITIVE_ACCESS_LOGGING_ENABLED', true),
+        'sampling_rate' => (int) env('SENSITIVE_ACCESS_LOGGING_SAMPLING_RATE', 100),
+        'resources' => [
+            'pay_slip.list',
+            'pay_slip.detail',
+            'pay_slip.download',
+            'payroll.journal',
+            'payroll.settlement',
+            'payroll.certificate',
+            'payroll.cnas_declaration',
+            'payroll.cnss_declaration',
+            'payroll.dsn_declaration',
+            'payroll.bank_export',
+            'payroll.accounting_export',
+            // Comptabilité (#5273) — audit trail des actions documents.
+            'accounting.document_created',
+            'accounting.document_sent',
+            'accounting.document_payment',
+            'accounting.document_cancelled',
+            'accounting.credit_note_created',
+        ],
+    ],
+];

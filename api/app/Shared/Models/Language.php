@@ -1,0 +1,141 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Shared\Models;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Throwable;
+
+/**
+ * @property int $id
+ * @property string $code
+ * @property string $name_fr
+ * @property string $name_native
+ * @property bool $is_rtl
+ * @property bool $is_active
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ *
+ * @mixin Builder<static>
+ */
+class Language extends Model
+{
+    protected $table = 'languages';
+
+    protected $primaryKey = 'code';
+
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
+    protected $fillable = [
+        'code',
+        'name_fr',
+        'name_native',
+        'is_rtl',
+        'is_active',
+    ];
+
+    protected $casts = [
+        'is_rtl' => 'boolean',
+        'is_active' => 'boolean',
+    ];
+
+    public const SUPPORTED = ['fr', 'ar', 'tr', 'en'];
+
+    public const DEFAULT = 'fr';
+
+    private const ACTIVE_CODES_CACHE_KEY = 'languages.active_codes';
+
+    public static function isSupported(string $code): bool
+    {
+        return in_array(strtolower(Str::substr(str_replace('_', '-', $code), 0, 2)), self::activeCodes(), true);
+    }
+
+    public static function isRtl(string $code): bool
+    {
+        $code = strtolower(Str::substr(str_replace('_', '-', $code), 0, 2));
+
+        if (! self::publicLanguagesTableExists()) {
+            return $code === 'ar';
+        }
+
+        return self::publicLanguagesQuery()
+            ->where('code', $code)
+            ->where('is_rtl', true)
+            ->exists();
+    }
+
+    public static function activeCodes(): array
+    {
+        $resolve = function (): array {
+            if (! self::publicLanguagesTableExists()) {
+                return self::SUPPORTED;
+            }
+
+            $codes = self::publicLanguagesQuery()
+                ->where('is_active', true)
+                ->pluck('code')
+                ->map(fn (string $code) => strtolower($code))
+                ->values()
+                ->all();
+
+            return $codes !== [] ? $codes : self::SUPPORTED;
+        };
+
+        try {
+            return Cache::remember(self::ACTIVE_CODES_CACHE_KEY, now()->addMinutes(10), $resolve);
+        } catch (Throwable) {
+            // Le cache (Redis) peut être indisponible (démarrage, incident) :
+            // on ne fait pas tomber toute l'API — le résolveur DB reste la
+            // source de vérité. La sonde /api/v1/health doit rester joignable
+            // même cache dégradé (HealthController documente ce contrat).
+            return $resolve();
+        }
+    }
+
+    private static function publicLanguagesTableExists(): bool
+    {
+        try {
+            if (DB::getDriverName() !== 'pgsql') {
+                return self::query()->getModel()->getConnection()->getSchemaBuilder()->hasTable('languages');
+            }
+
+            return DB::table('information_schema.tables')
+                ->where('table_schema', 'public')
+                ->where('table_name', 'languages')
+                ->exists();
+        } catch (Throwable) {
+            // DB injoignable (démarrage, incident réseau) : on ne fait pas
+            // tomber toute l'API — SetLocale doit rester fonctionnel avec les
+            // codes par défaut (la sonde /api/v1/health reporte la DB en 503,
+            // pas en 500 HTML, cf. contrat HealthController).
+            return false;
+        }
+    }
+
+    private static function publicLanguagesQuery()
+    {
+        if (DB::getDriverName() !== 'pgsql') {
+            return static::query();
+        }
+
+        return DB::table('public.languages');
+    }
+
+    protected static function booted(): void
+    {
+        $flush = static function (): void {
+            Cache::forget(self::ACTIVE_CODES_CACHE_KEY);
+        };
+
+        static::saved($flush);
+        static::deleted($flush);
+    }
+}

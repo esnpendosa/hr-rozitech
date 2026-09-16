@@ -1,0 +1,267 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\Payroll\Infrastructure\Services;
+
+use App\Core\Auth\Domain\Models\AuditLog;
+use App\Core\Auth\Domain\Models\Employee;
+use App\Events\PayrollValidated;
+use App\Modules\Payroll\Domain\Exceptions\PayrollAlreadyValidatedException;
+use App\Modules\Payroll\Domain\Exceptions\PayrollPeriodConflictException;
+use App\Modules\Payroll\Domain\Models\Payroll;
+use App\Modules\Payroll\Domain\Models\SalaryAdvance;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+
+class PayrollService
+{
+    /** @param array<string, mixed> $data */
+    public function create(Employee $manager, array $data): Payroll
+    {
+        $month = $this->toInt($data['period_month'] ?? null);
+        $year = $this->toInt($data['period_year'] ?? null);
+
+        if (Payroll::where('employee_id', $data['employee_id'])->where('period_month', $month)->where('period_year', $year)->exists()) {
+            throw new PayrollPeriodConflictException($month, $year);
+        }
+
+        $net = $this->computeNet($data);
+
+        try {
+            return $this->persist($manager, $data, $month, $year, $net);
+        } catch (QueryException $e) {
+            // Issue #3238 : double soumission concurrente (double-tap, retry) —
+            // la contrainte unique (employee_id, period_year, period_month)
+            // rattrape la course entre exists() et create().
+            // 23505 = SQLSTATE unique_violation (pattern PartnerService).
+            if ($e->getCode() === '23505') {
+                throw new PayrollPeriodConflictException($month, $year);
+            }
+            throw $e;
+        }
+    }
+
+    /** @param array<string, mixed> $data */
+    private function persist(Employee $manager, array $data, int $month, int $year, float $net): Payroll
+    {
+        return Payroll::create([
+            'company_id' => $manager->company_id,
+            'employee_id' => $data['employee_id'],
+            'period_month' => $month,
+            'period_year' => $year,
+            'gross_salary' => $this->toFloat($data['gross_salary'] ?? null),
+            'overtime_amount' => $this->toFloat($data['overtime_amount'] ?? null),
+            'bonuses' => $this->toLineItems($data['bonuses'] ?? []),
+            'deductions' => $this->toLineItems($data['deductions'] ?? []),
+            'cotisations' => $this->toLineItems($data['cotisations'] ?? []),
+            'ir_amount' => $this->toFloat($data['ir_amount'] ?? null),
+            'advance_deduction' => $this->toFloat($data['advance_deduction'] ?? null),
+            'absence_deduction' => $this->toFloat($data['absence_deduction'] ?? null),
+            'penalty_deduction' => $this->toFloat($data['penalty_deduction'] ?? null),
+            'net_salary' => max(0, $net),
+            'status' => 'draft',
+        ]);
+    }
+
+    /** @param array<string, mixed> $data */
+    public function update(Payroll $payroll, array $data): Payroll
+    {
+        if ($payroll->status === 'validated') {
+            throw new PayrollAlreadyValidatedException;
+        }
+
+        $payroll->fill($this->normalizePayrollData($data));
+        /** @var array<string, mixed> $payrollData */
+        $payrollData = $this->normalizePayrollData($this->stringKeyedArray($payroll->toArray()));
+        $payroll->net_salary = max(0, $this->computeNet($payrollData));
+        $payroll->save();
+
+        $payroll->refresh();
+
+        return $payroll;
+    }
+
+    public function validate(Payroll $payroll, Employee $validator): Payroll
+    {
+        if ($payroll->status === 'validated') {
+            throw new PayrollAlreadyValidatedException;
+        }
+
+        DB::transaction(function () use ($payroll, $validator): void {
+            $payroll->update(['status' => 'validated', 'validated_by' => $validator->id, 'validated_at' => Carbon::now()]);
+
+            if ($payroll->advance_deduction > 0) {
+                $remaining = $payroll->advance_deduction;
+                foreach (SalaryAdvance::where('employee_id', $payroll->employee_id)->where('status', 'active')->orderBy('created_at')->lockForUpdate()->get() as $advance) {
+                    if ($remaining <= 0) {
+                        break;
+                    }
+                    $deducted = min($remaining, $advance->amount_remaining);
+                    $newRem = round($advance->amount_remaining - $deducted, 2);
+                    // #4677/#3597 : `status` n'est PAS mass-assignable — un
+                    // update() l'écarterait silencieusement et l'avance ne
+                    // passerait jamais à `repaid` (déduction perdue, avance
+                    // active à remboursement nul). forceFill obligatoire.
+                    $advance->forceFill([
+                        'amount_remaining' => $newRem,
+                        'status' => $newRem <= 0 ? 'repaid' : 'active',
+                    ])->save();
+                    $remaining -= $deducted;
+                }
+            }
+        });
+
+        $payroll->refresh();
+
+        PayrollValidated::dispatch($payroll);
+
+        // #5439 — journal d'audit global : validation d'un bulletin (paie).
+        AuditLog::record(
+            'payroll',
+            'payroll.validate',
+            $payroll,
+            $validator,
+            ['status' => 'draft'],
+            ['status' => 'validated', 'validated_by' => $validator->id, 'validated_at' => $payroll->validated_at?->toIso8601String()],
+        );
+
+        return $payroll;
+    }
+
+    public function delete(Payroll $payroll): void
+    {
+        if ($payroll->status === 'validated') {
+            throw new PayrollAlreadyValidatedException;
+        }
+
+        // #5439 — journal d'audit global : suppression d'un bulletin (paie).
+        AuditLog::record(
+            'payroll',
+            'payroll.delete',
+            $payroll,
+            null,
+            ['gross_salary' => $payroll->gross_salary, 'status' => $payroll->status],
+            [],
+        );
+
+        $payroll->delete();
+    }
+
+    /** @param array<string, mixed> $data */
+    private function computeNet(array $data): float
+    {
+        return $this->toFloat($data['gross_salary'] ?? null)
+            + $this->toFloat($data['overtime_amount'] ?? null)
+            + $this->sumLineItems($data['bonuses'] ?? [])
+            - $this->sumLineItems($data['deductions'] ?? [])
+            - $this->sumLineItems($data['cotisations'] ?? [])
+            - $this->toFloat($data['ir_amount'] ?? null)
+            - $this->toFloat($data['advance_deduction'] ?? null)
+            - $this->toFloat($data['absence_deduction'] ?? null)
+            - $this->toFloat($data['penalty_deduction'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function normalizePayrollData(array $data): array
+    {
+        foreach (['period_month', 'period_year'] as $key) {
+            if (array_key_exists($key, $data)) {
+                $data[$key] = $this->toInt($data[$key]);
+            }
+        }
+
+        foreach ([
+            'gross_salary',
+            'overtime_amount',
+            'ir_amount',
+            'advance_deduction',
+            'absence_deduction',
+            'penalty_deduction',
+        ] as $key) {
+            if (array_key_exists($key, $data)) {
+                $data[$key] = $this->toFloat($data[$key]);
+            }
+        }
+
+        foreach (['bonuses', 'deductions', 'cotisations'] as $key) {
+            if (array_key_exists($key, $data)) {
+                $data[$key] = $this->toLineItems($data[$key]);
+            }
+        }
+
+        return $data;
+    }
+
+    private function toFloat(mixed $value): float
+    {
+        return is_numeric($value) ? (float) $value : 0.0;
+    }
+
+    private function toInt(mixed $value): int
+    {
+        return is_numeric($value) ? (int) $value : 0;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function toLineItems(mixed $items): array
+    {
+        if (! is_array($items)) {
+            return [];
+        }
+
+        $lineItems = [];
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $lineItem = [];
+
+            foreach ($item as $key => $value) {
+                if (is_string($key)) {
+                    $lineItem[$key] = $value;
+                }
+            }
+
+            $lineItems[] = $lineItem;
+        }
+
+        return $lineItems;
+    }
+
+    private function sumLineItems(mixed $items): float
+    {
+        $total = 0.0;
+
+        foreach ($this->toLineItems($items) as $item) {
+            $total += $this->toFloat($item['amount'] ?? null);
+        }
+
+        return $total;
+    }
+
+    /**
+     * @param  array<mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function stringKeyedArray(array $data): array
+    {
+        $normalized = [];
+
+        foreach ($data as $key => $value) {
+            if (is_string($key)) {
+                $normalized[$key] = $value;
+            }
+        }
+
+        return $normalized;
+    }
+}

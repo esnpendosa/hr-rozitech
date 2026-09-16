@@ -1,0 +1,168 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Modules\HR\Interfaces\Api\V1\Requests;
+
+use App\Core\Tenant\Domain\Models\Company;
+use App\Rules\GlobalEmailUnique;
+use App\Rules\ValidIban;
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+
+class StoreEmployeeRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        $companyId = $this->user()?->company_id
+            ?? (app()->bound('current_company') ? currentCompany()->id : null);
+
+        return [
+            'matricule' => [
+                'nullable',
+                'string',
+                'max:20',
+                Rule::unique('employees', 'matricule')->where(
+                    fn ($query) => $query->where('company_id', $companyId)
+                ),
+            ],
+            'first_name' => ['required', 'string', 'max:100'],
+            'last_name' => ['required', 'string', 'max:100'],
+            'email' => [
+                'required',
+                'email',
+                'max:150',
+                Rule::unique('employees', 'email'),
+                new GlobalEmailUnique,
+            ],
+            'password' => ['nullable', 'string', 'min:8', 'max:255'],
+            'schedule_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('schedules', 'id')->where(fn ($query) => $query->where('company_id', $companyId)),
+            ],
+            'contract_start' => ['nullable', 'date_format:Y-m-d'],
+            'salary_type' => ['nullable', 'in:fixed,hourly,daily'],
+            'salary_base' => ['nullable', 'numeric', 'min:0'],
+            'hourly_rate' => ['nullable', 'numeric', 'min:0'],
+            'role' => ['nullable', 'in:employee,manager'],
+            'manager_role' => ['nullable', 'in:principal,rh,dept,comptable,superviseur,marketing'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'personal_email' => ['nullable', 'email', 'max:150'],
+            'iban' => ['nullable', 'string', 'max:34', new ValidIban],
+            'bank_account' => ['nullable', 'string', 'max:34'],
+            'middle_name' => ['nullable', 'string', 'max:100'],
+            'preferred_name' => ['nullable', 'string', 'max:100'],
+            'date_of_birth' => ['nullable', 'date_format:Y-m-d'],
+            'place_of_birth' => ['nullable', 'string', 'max:120'],
+            'gender' => ['nullable', 'in:M,F'],
+            'nationality' => ['nullable', 'string', 'size:2'],
+            'marital_status' => ['nullable', 'string', 'max:30'],
+            'address_line' => ['nullable', 'string', 'max:255'],
+            'postal_code' => ['nullable', 'string', 'max:20'],
+            'emergency_contact_name' => ['nullable', 'string', 'max:150'],
+            'emergency_contact_phone' => ['nullable', 'string', 'max:30'],
+            'emergency_contact_relation' => ['nullable', 'string', 'max:60'],
+            'biometric_face_enabled' => ['nullable', 'boolean'],
+            'biometric_fingerprint_enabled' => ['nullable', 'boolean'],
+            'biometric_face_reference_path' => ['nullable', 'string', 'max:255'],
+            'biometric_fingerprint_reference_path' => ['nullable', 'string', 'max:255'],
+            'photo_path' => ['nullable', 'string', 'max:255'],
+            'zkteco_id' => ['nullable', 'string', 'max:50'],
+            'extra_data' => ['nullable', 'array'],
+            'extra_data.department' => ['nullable', 'string', 'max:120'],
+            'extra_data.job_title' => ['nullable', 'string', 'max:120'],
+            'extra_data.work_location' => ['nullable', 'string', 'max:120'],
+            'extra_data.national_id' => ['nullable', 'string', 'max:50'],
+            'extra_data.tax_identifier' => ['nullable', 'string', 'max:50'],
+            'extra_data.blood_group' => ['nullable', 'string', 'max:10'],
+            'extra_data.education_level' => ['nullable', 'string', 'max:120'],
+            'send_invitation' => ['nullable', 'boolean'],
+        ];
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator): void {
+            $role = $this->input('role', 'employee');
+            $password = $this->input('password');
+            $sendInvitation = filter_var($this->input('send_invitation', false), FILTER_VALIDATE_BOOLEAN);
+
+            if (! $password && ! $sendInvitation) {
+                $validator->errors()->add('password', __('errors.EMPLOYEE_PASSWORD_OR_INVITATION_REQUIRED'));
+            }
+
+            if ($role === 'manager' && ! $this->input('manager_role')) {
+                $validator->errors()->add('manager_role', __('errors.EMPLOYEE_MANAGER_ROLE_REQUIRED'));
+            }
+
+            if ($role === 'manager' && $this->user()?->isManager() && $this->input('manager_role') === 'principal') {
+                $validator->errors()->add('manager_role', __('errors.EMPLOYEE_PRINCIPAL_MANAGER_CREATION_FORBIDDEN'));
+            }
+        });
+    }
+
+    protected function prepareForValidation(): void
+    {
+        // Issue #1765 : les clients envoient souvent les montants en chaîne
+        // (formulaires HTML, TextField Flutter). La règle 'numeric' accepte
+        // les chaînes numériques ("40000"), mais le DTO typé
+        // (CreateEmployeeDTO::$salary_base : float) explose en TypeError →
+        // HTTP 500. On normalise les champs numériques AVANT la validation.
+        foreach (['salary_base', 'hourly_rate'] as $numericField) {
+            $value = $this->input($numericField);
+
+            if ($value !== null && $value !== '' && is_numeric($value)) {
+                $this->merge([$numericField => (float) $value]);
+            }
+        }
+
+        $scheduleId = $this->input('schedule_id');
+        if ($scheduleId !== null && $scheduleId !== '' && is_numeric($scheduleId)) {
+            $this->merge(['schedule_id' => (int) $scheduleId]);
+        }
+
+        // Booléens : les formulaires HTML envoient "1"/"on"/"true" — la règle
+        // 'boolean' accepte "1"/"0" mais le DTO typé (bool) explose en
+        // TypeError sur les chaînes. Valeurs invalides laissées telles
+        // quelles → 422 par la règle.
+        foreach (['send_invitation', 'biometric_face_enabled', 'biometric_fingerprint_enabled'] as $boolField) {
+            $value = $this->input($boolField);
+
+            if (is_bool($value) || (is_int($value) && in_array($value, [0, 1], true))) {
+                continue;
+            }
+
+            if (in_array($value, ['1', '0', 'true', 'false', 'on', 'off', 'yes', 'no'], true)) {
+                $this->merge([$boolField => filter_var($value, FILTER_VALIDATE_BOOLEAN)]);
+            }
+        }
+
+        if (DB::getDriverName() !== 'pgsql') {
+            return;
+        }
+
+        $company = $this->user()?->company
+            ?? (app()->bound('current_company') ? currentCompany() : null);
+
+        if (! $company instanceof Company) {
+            return;
+        }
+
+        $schemaName = $company->schema_name;
+
+        if ($company->tenancy_type === 'schema' && $schemaName !== '') {
+            DB::statement('SET search_path TO '.$company->getSafeSearchPath());
+
+            return;
+        }
+
+        DB::statement('SET search_path TO shared_tenants,public');
+    }
+}
