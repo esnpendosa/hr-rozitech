@@ -7,7 +7,7 @@
  * défaut `https://leopardo-rh.com` (domaine produit officiel). Le domaine Vercel
  * reste le déploiement web live (DOMAINS.md) — hors canonicals (issue #6683).
  */
-export const DEFAULT_SITE_URL = 'https://leopardo-rh.com';
+export const DEFAULT_SITE_URL = 'https://hr.rozitech.co.id';
 
 export function getSiteUrl(): string {
   return (process.env.NEXT_PUBLIC_SITE_URL || DEFAULT_SITE_URL).replace(/\/+$/, '');

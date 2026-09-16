@@ -131,36 +131,38 @@ class _StartupGateState extends State<StartupGate> {
                           children: [
                             // Glowing Logo
                             Container(
-                              width: 80,
-                              height: 80,
+                              width: 84,
+                              height: 84,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: const Color(
-                                  0xFF10B981,
-                                ).withValues(alpha: 0.1),
+                                color: const Color(0xFF1E3A8A).withValues(alpha: 0.2),
                                 border: Border.all(
-                                  color: const Color(
-                                    0xFF10B981,
-                                  ).withValues(alpha: 0.3),
+                                  color: const Color(0xFF2563EB).withValues(alpha: 0.4),
                                   width: 1.5,
                                 ),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: const Color(
-                                      0xFF10B981,
-                                    ).withValues(alpha: 0.3),
+                                    color: const Color(0xFF2563EB).withValues(alpha: 0.35),
                                     blurRadius: 30,
                                     spreadRadius: 2,
                                   ),
                                 ],
                               ),
                               alignment: Alignment.center,
-                              child: const Text(
-                                'L',
-                                style: TextStyle(
-                                  color: AppColors.mobileMint,
-                                  fontSize: 40,
-                                  fontWeight: FontWeight.w900,
+                              child: ClipOval(
+                                child: Image.asset(
+                                  'packages/leopardo_core/assets/images/rmih-emblem.png',
+                                  width: 56,
+                                  height: 56,
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (_, __, ___) => const Text(
+                                    'R',
+                                    style: TextStyle(
+                                      color: Color(0xFF60A5FA),
+                                      fontSize: 40,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),

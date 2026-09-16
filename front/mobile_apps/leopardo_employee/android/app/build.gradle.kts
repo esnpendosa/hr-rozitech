@@ -12,7 +12,7 @@ android {
     // Android (permission_handler_android 13.0.0) compile en SDK 35, donc
     // flutter.compileSdkVersion (36 sur stable) suffit. Pas de dépendance au
     // SDK preview android-37 (indisponible sur le canal stable de Google).
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

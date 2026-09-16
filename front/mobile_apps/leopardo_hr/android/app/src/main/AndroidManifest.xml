@@ -8,7 +8,7 @@
     <!-- Requis pour le service Firebase Messaging en arrière-plan -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application
-        android:label="Leopardo RH"
+        android:label="RMIH HR"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"

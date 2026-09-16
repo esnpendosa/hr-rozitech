@@ -340,7 +340,7 @@ class LeopardoApp extends ConsumerWidget {
     );
 
     return MaterialApp.router(
-      title: branding?.displayName ?? 'Leopardo RH',
+      title: branding?.displayName ?? 'RMIH HR',
       theme: TenantTheme.apply(AppTheme.lightTheme, branding),
       darkTheme: TenantTheme.apply(AppTheme.darkTheme, branding),
       themeMode: ThemeMode.system,

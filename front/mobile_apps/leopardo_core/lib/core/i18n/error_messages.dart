@@ -19,39 +19,45 @@ import 'dart:ui' show PlatformDispatcher;
 String get deviceUiLocale {
   final language = PlatformDispatcher.instance.locale.languageCode.toLowerCase();
   return switch (language) {
+    'id' => 'id',
     'ar' => 'ar',
     'tr' => 'tr',
     'en' => 'en',
-    _ => 'fr',
+    _ => 'id',
   };
 }
 
 const Map<String, Map<String, String>> _errorCatalog = {
   'CONNECTION': {
+    'id': 'Tidak dapat terhubung ke server',
     'fr': 'Impossible de se connecter au serveur',
     'en': 'Unable to connect to the server',
     'tr': 'Sunucuya bağlanılamıyor',
     'ar': 'تعذر الاتصال بالخادم',
   },
   'NOT_IMPLEMENTED': {
+    'id': 'Fitur akan segera hadir',
     'fr': 'Fonction bientôt disponible',
     'en': 'Feature coming soon',
     'tr': 'Özellik yakında kullanıma sunulacak',
     'ar': 'الميزة قريبًا',
   },
   'ACCOUNT_SUSPENDED': {
+    'id': 'Akun ditangguhkan - hubungi perusahaan Anda',
     'fr': 'Compte suspendu - contactez votre employeur',
     'en': 'Account suspended - contact your employer',
     'tr': 'Hesap askıya alındı - işvereninizle iletişime geçin',
     'ar': 'الحساب موقوف - تواصل مع جهة عملك',
   },
   'FORBIDDEN': {
+    'id': 'Tindakan tidak diizinkan untuk profil Anda',
     'fr': 'Action non autorisée pour votre profil',
     'en': 'Action not allowed for your profile',
     'tr': 'Profiliniz için izin verilmeyen işlem',
     'ar': 'إجراء غير مسموح لملفك الشخصي',
   },
   'CONNECTION_TIMEOUT': {
+    'id': 'Waktu koneksi habis',
     'fr': 'Délai de connexion dépassé',
     'en': 'Connection timed out',
     'tr': 'Bağlantı zaman aşımı',

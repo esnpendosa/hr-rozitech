@@ -30,7 +30,7 @@ Future<void> main() async {
     },
     appRunner: () => runApp(
       StartupGate(
-        appName: 'Leopardo Employee',
+        appName: 'RMIH Karyawan',
         initializer: _bootstrap,
         criticalInitializer: _bootstrapCritical,
         optionalInitializer: _safeGoogleSignInInitialize,

@@ -26,7 +26,7 @@
     <a
       href="#main-content"
       class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:rounded-xl focus:bg-white focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-brand-600 focus:shadow-premium"
-    >{{ t('a11y.skip_to_content', 'Aller au contenu principal') }}</a>
+    >{{ t('a11y.skip_to_content', 'Lewati ke konten utama') }}</a>
 
     <!-- Animated Background -->
     <div class="absolute inset-0 z-0">
@@ -188,7 +188,7 @@
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
                 </span>
-                {{ isLoading ? t('auth.loading', 'Authentification…') : t('auth.login_submit', 'Se connecter') }}
+                {{ isLoading ? t('auth.loading', 'Memproses masuk…') : t('auth.login_submit', 'Masuk') }}
               </button>
 
               <!-- Accès démo (dev/staging uniquement — masqué en production). -->
@@ -199,11 +199,11 @@
                 <div class="flex items-center gap-2">
                   <SparklesIcon class="h-4 w-4 shrink-0 text-amber-400" />
                   <h2 class="text-[10px] font-black uppercase tracking-widest text-amber-300">
-                    {{ t('auth.demo_panel_title', 'Accès démo — choisir un profil') }}
+                    {{ t('auth.demo_panel_title', 'Akses Demo — Pilih Akun') }}
                   </h2>
                 </div>
                 <p class="text-[10px] font-bold leading-tight text-amber-200/70">
-                  {{ t('auth.demo_panel_hint', 'Environnement de démonstration : sélectionnez un profil pour vous connecter immédiatement. Désactivé en production.') }}
+                  {{ t('auth.demo_panel_hint', 'Lingkungan demo: pilih profil untuk masuk instan. Dinonaktifkan di production.') }}
                 </p>
                 <div class="grid gap-2">
                   <button

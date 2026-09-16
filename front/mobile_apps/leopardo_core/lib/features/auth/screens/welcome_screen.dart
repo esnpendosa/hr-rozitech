@@ -48,11 +48,6 @@ class WelcomeScreen extends StatelessWidget {
                       height: compact ? 50 : 62,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [AppColors.rh, AppColors.rhDark],
-                        ),
                         boxShadow: [
                           BoxShadow(
                             color: AppColors.rh.withValues(alpha: 0.28),
@@ -61,14 +56,20 @@ class WelcomeScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      child: Center(
-                        child: Text(
-                          'L',
-                          style: TextStyle(
-                            fontFamily: AppTypography.fontFamily,
-                            fontWeight: FontWeight.w800,
-                            fontSize: compact ? 24 : 30,
-                            color: Colors.white,
+                      child: ClipOval(
+                        child: Image.asset(
+                          'packages/leopardo_core/assets/images/rmih-emblem.png',
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => Center(
+                            child: Text(
+                              'R',
+                              style: TextStyle(
+                                fontFamily: AppTypography.fontFamily,
+                                fontWeight: FontWeight.w800,
+                                fontSize: compact ? 24 : 30,
+                                color: Colors.white,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -78,12 +79,12 @@ class WelcomeScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Leopardo RH',
+                          'RMIH',
                           style: AppTypography.title.copyWith(color: text),
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          'Espace Manager',
+                          'Portal Manajemen',
                           style: AppTypography.caption.copyWith(
                             color: AppColors.rh,
                             fontWeight: FontWeight.w600,

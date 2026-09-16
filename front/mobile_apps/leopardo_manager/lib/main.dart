@@ -28,7 +28,7 @@ Future<void> main() async {
     },
     appRunner: () => runApp(
       StartupGate(
-        appName: 'Leopardo Manager',
+        appName: 'RMIH Manager',
         initializer: _bootstrap,
         criticalInitializer: _bootstrapCritical,
         optionalInitializer: _safeGoogleSignInInitialize,

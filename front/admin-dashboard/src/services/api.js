@@ -107,7 +107,7 @@ function sleep(ms) {
 // (déploiement GitHub Actions cassé, dev silencieusement pointé ailleurs).
 // Le défaut est désormais l'URL de production ; localhost reste utilisable
 // explicitement via VITE_API_URL pour le dev local.
-const apiBaseURL = import.meta.env.VITE_API_URL || 'https://gestionemployerbackend.onrender.com/api/v1'
+const apiBaseURL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '/api/v1' : 'https://hr.rozitech.co.id/api/v1')
 
 function baseEndsWithV1(baseURL) {
   return /\/api\/v1\/?$/.test(baseURL || '')

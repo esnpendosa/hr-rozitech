@@ -23,7 +23,7 @@ class DemoUserController extends Controller
             'data' => [
                 'super_admin' => [
                     'label' => 'Super Administrateur',
-                    'email' => config('demo.super_admin_email', 'admin@leopardo-rh.com'),
+                    'email' => config('demo.super_admin_email', 'admin@rmih.id'),
                     'password' => config('demo.password'),
                     'role' => 'super_admin',
                     'surface' => 'admin-platform',

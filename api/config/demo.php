@@ -16,7 +16,7 @@ return [
     |
     */
 
-    'super_admin_email' => env('SUPER_ADMIN_EMAIL', 'admin@leopardo-rh.com'),
+    'super_admin_email' => env('SUPER_ADMIN_EMAIL', 'admin@rmih.id'),
 
     'password' => env('DEMO_PASSWORD', 'password123'),
 ];
