@@ -104,50 +104,69 @@ export function SolutionStack({ locale }: SolutionStackProps) {
           })}
         </div>
 
-        {/* Selected Industry Detail Card (Corporate Showcase) */}
+        {/* Selected Industry Detail Card (Corporate Showcase with Real Visual) */}
         {activeVertical && (
           <div className="mb-8 rounded-2xl border border-blue-100 dark:border-blue-900/40 bg-gradient-to-r from-blue-50/70 to-indigo-50/50 dark:from-blue-950/40 dark:to-indigo-950/20 p-6 sm:p-8 backdrop-blur-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-blue-100/80 dark:border-blue-900/50">
-              <div>
-                <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-1">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+              <div className="lg:col-span-7">
+                <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-2">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: activeVertical.color }} />
                   {copy.layerVertical.name}
                 </div>
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                <h3 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mb-2">
                   Solusi Terintegrasi untuk {copy.verticals[activeVertical.key]}
                 </h3>
-              </div>
-              <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                {activeVertical.consumes.length} modul aktif otomatis
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">
-                Modul Operasional Utama yang Digunakan:
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                {activeVertical.consumes.map((key) => (
-                  <div
-                    key={key}
-                    className="flex items-center gap-2 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-200/60 dark:border-blue-800/60 shadow-sm"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" />
-                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
-                      {copy.horizontals[key]}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {activeVertical.extraModules.length > 0 && (
-                <p className="mt-4 text-xs font-medium text-slate-600 dark:text-slate-400">
-                  <span className="font-bold text-slate-700 dark:text-slate-300">{copy.alsoPrefix}</span>{' '}
-                  {activeVertical.extraModules
-                    .map((moduleKey) => extraLabels[moduleKey] ?? moduleKey)
-                    .join(', ')}
+                <p className="text-xs text-slate-500 dark:text-slate-400 mb-6">
+                  {activeVertical.consumes.length} modul horizontal aktif otomatis dan disesuaikan untuk kebutuhan operasional spesifik sektor ini.
                 </p>
-              )}
+
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-3">
+                  Modul Operasional Utama:
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {activeVertical.consumes.map((key) => (
+                    <div
+                      key={key}
+                      className="flex items-center gap-2 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-200/60 dark:border-blue-800/60 shadow-sm"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" />
+                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+                        {copy.horizontals[key]}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {activeVertical.extraModules.length > 0 && (
+                  <p className="mt-4 text-xs font-medium text-slate-600 dark:text-slate-400">
+                    <span className="font-bold text-slate-700 dark:text-slate-300">{copy.alsoPrefix}</span>{' '}
+                    {activeVertical.extraModules
+                      .map((moduleKey) => extraLabels[moduleKey] ?? moduleKey)
+                      .join(', ')}
+                  </p>
+                )}
+              </div>
+
+              {/* Right Column: Visual Product Frame */}
+              <div className="lg:col-span-5">
+                <div className="rounded-2xl overflow-hidden border border-slate-200/90 dark:border-slate-800 shadow-xl bg-white dark:bg-slate-900">
+                  <div className="flex items-center gap-1.5 h-8 px-3.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200/70 dark:border-slate-700/60">
+                    <span className="w-2 h-2 rounded-full bg-red-400" />
+                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    <span className="ml-2 text-[10px] font-medium text-slate-400">Tampilan Dasbor Operasional</span>
+                  </div>
+                  <div className="relative aspect-[4/3] bg-slate-100 dark:bg-slate-950 overflow-hidden">
+                    <Image
+                      src="/screenshots/web-dashboard.png"
+                      alt={`Dasbor Solusi ${copy.verticals[activeVertical.key]}`}
+                      fill
+                      sizes="(max-width: 1024px) 100vw, 35vw"
+                      className="object-cover object-top hover:scale-105 transition-transform duration-500"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

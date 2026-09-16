@@ -108,3 +108,5 @@ docs/validation/I18N_DEBT_REPORT_2026_08_09.md
 *.g.dart
 *.freezed.dart
 **/lib/l10n/generated/
+**/build/
+*.dill
