@@ -128,6 +128,11 @@ const contactCopy: Record<string, {
   info: { title: string; email: string; phone: string; address: string; addressValue: string; hours: string; hoursValue: string; responseTime: string };
   form: { name: string; email: string; company: string; subject: string; subjectPlaceholder: string; message: string; send: string; sending: string; successTitle: string; successBody: string; errorSend: string; errorGeneric: string };
 }> = {
+  id: {
+    hero: { headline: 'Hubungi Kami', subheadline: 'Tim CV. Rozitech Multimedia Indonesia siap membantu konsultasi dan implementasi RMIH untuk perusahaan Anda', cta1: 'Kirim Pesan', cta2: 'Konsultasi Enterprise', badge: 'Hubungi Kami' },
+    info: { title: 'Informasi Kontak & Kantor', email: 'Email Resmi', phone: 'WhatsApp / Telepon', address: 'Alamat Kantor', addressValue: 'Kampung Gg. Telaga, RT.1/RW.1, Leran, Kec. Manyar, Kabupaten Gresik, Jawa Timur 61151', hours: 'Jam Operasional', hoursValue: 'Senin - Sabtu: 08:00 - 17:00 WIB', responseTime: 'Waktu respon rata-rata: Kurang dari 1 jam di jam kerja' },
+    form: { name: 'Nama Lengkap', email: 'Alamat Email', company: 'Nama Perusahaan / Organisasi', subject: 'Kategori Keperluan', subjectPlaceholder: 'Pilih kategori keperluan', message: 'Tuliskan pesan atau kebutuhan implementasi Anda...', send: 'Kirim Pesan Sekarang', sending: 'Mengirim pesan...', successTitle: 'Pesan Berhasil Terkirim!', successBody: 'Terima kasih, tim Rozitech akan segera menghubungi Anda melalui WhatsApp atau email.', errorSend: 'Gagal mengirim pesan', errorGeneric: 'Terjadi kesalahan sistem. Silakan coba kembali atau hubungi WhatsApp kami.' },
+  },
   fr: {
     hero: { headline: 'Contactez-nous', subheadline: 'Notre équipe est là pour répondre à toutes vos questions', cta1: 'Envoyer un message', cta2: 'Demander une démo', badge: 'Contact' },
     info: { title: 'Informations', email: 'Email', phone: 'Téléphone', address: 'Adresse', addressValue: 'Alger, Algérie', hours: 'Horaires', hoursValue: 'Lun-Ven 9h-18h (GMT+1)', responseTime: 'Temps de réponse moyen : moins de 24 h' },
@@ -226,8 +231,8 @@ function ContactPageInner() {
                 <h2 className="text-2xl font-black text-slate-900 dark:text-white mb-6">{copy.info.title}</h2>
                 <div className="space-y-6">
                   {[
-                    { icon: Mail, label: copy.info.email, value: 'contact@rmih.id' },
-                    { icon: Phone, label: copy.info.phone, value: '+213 (0) 555 123 456' },
+                    { icon: Mail, label: copy.info.email, value: 'admin@rozitech.co.id' },
+                    { icon: Phone, label: copy.info.phone, value: '+62 821-8782-7382' },
                     { icon: MapPin, label: copy.info.address, value: copy.info.addressValue },
                     { icon: Clock, label: copy.info.hours, value: copy.info.hoursValue },
                   ].map((item, i) => (

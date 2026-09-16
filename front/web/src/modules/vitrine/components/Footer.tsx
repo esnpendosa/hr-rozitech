@@ -8,12 +8,9 @@ import { Globe } from 'lucide-react'
 import { useVitrineLocale } from '../lib/vitrine-locale'
 
 const SOCIAL_LINKS = [
-  // Compte X/Twitter @leopardo_hr inexistant (404 constaté 2026-08-15, session
-  // QA expert) — remplacé par GitHub pour garder un lien social vivant.
-  // #7192 : lien LinkedIn `https://linkedin.com/company/leopardo` retiré —
-  // 404 vérifié le 2026-09-10 (`www.linkedin.com/company/leopardo` → 404).
-  // Ne réintroduire une entrée LinkedIn qu'avec une page d'entreprise réelle.
-  { label: 'Gh', href: 'https://github.com/kitokoh/leopardo-hr', title: 'GitHub' },
+  { label: 'WA', href: 'https://wa.me/6282187827382', title: 'WhatsApp (+62 821-8782-7382)' },
+  { label: 'Gh', href: 'https://github.com/esnpendosa/hr-rozitech', title: 'GitHub' },
+  { label: 'Web', href: 'https://rozitech.co.id', title: 'Website Rozitech' },
 ]
 import { NewsletterForm } from './NewsletterForm'
 import { getEnvConfig } from '../lib/env'
@@ -78,8 +75,18 @@ export function Footer() {
             <div className="mb-4">
               <RmihLogo size="md" href="/" />
             </div>
-            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs mb-6">{copy.footer.description}</p>
-            <div className="flex items-center gap-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs mb-3">{copy.footer.description}</p>
+            <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1 mb-5">
+              <p className="font-semibold text-slate-700 dark:text-slate-200">CV. Rozitech Multimedia Indonesia</p>
+              <p>Kampung Gg. Telaga, RT.1/RW.1, Leran, Kec. Manyar, Kabupaten Gresik, Jawa Timur 61151</p>
+              <p className="pt-1">
+                WhatsApp: <a href="https://wa.me/6282187827382" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 font-medium hover:underline">+62 821-8782-7382</a>
+              </p>
+              <p>
+                Email: <a href="mailto:admin@rozitech.co.id" className="text-blue-600 dark:text-blue-400 font-medium hover:underline">admin@rozitech.co.id</a>
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
               {SOCIAL_LINKS.map((social) => (
                 <Link
                   key={social.label}
@@ -87,7 +94,7 @@ export function Footer() {
                   title={social.title}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-600 hover:bg-emerald-100 hover:text-emerald-800 dark:text-slate-400 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-400 transition-colors"
+                  className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-600 hover:bg-blue-100 hover:text-blue-700 dark:text-slate-400 dark:hover:bg-blue-900/40 dark:hover:text-blue-300 transition-colors"
                 >
                   {social.label}
                 </Link>

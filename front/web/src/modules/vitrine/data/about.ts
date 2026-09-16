@@ -66,6 +66,69 @@ export type AboutContent = {
 }
 
 const aboutByLocale: Record<AppLocale, AboutContent> = {
+  id: {
+    hero: {
+      badge: 'Tentang Kami',
+      headline: 'Tentang RMIH & Rozitech',
+      subheadline: 'Solusi HR, absensi biometrik & payroll terintegrasi dari CV. Rozitech Multimedia Indonesia',
+      ctaPrimary: 'Hubungi Kami',
+      ctaSecondary: 'Konsultasi Solusi',
+    },
+    story: {
+      badge: 'Profil Perusahaan',
+      headline: 'Dedikasi Membangun Efisiensi Bisnis Indonesia',
+      title: 'Dedikasi Membangun Efisiensi Bisnis Indonesia',
+      paragraphs: [
+        'RMIH (Resources Management Integrated Human) dikembangkan oleh CV. Rozitech Multimedia Indonesia yang berpusat di Gresik, Jawa Timur. Berawal dari tantangan operasional nyata yang dihadapi oleh banyak perusahaan dan UMKM di Indonesia terkait pencatatan kehadiran yang rentan manipulasi dan proses payroll manual yang rumit.',
+        'Kami menghadirkan platform HR all-in-one yang menghubungkan mesin absensi biometrik, aplikasi mobile karyawan berbasis GPS geofencing, hingga sistem penggajian otomatis PPh 21 dan BPJS Ketenagakerjaan/Kesehatan.',
+        'Misi kami adalah mendemokratisasi teknologi enterprise agar dapat diakses dengan mudah, andal, dan terjangkau oleh seluruh pelaku usaha, mulai dari UMKM hingga perusahaan multi-cabang di seluruh Indonesia.',
+      ],
+    },
+    values: {
+      badge: 'Nilai Utama Kami',
+      title: 'Komitmen & Integritas Kami',
+      items: [
+        { title: 'Inovasi & Praktis', description: 'Teknologi kami dirancang langsung siap pakai, mudah dipahami staf, dan minim kompleksitas teknis.' },
+        { title: 'Dukungan Berkelanjutan', description: 'Tim teknis Rozitech selalu siap mendampingi proses implementasi, pelatihan, dan perawatan sistem Anda.' },
+        { title: 'Keamanan & Privasi', description: 'Data karyawan dan riwayat finansial perusahaan Anda terlindungi dengan standar enkripsi tinggi.' },
+        { title: 'Solusi Terintegrasi', description: 'Menyatukan hardware absensi, aplikasi seluler, dan dashboard web cloud dalam satu ekosistem rapi.' },
+      ],
+    },
+    team: {
+      badge: 'Tim Profesional',
+      title: 'Didukung Tim Teknis Berpengalaman',
+      disclosure: 'RMIH didukung oleh tim rekayasa perangkat lunak dan teknisi infrastruktur jaringan dari CV. Rozitech Multimedia Indonesia.',
+      members: [
+        { name: 'Tim Manajemen', role: 'Direksi & Operasional', bio: 'Berkomitmen memberikan layanan teknologi informasi terbaik bagi bisnis di Jawa Timur dan nasional.', image: '/avatars/ahmed.svg' },
+        { name: 'Tim Engineering', role: 'Software & Cloud Architect', bio: 'Merancang arsitektur web dan backend berkinerja tinggi, aman, dan berkesinambungan.', image: '/avatars/fatima.svg' },
+        { name: 'Tim Dukungan Teknis', role: 'Hardware & IoT Specialist', bio: 'Menangani integrasi mesin ZKTeco, jaringan telekomunikasi, dan konfigurasi kiosk.', image: '/avatars/jean.svg' },
+        { name: 'Tim Customer Success', role: 'Konsultan Implementasi HR', bio: 'Membimbing transisi dari pencatatan manual ke digital secara mulus tanpa kendala operasional.', image: '/avatars/sophie.svg' },
+      ],
+    },
+    stats: {
+      badge: 'Keunggulan Kami',
+      title: 'RMIH dalam Angka',
+      footnote: 'Spesifikasi platform dan ekosistem terbukti yang siap diimplementasikan untuk perusahaan Anda.',
+      items: [
+        { value: '100%', label: 'Kepatuhan Regulasi Indonesia' },
+        { value: '7+', label: 'Platform & Modul Terhubung' },
+        { value: '< 1 Jam', label: 'Respon Dukungan Teknis' },
+        { value: '0 Rp', label: 'Paket Pemula Gratis Selamanya' },
+      ],
+    },
+    join: {
+      badge: 'Kemitraan & Karir',
+      title: 'Tumbuh Bersama Rozitech',
+      body: 'Tertarik mengimplementasikan RMIH atau bekerjasama dengan CV. Rozitech Multimedia Indonesia? Hubungi tim kami hari ini.',
+      cta: 'Hubungi Tim Rozitech',
+    },
+    cta: {
+      headline: 'Siap Mengoptimalkan Manajemen HR Anda?',
+      subheadline: 'Mulai gunakan RMIH sekarang atau konsultasikan kebutuhan kustom perusahaan Anda.',
+      primary: 'Coba Gratis Sekarang',
+      secondary: 'Hubungi Kami',
+    },
+  },
   fr: {
     hero: {
       badge: 'Notre Histoire',

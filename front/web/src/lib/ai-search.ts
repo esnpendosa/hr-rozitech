@@ -42,7 +42,7 @@ export const LLMS_CONTENT_TYPE = 'text/plain; charset=utf-8';
 export const LLMS_CACHE_CONTROL = 'public, max-age=3600, s-maxage=86400';
 
 /** Dépôt public — unique profil de marque vérifié (schema.org `sameAs`). */
-export const AI_SEARCH_REPOSITORY_URL = 'https://github.com/kitokoh/leopardo-hr';
+export const AI_SEARCH_REPOSITORY_URL = 'https://github.com/esnpendosa/hr-rozitech';
 
 /**
  * Chiffres publiés sur la vitrine. Sources : section « Conçu pour vos

@@ -27,7 +27,7 @@ const SITE_URL = getSiteUrl();
  * `linkedin.com/company/leopardo` renvoyait 404 au 2026-09-10 et a été
  * retiré ; ne PAS l'ajouter tant qu'il n'est pas de nouveau résolvable).
  */
-const SAME_AS = ['https://github.com/kitokoh/leopardo-hr'] as const;
+const SAME_AS = ['https://github.com/esnpendosa/hr-rozitech'] as const;
 
 export function JsonLd({ data }: JsonLdProps) {
   return (

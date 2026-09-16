@@ -41,30 +41,32 @@ export function RmihFooter() {
             </Link>
           </nav>
 
-          {/* Social Icons */}
+          {/* Social & Contact Icons */}
           <div className="flex items-center gap-3">
             <Link
-              href="https://wa.me/"
+              href="https://wa.me/6282187827382"
               target="_blank"
               rel="noopener noreferrer"
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:bg-blue-600 hover:border-blue-600 transition-all"
-              aria-label="WhatsApp"
+              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:bg-emerald-600 hover:border-emerald-600 transition-all"
+              aria-label="WhatsApp (+62 821-8782-7382)"
             >
               <MessageCircle className="w-4 h-4" />
             </Link>
             <Link
-              href="https://t.me/"
+              href="https://github.com/esnpendosa/hr-rozitech"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:bg-blue-600 hover:border-blue-600 transition-all text-xs font-bold"
+              aria-label="GitHub Repository"
+            >
+              Gh
+            </Link>
+            <Link
+              href="https://rozitech.co.id"
               target="_blank"
               rel="noopener noreferrer"
               className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:bg-blue-600 hover:border-blue-600 transition-all"
-              aria-label="Telegram"
-            >
-              <Send className="w-4 h-4" />
-            </Link>
-            <Link
-              href="/contact"
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:bg-blue-600 hover:border-blue-600 transition-all"
-              aria-label="Portal Web"
+              aria-label="Website Rozitech"
             >
               <Globe className="w-4 h-4" />
             </Link>

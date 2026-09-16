@@ -40,6 +40,97 @@ export type GuidesContent = {
 }
 
 export const guidesPageCopy: Record<AppLocale, GuidesContent> = {
+  id: {
+    rhStartup: {
+      hero: {
+        headline: 'Panduan Lengkap Manajemen HR & Absensi Bisnis',
+        subheadline:
+          'Semua yang perlu Anda ketahui untuk mengelola karyawan, kehadiran biometrik, dan penggajian di UMKM & Startup',
+        badge: 'Panduan Praktis Gratis',
+        ctaPrimary: 'Unduh Panduan (PDF)',
+        ctaSecondary: 'Konsultasi Sekarang',
+      },
+      stats: [
+        { title: '10 Bab Lengkap', description: 'Mencakup seluruh aspek pengelolaan SDM dan operasional tim' },
+        { title: 'Format Siap Pakai', description: 'Dilengkapi template SOP absensi, jadwal shift, dan form lembur' },
+        { title: '100% Gratis', description: 'Dapat diunduh dan dipelajari langsung tanpa biaya' },
+      ],
+      sectionTitle: 'Daftar Isi & Pembahasan',
+      sections: [
+        { title: '1. Fondasi Manajemen SDM untuk Bisnis Bertumbuh', description: 'Pilar utama kepatuhan ketenagakerjaan dan transparansi jam kerja' },
+        { title: '2. Rekrutmen & Onboarding Karyawan Baru', description: 'Cara menjaring talenta terbaik dan orientasi kerja yang efektif' },
+        { title: '3. Kontrak Kerja & Peraturan Perusahaan (PP/PKB)', description: 'Memahami PKWT, PKWTT, dan perlindungan legalitas usaha Anda' },
+        { title: '4. Pengelolaan Absensi & Shift Kerja', description: 'Integrasi mesin biometrik ZKTeco dan absensi mobile geofencing' },
+        { title: '5. Kebijakan Cuti, Izin & Lembur Transparan', description: 'Alur persetujuan digital berjenjang tanpa birokrasi kertas' },
+        { title: '6. Otomasi Payroll & Perhitungan Gaji Bersih', description: 'Sinkronisasi kehadiran langsung ke komponen tunjangan dan potongan' },
+        { title: '7. Kepatuhan Pajak PPh 21 & Iuran BPJS', description: 'Ketentuan perhitungan PPh 21 TER dan BPJS Ketenagakerjaan/Kesehatan' },
+        { title: '8. Evaluasi Kinerja (KPI & OKR)', description: 'Metode penilaian objektif untuk memotivasi produktivitas tim' },
+        { title: '9. Keamanan Data & Privasi Informasi Karyawan', description: 'Perlindungan berkas digital dan riwayat gaji sesuai UU PDP' },
+        { title: '10. Skalabilitas Multi-Cabang & Outlet', description: 'Mempersiapkan sistem HR untuk ekspansi bisnis tanpa hambatan teknis' },
+      ],
+      cta: {
+        headline: 'Siap Mentransformasi Pengelolaan HR Anda?',
+        subheadline: 'Terapkan sistem HR modern terintegrasi bersama RMIH dan CV. Rozitech Multimedia Indonesia',
+        ctaPrimary: 'Unduh Panduan Sekarang',
+        ctaSecondary: 'Coba RMIH Gratis',
+      },
+    },
+    planningEmployes: {
+      hero: {
+        headline: 'Template Jadwal & Shift Kerja Karyawan',
+        subheadline: 'Template Excel praktis untuk mengatur shift harian dan jam kerja tim Anda',
+        badge: 'Template Gratis',
+        ctaPrimary: 'Unduh Template (Excel)',
+        ctaSecondary: 'Coba RMIH Sekarang',
+      },
+      stats: [
+        { title: 'Mudah Disesuaikan', description: 'Dapat langsung diedit sesuai format shift dan jam operasional outlet' },
+        { title: 'Formula Otomatis', description: 'Menghitung total jam kerja dan hari hadir secara instan' },
+        { title: '100% Gratis', description: 'Unduh langsung format spreadsheet tanpa syarat' },
+      ],
+      sectionTitle: 'Struktur Lembar Kerja Template',
+      sections: [
+        { title: 'Daftar Karyawan & Divisi', description: 'Data master karyawan, jabatan, dan penugasan lokasi kerja' },
+        { title: 'Jadwal Shift Bulanan', description: 'Kalender kerja dengan kode shift pagi, siang, malam, dan libur' },
+        { title: 'Rekap Jam Kerja & Lembur', description: 'Penghitungan akumulasi jam kerja mingguan dan bulanan' },
+        { title: 'Laporan Ketidakhadiran', description: 'Pencatatan izin sakit, cuti tahunan, dan dispensasi' },
+      ],
+      cta: {
+        headline: 'Atur Jadwal Tim Lebih Praktis & Rapi',
+        subheadline: 'Gunakan template ini atau otomatiskan jadwal shift dengan modul RMIH',
+        ctaPrimary: 'Unduh Template Excel',
+        ctaSecondary: 'Pelajari Fitur Shift RMIH',
+      },
+    },
+    checklistPaie: {
+      hero: {
+        headline: 'Checklist Kesiapan Payroll & Penggajian',
+        subheadline: 'Pastikan proses penggajian bulanan akurat, tepat waktu, dan patuh regulasi',
+        badge: 'Checklist Gratis',
+        ctaPrimary: 'Unduh Checklist (PDF)',
+        ctaSecondary: 'Coba RMIH Payroll',
+      },
+      stats: [
+        { title: '50+ Poin Verifikasi', description: 'Pengecekan menyeluruh dari rekonsiliasi absensi hingga slip gaji' },
+        { title: 'Sesuai UU Ketenagakerjaan', description: 'Kompilasi komponen wajib, PPh 21, dan jaminan sosial BPJS' },
+        { title: '100% Gratis', description: 'Unduh langsung berkas panduan dalam format PDF' },
+      ],
+      sectionTitle: 'Tahapan Checklist Penggajian',
+      sections: [
+        { title: '1. Pra-Penggajian (Cut-Off Periode)', description: 'Tutup buku absensi, rekap klaim lembur, dan verifikasi izin cuti' },
+        { title: '2. Pemrosesan Komponen Gaji', description: 'Hitung gaji pokok, tunjangan tetap/variabel, dan insentif kehadiran' },
+        { title: '3. Pemotongan Wajib & Sukarela', description: 'Kalkulasi PPh 21 TER, BPJS TK/Kes, serta pinjaman/kasbon' },
+        { title: '4. Verifikasi & Approval Finansial', description: 'Pemeriksaan silang total transfer bank dan persetujuan direksi' },
+        { title: '5. Distribusi Slip Gaji & Pelaporan', description: 'Pengiriman slip gaji digital terenkripsi dan pelaporan SPT Masa' },
+      ],
+      cta: {
+        headline: 'Hindari Kesalahan Hitung Gaji Karyawan',
+        subheadline: 'Gunakan checklist ini atau beralih ke otomasi payroll RMIH dalam hitungan menit',
+        ctaPrimary: 'Unduh Checklist PDF',
+        ctaSecondary: 'Demo Payroll RMIH',
+      },
+    },
+  },
   fr: {
     rhStartup: {
       hero: {
