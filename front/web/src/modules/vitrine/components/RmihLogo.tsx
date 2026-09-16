@@ -23,6 +23,7 @@ export function RmihEmblem({
 }) {
   return (
     <div className={`relative inline-flex items-center justify-center ${className}`}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/brand/rmih-emblem.png"
         alt="RMIH Emblem"
@@ -78,6 +79,7 @@ export function RmihLogo({
     <div className={`inline-flex items-center ${heightClasses} ${className}`}>
       {isDarkForced ? (
         /* Explicit dark theme */
+        /* eslint-disable-next-line @next/next/no-img-element */
         <img
           src="/brand/rmih-logo-dark.png"
           alt="RMIH - Resources Management Integrated Human"
@@ -86,6 +88,7 @@ export function RmihLogo({
         />
       ) : isLightForced ? (
         /* Explicit light theme */
+        /* eslint-disable-next-line @next/next/no-img-element */
         <img
           src="/brand/rmih-logo.png"
           alt="RMIH - Resources Management Integrated Human"
@@ -95,12 +98,14 @@ export function RmihLogo({
       ) : (
         /* Auto adaptive */
         <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/rmih-logo.png"
             alt="RMIH - Resources Management Integrated Human"
             className={`${heightClasses} w-auto object-contain dark:hidden`}
             loading="eager"
           />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/rmih-logo-dark.png"
             alt="RMIH - Resources Management Integrated Human"

@@ -397,6 +397,7 @@ export default function DashboardLayout({
         <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200/50 px-5">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg shadow-blue-500/20">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/brand/rmih-emblem.png" alt="RMIH" className="w-6 h-6 object-contain" />
             </div>
             <div className="min-w-0">
@@ -442,6 +443,7 @@ export default function DashboardLayout({
                 </button>
               ) : null}
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg shadow-blue-500/20">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/brand/rmih-emblem.png" alt="RMIH" className="w-6 h-6 object-contain" />
               </div>
               <div className="min-w-0">
