@@ -1,0 +1,40 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('attendance_corrections', function (Blueprint $table) {
+            $table->uuid('id')->primary()->default(DB::raw('gen_random_uuid()'));
+            $table->foreignUuid('tenant_id')->constrained('tenants')->cascadeOnDelete();
+            $table->foreignUuid('employee_id')->constrained('employees')->cascadeOnDelete();
+            $table->uuid('attendance_record_id')->nullable();
+            $table->foreign('attendance_record_id')->references('id')->on('attendance_records')->nullOnDelete();
+            $table->date('correction_date');
+            $table->timestamp('requested_check_in')->nullable();
+            $table->timestamp('requested_check_out')->nullable();
+            $table->text('reason');
+            $table->enum('status', ['draft', 'submitted', 'approved', 'rejected'])->default('draft');
+            $table->uuid('reviewed_by')->nullable();
+            $table->foreign('reviewed_by')->references('id')->on('users');
+            $table->timestamp('reviewed_at')->nullable();
+            $table->text('review_notes')->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->uuid('created_by');
+            $table->foreign('created_by')->references('id')->on('users');
+            $table->timestamps();
+
+            $table->index(['tenant_id', 'employee_id']);
+            $table->index(['tenant_id', 'status']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('attendance_corrections');
+    }
+};
